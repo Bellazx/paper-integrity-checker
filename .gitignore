@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Data directories (too large for git)
+data/
+input/
+
+# Generated reports
+review_reports/
+static/review_reports/
+
+# Excel data files
+*.xlsx
+*.xls
+
+# Archives
+*.tar
+*.tar.gz
+*.rar
+*.zip
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+venv/
