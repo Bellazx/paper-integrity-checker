@@ -126,6 +126,7 @@ def benfords_law_test(values: np.ndarray, min_samples: int = 100) -> dict:
 
 def check_cross_group_duplicates(groups: dict[str, np.ndarray]) -> list[dict]:
     """Check for duplicate data values across experimental groups."""
+    _SEV_ORDER = {"low": 0, "medium": 1, "high": 2}
     flagged = []
     names = list(groups.keys())
 
@@ -138,14 +139,31 @@ def check_cross_group_duplicates(groups: dict[str, np.ndarray]) -> list[dict]:
 
             common = np.intersect1d(a, b)
             overlap = len(common) / max(len(a), len(b))
-            if overlap > 0.5:
-                flagged.append({
-                    "group_a": names[i],
-                    "group_b": names[j],
-                    "overlap_ratio": float(overlap),
-                    "common_values": common.tolist(),
-                    "severity": "low",
-                })
+
+            if overlap >= 0.95:
+                severity = "high"
+            elif overlap >= 0.8:
+                severity = "medium"
+            elif overlap > 0.5:
+                severity = "low"
+            else:
+                continue
+
+            high_precision_count = sum(
+                1 for v in common
+                if '.' in str(v) and len(str(v).split('.')[-1].rstrip('0')) >= 6
+            )
+            if high_precision_count >= 3 and _SEV_ORDER.get(severity, 0) < _SEV_ORDER["medium"]:
+                severity = "medium"
+
+            flagged.append({
+                "group_a": names[i],
+                "group_b": names[j],
+                "overlap_ratio": float(overlap),
+                "common_values": common.tolist(),
+                "high_precision_matches": high_precision_count,
+                "severity": severity,
+            })
     return flagged
 
 
@@ -173,6 +191,8 @@ def check_linear_dependency(
     r_squared = r_value ** 2
 
     is_integer_slope = abs(slope - round(slope)) < 0.001 if abs(slope) > 0.1 else False
+    is_integer_intercept = abs(intercept - round(intercept)) < 0.5 if abs(intercept) > 0.5 else False
+    is_offset_pattern = (abs(slope - 1.0) < 0.01) and is_integer_intercept and abs(intercept) >= 1.0
 
     return {
         "testable": True,
@@ -183,6 +203,8 @@ def check_linear_dependency(
         "p_value": float(p_value),
         "n": n,
         "is_integer_slope": is_integer_slope,
+        "is_integer_intercept": is_integer_intercept,
+        "is_offset_pattern": is_offset_pattern,
     }
 
 
@@ -213,4 +235,33 @@ def check_decimal_uniformity(values: np.ndarray) -> dict:
         "decimal_places": decimal_places,
         "flagged": all_same and len(values) >= 5,
         "severity": "low",
+    }
+
+
+def check_value_recycling(values: np.ndarray, min_samples: int = 10) -> dict:
+    """Detect value recycling: few unique values filling many data points."""
+    clean = values[~np.isnan(values)]
+    if len(clean) < min_samples:
+        return {"testable": False}
+
+    unique_count = len(np.unique(clean))
+    total_count = len(clean)
+    ratio = unique_count / total_count
+
+    all_integer = np.all(clean == np.floor(clean))
+    if all_integer and unique_count <= 20:
+        return {"testable": True, "flagged": False, "ratio": float(ratio)}
+
+    flagged = ratio < 0.3
+    if not flagged:
+        return {"testable": True, "flagged": False, "ratio": float(ratio)}
+
+    severity = "high" if ratio < 0.15 else "medium"
+    return {
+        "testable": True,
+        "flagged": True,
+        "ratio": float(ratio),
+        "unique_count": int(unique_count),
+        "total_count": int(total_count),
+        "severity": severity,
     }

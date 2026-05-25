@@ -1,0 +1,2477 @@
+{
+  "papers": [
+    {
+      "doi": "10.1038/s41556-020-0522-z",
+      "expected_risk": "高风险",
+      "source": "user_labeled",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41556-020-0522-z/report.json"
+    },
+    {
+      "doi": "10.1038/s41556-026-01876-1",
+      "expected_risk": "高风险",
+      "source": "user_labeled",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41556-026-01876-1/report.json"
+    },
+    {
+      "doi": "10.1038/s41565-025-02082-0",
+      "expected_risk": "高风险",
+      "source": "user_labeled",
+      "report_path": "/opt/paper-integrity-checker/data/output/s41565-025-02082-0/report.json"
+    },
+    {
+      "doi": "10.1038/s41586-024-08248-5",
+      "expected_risk": "高风险",
+      "source": "user_labeled",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41586-024-08248-5/report.json"
+    },
+    {
+      "doi": "10.1038/s43018-023-00715-8",
+      "expected_risk": "高风险",
+      "source": "user_labeled",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s43018-023-00715-8/report.json"
+    },
+    {
+      "doi": "10.1038/s41586-026-10462-2",
+      "expected_risk": "高风险",
+      "source": "user_labeled",
+      "report_path": "/opt/paper-integrity-checker/data/output/test-s41586-026-10462-2/s41586-026-10462-2/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-020-17347-6",
+      "expected_risk": "高风险",
+      "source": "user_labeled",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-020-17347-6/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-018-06201-5",
+      "expected_risk": "高风险",
+      "source": "retracted",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41467-018-06201-5/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-018-05812-2",
+      "expected_risk": "高风险",
+      "source": "retracted",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41467-018-05812-2/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-019-10847-0",
+      "expected_risk": "高风险",
+      "source": "retracted",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41467-019-10847-0/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-018-05764-7",
+      "expected_risk": "高风险",
+      "source": "retracted",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41467-018-05764-7/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-018-07998-x",
+      "expected_risk": "高风险",
+      "source": "retracted",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41467-018-07998-x/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-020-17310-5",
+      "expected_risk": "高风险",
+      "source": "retracted",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41467-020-17310-5/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-018-07861-z",
+      "expected_risk": "高风险",
+      "source": "retracted",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41467-018-07861-z/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-020-20506-4",
+      "expected_risk": "高风险",
+      "source": "retracted",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41467-020-20506-4/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-020-20733-9",
+      "expected_risk": "高风险",
+      "source": "retracted",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41467-020-20733-9/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-022-30512-3",
+      "expected_risk": "高风险",
+      "source": "retracted",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41467-022-30512-3/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-022-28509-z",
+      "expected_risk": "高风险",
+      "source": "retracted",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41467-022-28509-z/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-022-28920-6",
+      "expected_risk": "高风险",
+      "source": "retracted",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41467-022-28920-6/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-022-33734-7",
+      "expected_risk": "高风险",
+      "source": "retracted",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41467-022-33734-7/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-024-50838-4",
+      "expected_risk": "高风险",
+      "source": "retracted",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41467-024-50838-4/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-022-30558-3",
+      "expected_risk": "高风险",
+      "source": "retracted",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41467-022-30558-3/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-024-45448-z",
+      "expected_risk": "高风险",
+      "source": "retracted",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41467-024-45448-z/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-023-37096-6",
+      "expected_risk": "高风险",
+      "source": "retracted",
+      "report_path": "/opt/paper-integrity-checker/data/output/10.1038__s41467-023-37096-6/report.json"
+    },
+    {
+      "doi": "10.1038/s42256-025-01027-5",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s42256-025-01027-5/report.json"
+    },
+    {
+      "doi": "10.1038/s41586-024-07584-w",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41586-024-07584-w/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-021-23466-5",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-021-23466-5/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-024-49846-1",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41467-024-49846-1/report.json"
+    },
+    {
+      "doi": "10.1038/s41557-025-01954-1",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41557-025-01954-1/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-024-50225-z",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-024-50225-z/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-57159-0",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "中风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41467-025-57159-0/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-023-38371-2",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41467-023-38371-2/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-024-54785-y",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "中风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41467-024-54785-y/report.json"
+    },
+    {
+      "doi": "10.1038/s41590-024-02074-7",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41590-024-02074-7/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-022-29577-x",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-022-29577-x/report.json"
+    },
+    {
+      "doi": "10.1038/s41565-025-02090-0",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41565-025-02090-0/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-66441-0",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41467-025-66441-0/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-020-18895-7",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-020-18895-7/report.json"
+    },
+    {
+      "doi": "10.1038/s41567-025-02803-1",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41567-025-02803-1/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-020-20460-1",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-020-20460-1/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-024-49849-y",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-024-49849-y/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-026-68887-2",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41467-026-68887-2/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-024-46308-6",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41467-024-46308-6/report.json"
+    },
+    {
+      "doi": "10.1038/s41563-025-02280-0",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41563-025-02280-0/report.json"
+    },
+    {
+      "doi": "10.1038/s41564-025-02120-6",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41564-025-02120-6/report.json"
+    },
+    {
+      "doi": "10.1038/s41563-023-01721-y",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41563-023-01721-y/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-024-50595-4",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-024-50595-4/report.json"
+    },
+    {
+      "doi": "10.1016/j.molcel.2023.06.024",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.molcel.2023.06.024/report.json"
+    },
+    {
+      "doi": "10.1038/s41586-023-05982-0",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41586-023-05982-0/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-59049-x",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-025-59049-x/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-026-68830-5",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "中风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41467-026-68830-5/report.json"
+    },
+    {
+      "doi": "10.1016/j.celrep.2025.116237",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.celrep.2025.116237/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-62619-8",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "高风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-025-62619-8/report.json"
+    },
+    {
+      "doi": "10.1038/s41929-025-01380-z",
+      "expected_risk": "高风险",
+      "source": "yujing_sample",
+      "original_risk": "中风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41929-025-01380-z/report.json"
+    },
+    {
+      "doi": "10.1016/j.heliyon.2023.e22584",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.heliyon.2023.e22584/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-021-21714-2",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-021-21714-2/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-024-54407-7",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41467-024-54407-7/report.json"
+    },
+    {
+      "doi": "10.1038/s42003-024-07426-5",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s42003-024-07426-5/report.json"
+    },
+    {
+      "doi": "10.1038/s41590-025-02100-2",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41590-025-02100-2/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-66779-5",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41467-025-66779-5/report.json"
+    },
+    {
+      "doi": "10.1038/s41593-021-00837-1",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41593-021-00837-1/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-020-19853-z",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-020-19853-z/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-020-64005-4",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41598-020-64005-4/report.json"
+    },
+    {
+      "doi": "10.1016/j.tplants.2025.02.001",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.tplants.2025.02.001/report.json"
+    },
+    {
+      "doi": "10.1016/j.chempr.2022.10.026",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.chempr.2022.10.026/report.json"
+    },
+    {
+      "doi": "10.1016/j.ymthe.2023.05.002",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.ymthe.2023.05.002/report.json"
+    },
+    {
+      "doi": "10.1038/s41524-025-01904-y",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41524-025-01904-y/report.json"
+    },
+    {
+      "doi": "10.1016/j.chom.2024.05.020",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.chom.2024.05.020/report.json"
+    },
+    {
+      "doi": "10.1038/s41698-025-00974-x",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41698-025-00974-x/report.json"
+    },
+    {
+      "doi": "10.1016/j.isci.2024.110581",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.isci.2024.110581/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-020-65724-4",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41598-020-65724-4/report.json"
+    },
+    {
+      "doi": "10.1038/d41586-022-02319-1",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": null,
+      "db_scores": {
+        "total_score": "0",
+        "risk_level": "低风险",
+        "pic_score": "0",
+        "data_score": "0",
+        "ref_score": "0"
+      }
+    },
+    {
+      "doi": "10.1016/j.omtn.2021.07.006",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.omtn.2021.07.006/report.json"
+    },
+    {
+      "doi": "10.1016/j.ccell.2023.05.016",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.ccell.2023.05.016/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-022-33250-8",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-022-33250-8/report.json"
+    },
+    {
+      "doi": "10.1016/j.heliyon.2023.e20185",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.heliyon.2023.e20185/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-61114-4",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-025-61114-4/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2525003123",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/pnas/WOS_001733926500001/report.json"
+    },
+    {
+      "doi": "10.1016/j.celrep.2021.109515",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-99/10.1016j.celrep.2021.109515/report.json"
+    },
+    {
+      "doi": "10.1016/j.heliyon.2022.e12788",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.heliyon.2022.e12788/report.json"
+    },
+    {
+      "doi": "10.1016/j.isci.2023.106552",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.isci.2023.106552/report.json"
+    },
+    {
+      "doi": "10.1016/j.immuni.2024.08.016",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.immuni.2024.08.016/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-64505-9",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41467-025-64505-9/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-020-63476-9",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-020-63476-9/report.json"
+    },
+    {
+      "doi": "10.1038/s41534-025-01167-x",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41534-025-01167-x/report.json"
+    },
+    {
+      "doi": "10.1038/s41531-024-00832-w",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41531-024-00832-w/report.json"
+    },
+    {
+      "doi": "10.1016/S0140-6736(26)00295-3",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/医学刊pnas/10.1016_S0140-6736(26)00295-3/report.json"
+    },
+    {
+      "doi": "10.1016/j.celrep.2024.113712",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.celrep.2024.113712/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-024-52524-x",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41467-024-52524-x/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-022-33080-8",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-022-33080-8/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-020-74445-7",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41598-020-74445-7/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-025-03411-y",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-025-03411-y/report.json"
+    },
+    {
+      "doi": "10.1016/j.xcrm.2025.101976",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.xcrm.2025.101976/report.json"
+    },
+    {
+      "doi": "10.1126/sciadv.adf5069",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-001-222/10.1126__sciadv.adf5069/report.json"
+    },
+    {
+      "doi": "10.1016/j.heliyon.2024.e24523",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.heliyon.2024.e24523/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-020-18217-x",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-020-18217-x/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-025-06463-2",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-025-06463-2/report.json"
+    },
+    {
+      "doi": "10.1038/s41588-022-01035-w",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41588-022-01035-w/report.json"
+    },
+    {
+      "doi": "10.1016/j.xcrp.2025.102979",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.xcrp.2025.102979/report.json"
+    },
+    {
+      "doi": "10.1016/j.matt.2021.09.022",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.matt.2021.09.022/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-024-55368-7",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41467-024-55368-7/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2219491120",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/pnas/WOS_001124041500004/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-025-14979-w",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-025-14979-w/report.json"
+    },
+    {
+      "doi": "10.1038/s42255-022-00575-z",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s42255-022-00575-z/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2318935121",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/pnas/WOS_001208983800005/report.json"
+    },
+    {
+      "doi": "10.1016/j.isci.2025.113924",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.isci.2025.113924/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-61103-7",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41467-025-61103-7/report.json"
+    },
+    {
+      "doi": "10.1016/j.heliyon.2024.e35966",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.heliyon.2024.e35966/report.json"
+    },
+    {
+      "doi": "10.1038/s41698-024-00608-8",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41698-024-00608-8/report.json"
+    },
+    {
+      "doi": "10.1016/j.tem.2023.10.004",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.tem.2023.10.004/report.json"
+    },
+    {
+      "doi": "10.1016/j.heliyon.2023.e20955",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.heliyon.2023.e20955/report.json"
+    },
+    {
+      "doi": "10.1016/j.molcel.2025.08.014",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.molcel.2025.08.014/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2513493122",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/pnas/WOS_001649654100001/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-021-81379-1",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-021-81379-1/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2120379119",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": null,
+      "db_scores": {
+        "total_score": "0",
+        "risk_level": "低风险",
+        "pic_score": "0",
+        "data_score": "0",
+        "ref_score": "0"
+      }
+    },
+    {
+      "doi": "10.1016/j.isci.2022.104042",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.isci.2022.104042/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-023-36787-4",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41467-023-36787-4/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-022-31751-0",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-022-31751-0/report.json"
+    },
+    {
+      "doi": "10.1016/j.isci.2025.112570",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.isci.2025.112570/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2313656121",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": null,
+      "db_scores": {
+        "total_score": "0",
+        "risk_level": "低风险",
+        "pic_score": "0",
+        "data_score": "0",
+        "ref_score": "0"
+      }
+    },
+    {
+      "doi": "10.1038/s41467-023-37000-2",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-023-37000-2/report.json"
+    },
+    {
+      "doi": "10.1016/j.isci.2021.103565",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.isci.2021.103565/report.json"
+    },
+    {
+      "doi": "10.1016/j.joule.2021.12.010",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.joule.2021.12.010/report.json"
+    },
+    {
+      "doi": "10.1016/j.heliyon.2024.e31141",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.heliyon.2024.e31141/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2312751120",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": null,
+      "db_scores": {
+        "total_score": "38",
+        "risk_level": "低风险",
+        "pic_score": "0",
+        "data_score": "45",
+        "ref_score": "0"
+      }
+    },
+    {
+      "doi": "10.1038/s41467-021-26084-3",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41467-021-26084-3/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-025-99258-4",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-025-99258-4/report.json"
+    },
+    {
+      "doi": "10.1016/j.celrep.2025.116658",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.celrep.2025.116658/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-025-24679-0",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-025-24679-0/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-025-90920-5",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-025-90920-5/report.json"
+    },
+    {
+      "doi": "10.1038/s41557-023-01356-1",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41557-023-01356-1/report.json"
+    },
+    {
+      "doi": "10.1126/scitranslmed.abj2177",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-001-222/10.1126__scitranslmed.abj2177/report.json"
+    },
+    {
+      "doi": "10.1038/s41746-025-01439-y",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41746-025-01439-y/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-65464-x",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41467-025-65464-x/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-022-29754-y",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-022-29754-y/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-024-55261-3",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41467-024-55261-3/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2307722120",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": null,
+      "db_scores": {
+        "total_score": "0",
+        "risk_level": "低风险",
+        "pic_score": "0",
+        "data_score": "0",
+        "ref_score": "0"
+      }
+    },
+    {
+      "doi": "10.1016/j.cmet.2024.01.005",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.cmet.2024.01.005/report.json"
+    },
+    {
+      "doi": "10.1038/s42005-023-01450-3",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s42005-023-01450-3/report.json"
+    },
+    {
+      "doi": "10.1016/j.xcrp.2021.100561",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.xcrp.2021.100561/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-024-80270-z",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-024-80270-z/report.json"
+    },
+    {
+      "doi": "10.1016/j.isci.2023.108516",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.isci.2023.108516/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-023-36004-2",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-023-36004-2/report.json"
+    },
+    {
+      "doi": "10.1016/j.pt.2025.11.007",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.pt.2025.11.007/report.json"
+    },
+    {
+      "doi": "10.1038/s41578-024-00721-x",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41578-024-00721-x/report.json"
+    },
+    {
+      "doi": "10.1016/j.isci.2025.112972",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.isci.2025.112972/report.json"
+    },
+    {
+      "doi": "10.1038/s41537-022-00273-5",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41537-022-00273-5/report.json"
+    },
+    {
+      "doi": "10.1136/bmj.m1849",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/医学刊pnas/10.1136_bmj.m1849/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2417633121",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/pnas/WOS_001379596100012/report.json"
+    },
+    {
+      "doi": "10.1126/sciadv.adl0372",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-001-222/10.1126__sciadv.adl0372/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2119032119",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": null,
+      "db_scores": {
+        "total_score": "0",
+        "risk_level": "低风险",
+        "pic_score": "0",
+        "data_score": "0",
+        "ref_score": "0"
+      }
+    },
+    {
+      "doi": "10.1038/s41592-023-01947-3",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41592-023-01947-3/report.json"
+    },
+    {
+      "doi": "10.1126/science.adi0397",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-323-443/10.1126__science.adi0397/report.json"
+    },
+    {
+      "doi": "10.1038/s41560-023-01219-6",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41560-023-01219-6/report.json"
+    },
+    {
+      "doi": "10.1016/j.heliyon.2024.e31982",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.heliyon.2024.e31982/report.json"
+    },
+    {
+      "doi": "10.1016/j.isci.2024.111597",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.isci.2024.111597/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-025-99268-2",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-025-99268-2/report.json"
+    },
+    {
+      "doi": "10.1038/s41574-024-00953-5",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41574-024-00953-5/report.json"
+    },
+    {
+      "doi": "10.1038/s42003-023-04992-y",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s42003-023-04992-y/report.json"
+    },
+    {
+      "doi": "10.1038/s41590-024-01902-0",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41590-024-01902-0/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-61808-9",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41467-025-61808-9/report.json"
+    },
+    {
+      "doi": "10.1038/s41698-025-01042-0",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41698-025-01042-0/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-022-30540-z",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-022-30540-z/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-021-25921-9",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-021-25921-9/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-021-26160-8",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-021-26160-8/report.json"
+    },
+    {
+      "doi": "10.1038/s41578-023-00643-0",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41578-023-00643-0/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-024-70164-5",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-024-70164-5/report.json"
+    },
+    {
+      "doi": "10.1016/j.omtn.2021.08.019",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.omtn.2021.08.019/report.json"
+    },
+    {
+      "doi": "10.1016/j.ymthe.2021.02.018",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.ymthe.2021.02.018/report.json"
+    },
+    {
+      "doi": "10.1016/j.omto.2022.04.003",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.omto.2022.04.003/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-022-29477-0",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-022-29477-0/report.json"
+    },
+    {
+      "doi": "10.1038/s41477-021-00957-3",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41477-021-00957-3/report.json"
+    },
+    {
+      "doi": "10.34133/2022/9869734",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": null,
+      "db_scores": {
+        "total_score": "12",
+        "risk_level": "低风险",
+        "pic_score": "14",
+        "data_score": "0",
+        "ref_score": "0"
+      }
+    },
+    {
+      "doi": "10.1016/j.xcrm.2024.101913",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.xcrm.2024.101913/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-022-32092-8",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41467-022-32092-8/report.json"
+    },
+    {
+      "doi": "10.1002/cac2.12152",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/wiley-to-science/10.1002_cac2.12152/report.json"
+    },
+    {
+      "doi": "10.1016/j.isci.2021.102894",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.isci.2021.102894/report.json"
+    },
+    {
+      "doi": "10.1016/j.isci.2024.109323",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.isci.2024.109323/report.json"
+    },
+    {
+      "doi": "10.1016/j.molcel.2025.01.006",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-99/10.1016j.molcel.2025.01.006/report.json"
+    },
+    {
+      "doi": "10.1126/science.ado4936",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-001-222/10.1126__science.ado4936/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-61163-9",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-025-61163-9/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-023-37340-z",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41467-023-37340-z/report.json"
+    },
+    {
+      "doi": "10.1038/s41586-024-07670-z",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41586-024-07670-z/report.json"
+    },
+    {
+      "doi": "10.1016/j.heliyon.2024.e26027",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.heliyon.2024.e26027/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-026-68946-8",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41467-026-68946-8/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-023-38155-8",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-023-38155-8/report.json"
+    },
+    {
+      "doi": "10.1126/science.abl5774",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-001-222/10.1126__science.abl5774/report.json"
+    },
+    {
+      "doi": "10.1016/j.immuni.2020.05.003",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.immuni.2020.05.003/report.json"
+    },
+    {
+      "doi": "10.1016/j.joule.2024.02.020",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.joule.2024.02.020/report.json"
+    },
+    {
+      "doi": "10.1038/s42003-026-09798-2",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s42003-026-09798-2/report.json"
+    },
+    {
+      "doi": "10.1016/j.chempr.2020.04.003",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.chempr.2020.04.003/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-021-94674-8",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-021-94674-8/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2303075120",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": null,
+      "db_scores": {
+        "total_score": "45",
+        "risk_level": "低风险",
+        "pic_score": "0",
+        "data_score": "53",
+        "ref_score": "0"
+      }
+    },
+    {
+      "doi": "10.1038/s41467-021-27629-2",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41467-021-27629-2/report.json"
+    },
+    {
+      "doi": "10.1038/s41569-022-00829-z",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41569-022-00829-z/report.json"
+    },
+    {
+      "doi": "10.1126/sciadv.ads2834",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-001-222/10.1126__sciadv.ads2834/report.json"
+    },
+    {
+      "doi": "10.1038/s42003-025-09437-2",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s42003-025-09437-2/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-023-37557-y",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41467-023-37557-y/report.json"
+    },
+    {
+      "doi": "10.1016/j.isci.2024.111483",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.isci.2024.111483/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-023-36560-7",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-023-36560-7/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2402843121",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/pnas/WOS_001347892400005/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-58794-3",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41467-025-58794-3/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-59222-2",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41467-025-59222-2/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-022-29947-5",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-022-29947-5/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-023-40626-x",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-023-40626-x/report.json"
+    },
+    {
+      "doi": "10.1016/j.celrep.2023.113147",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.celrep.2023.113147/report.json"
+    },
+    {
+      "doi": "10.1016/j.cmet.2025.10.017",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-99/10.1016j.cmet.2025.10.017/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-58432-y",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41467-025-58432-y/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-55876-0",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-025-55876-0/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2122969119",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": null,
+      "db_scores": {
+        "total_score": "0",
+        "risk_level": "低风险",
+        "pic_score": "0",
+        "data_score": "0",
+        "ref_score": "0"
+      }
+    },
+    {
+      "doi": "10.1016/j.xcrp.2022.101040",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.xcrp.2022.101040/report.json"
+    },
+    {
+      "doi": "10.1016/j.heliyon.2024.e34241",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.heliyon.2024.e34241/report.json"
+    },
+    {
+      "doi": "10.1016/j.isci.2025.114607",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.isci.2025.114607/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-022-35655-x",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-022-35655-x/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-025-01866-7",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-025-01866-7/report.json"
+    },
+    {
+      "doi": "10.34133/2020/4907185",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": null,
+      "db_scores": {
+        "total_score": "19",
+        "risk_level": "低风险",
+        "pic_score": "22",
+        "data_score": "0",
+        "ref_score": "1"
+      }
+    },
+    {
+      "doi": "10.1038/s41598-020-69375-3",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41598-020-69375-3/report.json"
+    },
+    {
+      "doi": "10.1016/j.isci.2021.103285",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.isci.2021.103285/report.json"
+    },
+    {
+      "doi": "10.1038/s41586-023-06479-6",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41586-023-06479-6/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-020-65001-4",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41598-020-65001-4/report.json"
+    },
+    {
+      "doi": "10.1038/s42255-023-00803-0",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s42255-023-00803-0/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-020-67698-9",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-020-67698-9/report.json"
+    },
+    {
+      "doi": "10.1038/s42256-025-01010-0",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s42256-025-01010-0/report.json"
+    },
+    {
+      "doi": "10.1016/j.isci.2024.109633",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.isci.2024.109633/report.json"
+    },
+    {
+      "doi": "10.1126/scitranslmed.abk0855",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-001-222/10.1126__scitranslmed.abk0855/report.json"
+    },
+    {
+      "doi": "10.1016/j.ymthe.2020.09.037",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.ymthe.2020.09.037/report.json"
+    },
+    {
+      "doi": "10.34133/research.0258",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-001-222/10.34133__research.0258/report.json"
+    },
+    {
+      "doi": "10.34133/research.0036",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-001-222/10.34133__research.0036/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-56948-x",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41467-025-56948-x/report.json"
+    },
+    {
+      "doi": "10.1126/sciadv.aay1422",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-001-222/10.1126__sciadv.aay1422/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-023-43966-w",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41467-023-43966-w/report.json"
+    },
+    {
+      "doi": "10.1126/science.adp3252",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-001-222/10.1126__science.adp3252/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-023-36005-1",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41467-023-36005-1/report.json"
+    },
+    {
+      "doi": "10.1126/scitranslmed.adz0672",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-323-443/10.1126__scitranslmed.adz0672/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2321759121",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/pnas/WOS_001208811200001/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-59378-x",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41467-025-59378-x/report.json"
+    },
+    {
+      "doi": "10.34133/research.0845",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-323-443/10.34133__research.0845/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.1912146117",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": null,
+      "db_scores": {
+        "total_score": "0",
+        "risk_level": "低风险",
+        "pic_score": "0",
+        "data_score": "0",
+        "ref_score": "0"
+      }
+    },
+    {
+      "doi": "10.1016/j.isci.2024.109046",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.isci.2024.109046/report.json"
+    },
+    {
+      "doi": "10.1126/science.abm7149",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-001-222/10.1126__science.abm7149/report.json"
+    },
+    {
+      "doi": "10.1016/j.heliyon.2024.e34583",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.heliyon.2024.e34583/report.json"
+    },
+    {
+      "doi": "10.1016/j.omtn.2020.05.019",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.omtn.2020.05.019/report.json"
+    },
+    {
+      "doi": "10.1038/s41560-025-01890-x",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41560-025-01890-x/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-025-18445-5",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-025-18445-5/report.json"
+    },
+    {
+      "doi": "10.1126/sciadv.aay5853",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-001-222/10.1126__sciadv.aay5853/report.json"
+    },
+    {
+      "doi": "10.1016/j.tim.2025.03.005",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.tim.2025.03.005/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-025-29532-y",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-025-29532-y/report.json"
+    },
+    {
+      "doi": "10.1038/s41538-024-00251-4",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41538-024-00251-4/report.json"
+    },
+    {
+      "doi": "10.1038/s41586-020-2355-0",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41586-020-2355-0/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2302858120",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": null,
+      "db_scores": {
+        "total_score": "0",
+        "risk_level": "低风险",
+        "pic_score": "0",
+        "data_score": "0",
+        "ref_score": "0"
+      }
+    },
+    {
+      "doi": "10.1038/s41467-023-44525-z",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-023-44525-z/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-025-89333-1",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-025-89333-1/report.json"
+    },
+    {
+      "doi": "10.1016/j.xplc.2025.101291",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.xplc.2025.101291/report.json"
+    },
+    {
+      "doi": "10.1038/s42005-022-00954-8",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s42005-022-00954-8/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-025-24845-4",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-025-24845-4/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-025-91361-w",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-025-91361-w/report.json"
+    },
+    {
+      "doi": "10.1016/j.xcrp.2022.100918",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.xcrp.2022.100918/report.json"
+    },
+    {
+      "doi": "10.1038/s41534-023-00715-7",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41534-023-00715-7/report.json"
+    },
+    {
+      "doi": "10.1038/s41537-025-00565-6",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41537-025-00565-6/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-024-57349-8",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-024-57349-8/report.json"
+    },
+    {
+      "doi": "10.1126/sciadv.adx8586",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-323-443/10.1126__sciadv.adx8586/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-023-36661-3",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41467-023-36661-3/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-58893-1",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41467-025-58893-1/report.json"
+    },
+    {
+      "doi": "10.1016/j.isci.2023.107979",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.isci.2023.107979/report.json"
+    },
+    {
+      "doi": "10.1016/j.cmet.2025.11.007",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-3/10.1016j.cmet.2025.11.007/report.json"
+    },
+    {
+      "doi": "10.1016/j.isci.2023.106397",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-99/10.1016j.isci.2023.106397/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-022-29882-5",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-022-29882-5/report.json"
+    },
+    {
+      "doi": "10.1136/bmj-2023-076551",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/医学刊pnas/10.1136_bmj-2023-076551/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2012228118",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": null,
+      "db_scores": {
+        "total_score": "4",
+        "risk_level": "低风险",
+        "pic_score": "0",
+        "data_score": "5",
+        "ref_score": "0"
+      }
+    },
+    {
+      "doi": "10.1016/j.isci.2023.108226",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.isci.2023.108226/report.json"
+    },
+    {
+      "doi": "10.1038/s41534-022-00649-6",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41534-022-00649-6/report.json"
+    },
+    {
+      "doi": "10.1038/s42003-025-08298-z",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s42003-025-08298-z/report.json"
+    },
+    {
+      "doi": "10.1038/s41522-021-00199-3",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41522-021-00199-3/report.json"
+    },
+    {
+      "doi": "10.1016/j.oneear.2025.101450",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.oneear.2025.101450/report.json"
+    },
+    {
+      "doi": "10.1016/j.chempr.2024.11.007",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.chempr.2024.11.007/report.json"
+    },
+    {
+      "doi": "10.1186/s40824-023-00425-3",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-001-222/10.1186__s40824-023-00425-3/report.json"
+    },
+    {
+      "doi": "10.1016/j.celrep.2025.116820",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.celrep.2025.116820/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-024-80609-6",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-024-80609-6/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-025-90569-0",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-025-90569-0/report.json"
+    },
+    {
+      "doi": "10.1016/j.molcel.2022.09.033",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.molcel.2022.09.033/report.json"
+    },
+    {
+      "doi": "10.1038/s41569-024-01014-0",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41569-024-01014-0/report.json"
+    },
+    {
+      "doi": "10.1038/s41597-025-06048-8",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41597-025-06048-8/report.json"
+    },
+    {
+      "doi": "10.1016/j.isci.2023.106571",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.isci.2023.106571/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-024-53579-6",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-024-53579-6/report.json"
+    },
+    {
+      "doi": "10.1016/j.celrep.2021.110038",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.celrep.2021.110038/report.json"
+    },
+    {
+      "doi": "10.1038/s41746-024-01163-z",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41746-024-01163-z/report.json"
+    },
+    {
+      "doi": "10.1016/j.celrep.2022.111829",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.celrep.2022.111829/report.json"
+    },
+    {
+      "doi": "10.1016/j.stem.2024.03.008",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.stem.2024.03.008/report.json"
+    },
+    {
+      "doi": "10.1038/s42003-022-04191-1",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s42003-022-04191-1/report.json"
+    },
+    {
+      "doi": "10.1126/sciadv.adu6464",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-323-443/10.1126__sciadv.adu6464/report.json"
+    },
+    {
+      "doi": "10.1038/s41563-025-02435-z",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41563-025-02435-z/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-022-34286-6",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-022-34286-6/report.json"
+    },
+    {
+      "doi": "10.1038/s41531-022-00391-y",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41531-022-00391-y/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2400812121",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/pnas/WOS_001359210100003/report.json"
+    },
+    {
+      "doi": "10.1016/j.ccell.2024.03.005",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.ccell.2024.03.005/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-023-37590-x",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-023-37590-x/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-024-51958-7",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-024-51958-7/report.json"
+    },
+    {
+      "doi": "10.1126/sciadv.adn2829",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-001-222/10.1126__sciadv.adn2829/report.json"
+    },
+    {
+      "doi": "10.1038/s41570-024-00576-4",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41570-024-00576-4/report.json"
+    },
+    {
+      "doi": "10.1016/j.tplants.2020.01.001",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.tplants.2020.01.001/report.json"
+    },
+    {
+      "doi": "10.1016/j.heliyon.2024.e32516",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2-new/10.1016j.heliyon.2024.e32516/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-61599-z",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41467-025-61599-z/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2203208119",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": null,
+      "db_scores": {
+        "total_score": "0",
+        "risk_level": "低风险",
+        "pic_score": "0",
+        "data_score": "0",
+        "ref_score": "0"
+      }
+    },
+    {
+      "doi": "10.1038/s41467-025-57388-3",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41467-025-57388-3/report.json"
+    },
+    {
+      "doi": "10.1016/j.omtn.2020.12.008",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-99/10.1016j.omtn.2020.12.008/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-024-78757-w",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-024-78757-w/report.json"
+    },
+    {
+      "doi": "10.1126/sciadv.adh5016",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-001-222/10.1126__sciadv.adh5016/report.json"
+    },
+    {
+      "doi": "10.1016/j.isci.2026.115188",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-2/10.1016__j.isci.2026.115188/report.json"
+    },
+    {
+      "doi": "10.1126/sciimmunol.adf4919",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/science-001-222/10.1126__sciimmunol.adf4919/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-022-14201-1",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41598-022-14201-1/report.json"
+    },
+    {
+      "doi": "10.1038/s41551-024-01224-4",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s41551-024-01224-4/report.json"
+    },
+    {
+      "doi": "10.1038/s42003-022-04142-w",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s42003-022-04142-w/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-025-66921-3",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41467-025-66921-3/report.json"
+    },
+    {
+      "doi": "10.1038/s41467-024-50578-5",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/Nature-2/10.1038__s41467-024-50578-5/report.json"
+    },
+    {
+      "doi": "10.1038/s42255-024-01068-x",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/0514/10.1038__s42255-024-01068-x/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-025-01427-y",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-025-01427-y/report.json"
+    },
+    {
+      "doi": "10.1016/j.ymthe.2023.08.021",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.ymthe.2023.08.021/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-022-07060-3",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": null,
+      "db_scores": {
+        "total_score": "0",
+        "risk_level": "低风险",
+        "pic_score": "0",
+        "data_score": "0",
+        "ref_score": "0"
+      }
+    },
+    {
+      "doi": "10.1016/j.celrep.2023.113579",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.celrep.2023.113579/report.json"
+    },
+    {
+      "doi": "10.1038/s41598-024-72198-1",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-024-72198-1/report.json"
+    },
+    {
+      "doi": "10.34133/2022/9781323",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": null,
+      "db_scores": {
+        "total_score": "58",
+        "risk_level": "低风险",
+        "pic_score": "68",
+        "data_score": "0",
+        "ref_score": "0"
+      }
+    },
+    {
+      "doi": "10.1038/s41598-025-15617-1",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/nature-3/10.1038__s41598-025-15617-1/report.json"
+    },
+    {
+      "doi": "10.1016/j.neuron.2024.01.014",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": "/opt/paper-integrity-checker/data/output/cell-1/10.1016__j.neuron.2024.01.014/report.json"
+    },
+    {
+      "doi": "10.1073/pnas.2008456117",
+      "expected_risk": "低风险",
+      "source": "yujing_sample",
+      "original_risk": "低风险",
+      "report_path": null,
+      "db_scores": {
+        "total_score": "0",
+        "risk_level": "低风险",
+        "pic_score": "0",
+        "data_score": "0",
+        "ref_score": "0"
+      }
+    },
+    {
+      "doi": "10.1038/s41467-022-33903-8",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1038/s41467-022-28492-5",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1038/s41467-020-20447-y",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1126/scitranslmed.add7464",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1126/sciimmunol.adh1306",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1038/s41467-025-64361-7",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1038/s41467-021-21744-w",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1038/s41467-025-56026-2",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1038/s41467-023-42025-8",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1016/j.cmet.2022.10.012",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1038/s41467-026-69539-1",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1038/s41467-025-62349-x",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1126/scitranslmed.aba3571",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1038/s41467-025-62951-z",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1038/s41551-025-01564-9",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1038/s41467-021-26864-x",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1073/pnas.2403421121",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1038/s41587-020-00781-8",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1038/s41467-023-40260-7",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    },
+    {
+      "doi": "10.1038/s41467-024-54481-x",
+      "expected_risk": "高风险",
+      "source": "user_labeled"
+    }
+  ],
+  "metadata": {
+    "created": "2026-05-20",
+    "binary_classification": "高风险 vs 低风险 (中风险 merged into 高风险)",
+    "excluded": [
+      "10.1038/s41467-026-71532-7 (PDF invalid)",
+      "10.1126/science.aef1620 (PDF invalid)",
+      "10.1038/s41467-021-24195-5 (no Excel data)",
+      "10.1038/s41467-021-24795-1 (no Excel data)"
+    ]
+  }
+}

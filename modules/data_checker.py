@@ -12,11 +12,14 @@ from config import (
     CV_THRESHOLD, ARITHMETIC_SEQ_TOLERANCE, BENFORD_MIN_SAMPLES,
     BENFORD_P_THRESHOLD, CROSS_GROUP_OVERLAP_THRESHOLD,
     LINEAR_DEP_R2_THRESHOLD, LINEAR_DEP_MIN_SAMPLES,
+    CROSS_SHEET_MIN_MATCHING_ROWS, CROSS_SHEET_COL_MATCH_RATIO,
+    VALUE_RECYCLING_MIN_SAMPLES,
 )
 from utils.stats import (
     check_cv, check_arithmetic_sequence, check_geometric_sequence,
     grim_test, benfords_law_test, check_cross_group_duplicates,
     check_decimal_uniformity, check_linear_dependency,
+    check_value_recycling,
 )
 
 log = logging.getLogger(__name__)
@@ -241,6 +244,36 @@ def _load_data_files(data_dir: str) -> tuple[dict[str, dict[str, pd.DataFrame]],
             except Exception as e:
                 log.warning("Failed to load %s: %s", f.name, e)
                 failed_files.append(f.name)
+        elif f.suffix.lower() == ".rar":
+            try:
+                import rarfile
+                import tempfile
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    rf = rarfile.RarFile(str(f))
+                    rf.extractall(tmp_dir)
+                    for extracted in sorted(Path(tmp_dir).rglob("*")):
+                        if extracted.suffix.lower() in (".xlsx", ".xls"):
+                            engine = "xlrd" if extracted.suffix.lower() == ".xls" else "openpyxl"
+                            try:
+                                raw = pd.read_excel(extracted, sheet_name=None, engine=engine, header=None)
+                                all_tables = {}
+                                for sheet_name, df in raw.items():
+                                    sub_tables = _split_sub_tables(df, extracted.name, sheet_name)
+                                    all_tables.update(sub_tables)
+                                result[f"{f.name}/{extracted.name}"] = all_tables
+                                log.info("Loaded %s/%s: %d sub-tables", f.name, extracted.name, len(all_tables))
+                            except Exception as e:
+                                log.warning("Failed to load %s/%s: %s", f.name, extracted.name, e)
+                        elif extracted.suffix.lower() == ".csv":
+                            try:
+                                df = pd.read_csv(extracted)
+                                result[f"{f.name}/{extracted.name}"] = {"Sheet1": df}
+                                log.info("Loaded %s/%s", f.name, extracted.name)
+                            except Exception as e:
+                                log.warning("Failed to load %s/%s: %s", f.name, extracted.name, e)
+            except Exception as e:
+                log.warning("Failed to extract RAR %s: %s", f.name, e)
+                failed_files.append(f.name)
 
     return result, failed_files
 
@@ -327,6 +360,19 @@ def _analyze_column_group(values: np.ndarray, location: str, col_name: str = "")
             "description": "All values have identical decimal precision — possible fabrication indicator",
         })
 
+    if not is_iv and len(values) >= VALUE_RECYCLING_MIN_SAMPLES:
+        recycle_result = check_value_recycling(values, min_samples=VALUE_RECYCLING_MIN_SAMPLES)
+        if recycle_result.get("flagged"):
+            anomalies.append({
+                "test": "value_recycling",
+                "location": location,
+                "severity": recycle_result["severity"],
+                "details": recycle_result,
+                "description": f"Only {recycle_result['unique_count']} unique values fill "
+                               f"{recycle_result['total_count']} data points "
+                               f"(ratio={recycle_result['ratio']:.2f})",
+            })
+
     return anomalies
 
 
@@ -390,7 +436,7 @@ def _analyze_sheet(df: pd.DataFrame, file_name: str, sheet_name: str) -> list[di
                 anomalies.append({
                     "test": "cross_group_duplicate",
                     "location": f"{file_name} / {sheet_name}",
-                    "severity": "low",
+                    "severity": dup["severity"],
                     "details": dup,
                     "description": f"Columns '{dup['group_a']}' and '{dup['group_b']}' share "
                                    f"{dup['overlap_ratio']*100:.0f}% of values",
@@ -415,16 +461,199 @@ def _analyze_sheet(df: pd.DataFrame, file_name: str, sheet_name: str) -> list[di
                     min_samples=LINEAR_DEP_MIN_SAMPLES,
                 )
                 if result.get("flagged"):
-                    severity = "medium" if result["r_squared"] > 0.99999 else "low"
+                    if result.get("is_offset_pattern"):
+                        severity = "high"
+                        description = (f"Fixed offset pattern: {col_b} ≈ {col_a} + "
+                                       f"{result['intercept']:.0f} "
+                                       f"(R²={result['r_squared']:.15f}, n={result['n']})")
+                    elif result["r_squared"] > 0.99999:
+                        severity = "medium"
+                        description = (f"Columns '{col_a}' and '{col_b}' are nearly perfectly "
+                                       f"linearly related "
+                                       f"({col_b}={result['slope']:.6f}*{col_a} + "
+                                       f"{result['intercept']:.4f}, "
+                                       f"R²={result['r_squared']:.15f}, n={result['n']})")
+                    else:
+                        severity = "low"
+                        description = (f"Columns '{col_a}' and '{col_b}' are nearly perfectly "
+                                       f"linearly related "
+                                       f"({col_b}={result['slope']:.6f}*{col_a} + "
+                                       f"{result['intercept']:.4f}, "
+                                       f"R²={result['r_squared']:.15f}, n={result['n']})")
                     anomalies.append({
                         "test": "linear_dependency",
                         "location": f"{file_name} / {sheet_name} / columns '{col_a}' vs '{col_b}'",
                         "severity": severity,
                         "details": result,
-                        "description": f"Columns '{col_a}' and '{col_b}' are nearly perfectly linearly related "
-                                       f"({col_b}={result['slope']:.6f}*{col_a} + {result['intercept']:.4f}, "
-                                       f"R²={result['r_squared']:.15f}, n={result['n']})",
+                        "description": description,
                     })
+
+    return anomalies
+
+
+_WHITELIST_COL_KEYWORDS = {
+    'control', 'ctrl', 'standard', 'std', 'calibr', 'blank',
+    'background', 'bg', 'baseline', 'reference',
+}
+
+
+def _is_whitelist_column(col_name: str) -> bool:
+    name = str(col_name).lower().strip()
+    return any(kw in name for kw in _WHITELIST_COL_KEYWORDS)
+
+
+def _get_measurement_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Extract numeric measurement columns, excluding IVs, stats, and whitelist columns."""
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    keep = [c for c in numeric_cols
+            if not _is_independent_variable(str(c))
+            and not _is_stat_column(str(c))
+            and not _is_whitelist_column(str(c))
+            and not _looks_like_row_index(df[c].dropna().values)]
+    if not keep:
+        return pd.DataFrame()
+    return df[keep]
+
+
+def _row_hash(row: np.ndarray) -> str:
+    """Hash a numeric row rounded to 8 decimal places."""
+    rounded = tuple(round(float(v), 8) if np.isfinite(v) else None for v in row)
+    return str(rounded)
+
+
+def _find_matching_rows(df_a: pd.DataFrame, df_b: pd.DataFrame) -> list[dict]:
+    """Find rows in df_b that exactly match rows in df_a (by numeric values)."""
+    if df_a.empty or df_b.empty:
+        return []
+
+    matches = []
+    hashes_a = {}
+    for idx_a in range(len(df_a)):
+        row_a = df_a.iloc[idx_a].values
+        if np.all(np.isnan(row_a)):
+            continue
+        h = _row_hash(row_a)
+        if h not in hashes_a:
+            hashes_a[h] = []
+        hashes_a[h].append(idx_a)
+
+    for idx_b in range(len(df_b)):
+        row_b = df_b.iloc[idx_b].values
+        if np.all(np.isnan(row_b)):
+            continue
+        h = _row_hash(row_b)
+        if h in hashes_a:
+            matches.append({"row_a": hashes_a[h][0], "row_b": idx_b, "hash": h})
+
+    return matches
+
+
+def _find_matching_columns(df_a: pd.DataFrame, df_b: pd.DataFrame) -> list[dict]:
+    """Find columns across two sheets with >=90% identical values."""
+    matches = []
+    for col_a in df_a.columns:
+        vals_a = df_a[col_a].dropna().values
+        if len(vals_a) < 3:
+            continue
+        for col_b in df_b.columns:
+            vals_b = df_b[col_b].dropna().values
+            if len(vals_b) < 3:
+                continue
+            n = min(len(vals_a), len(vals_b))
+            if n < 3:
+                continue
+            a_cmp = np.round(vals_a[:n], 8)
+            b_cmp = np.round(vals_b[:n], 8)
+            match_count = np.sum(a_cmp == b_cmp)
+            ratio = match_count / n
+            if ratio >= CROSS_SHEET_COL_MATCH_RATIO:
+                all_same_val = len(np.unique(a_cmp)) <= 1
+                if all_same_val:
+                    continue
+                has_high_precision = sum(
+                    1 for v in vals_a[:n]
+                    if '.' in str(v) and len(str(v).split('.')[-1].rstrip('0')) >= 5
+                ) >= 2
+                matches.append({
+                    "col_a": str(col_a),
+                    "col_b": str(col_b),
+                    "match_ratio": float(ratio),
+                    "matched_count": int(match_count),
+                    "total_compared": int(n),
+                    "has_high_precision": has_high_precision,
+                })
+    return matches
+
+
+def _analyze_cross_sheet(sheets: dict[str, pd.DataFrame], file_name: str) -> list[dict]:
+    """Compare data blocks across sheets within the same file."""
+    MAX_SHEET_PAIRS = 200
+    MAX_ROWS_FOR_CROSS = 5000
+    MAX_COLS_FOR_CROSS = 50
+
+    anomalies = []
+    sheet_names = list(sheets.keys())
+    pair_count = 0
+
+    for i in range(len(sheet_names)):
+        for j in range(i + 1, len(sheet_names)):
+            if pair_count >= MAX_SHEET_PAIRS:
+                break
+            name_a, name_b = sheet_names[i], sheet_names[j]
+            df_a, df_b = sheets[name_a], sheets[name_b]
+
+            if len(df_a) > MAX_ROWS_FOR_CROSS or len(df_b) > MAX_ROWS_FOR_CROSS:
+                continue
+
+            num_a = _get_measurement_columns(df_a)
+            num_b = _get_measurement_columns(df_b)
+
+            if num_a.empty or num_b.empty:
+                continue
+
+            if len(num_a.columns) > MAX_COLS_FOR_CROSS:
+                num_a = num_a.iloc[:, :MAX_COLS_FOR_CROSS]
+            if len(num_b.columns) > MAX_COLS_FOR_CROSS:
+                num_b = num_b.iloc[:, :MAX_COLS_FOR_CROSS]
+
+            pair_count += 1
+
+            row_matches = _find_matching_rows(num_a, num_b)
+            if len(row_matches) >= CROSS_SHEET_MIN_MATCHING_ROWS:
+                severity = "high" if len(row_matches) >= 5 else "medium"
+                anomalies.append({
+                    "test": "cross_sheet_row_duplicate",
+                    "location": f"{file_name} / '{name_a}' vs '{name_b}'",
+                    "severity": severity,
+                    "details": {
+                        "sheet_a": name_a,
+                        "sheet_b": name_b,
+                        "matching_rows": len(row_matches),
+                        "total_rows_a": len(num_a),
+                        "total_rows_b": len(num_b),
+                    },
+                    "description": f"{len(row_matches)} identical data rows found across "
+                                   f"sheets '{name_a}' and '{name_b}'",
+                })
+
+            col_matches = _find_matching_columns(num_a, num_b)
+            for match in col_matches:
+                severity = "high" if match["has_high_precision"] else "medium"
+                anomalies.append({
+                    "test": "cross_sheet_column_duplicate",
+                    "location": f"{file_name} / '{name_a}':'{match['col_a']}' vs "
+                                f"'{name_b}':'{match['col_b']}'",
+                    "severity": severity,
+                    "details": {
+                        "sheet_a": name_a,
+                        "sheet_b": name_b,
+                        **match,
+                    },
+                    "description": f"Column '{match['col_a']}' in '{name_a}' matches "
+                                   f"'{match['col_b']}' in '{name_b}' "
+                                   f"({match['match_ratio']*100:.0f}% identical, "
+                                   f"n={match['total_compared']})",
+                })
 
     return anomalies
 
@@ -446,6 +675,11 @@ def check_data_anomalies(data_dir: str) -> list[dict]:
         for sheet_name, df in sheets.items():
             sheet_anomalies = _analyze_sheet(df, fname, sheet_name)
             all_anomalies.extend(sheet_anomalies)
+
+    for fname, sheets in all_files.items():
+        if len(sheets) >= 2:
+            cross_anomalies = _analyze_cross_sheet(sheets, fname)
+            all_anomalies.extend(cross_anomalies)
 
     high = sum(1 for a in all_anomalies if a["severity"] == "high")
     medium = sum(1 for a in all_anomalies if a["severity"] == "medium")
@@ -470,6 +704,10 @@ def check_data_with_validation(data_dir: str) -> tuple[list[dict], list[str]]:
     for fname, sheets in all_files.items():
         for sheet_name, df in sheets.items():
             all_anomalies.extend(_analyze_sheet(df, fname, sheet_name))
+
+    for fname, sheets in all_files.items():
+        if len(sheets) >= 2:
+            all_anomalies.extend(_analyze_cross_sheet(sheets, fname))
 
     if all_anomalies:
         high = sum(1 for a in all_anomalies if a["severity"] == "high")

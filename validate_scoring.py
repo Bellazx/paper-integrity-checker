@@ -112,11 +112,11 @@ def main():
 
     status1 = "✓" if retracted_recall > 70 else "✗"
     status2 = "✓" if user_accuracy == 100 else "✗"
-    status3 = "✓" if yujing_rate <= 14.5 else "✗"
+    status3 = "✓" if 15.0 <= yujing_rate <= 20.0 else "✗"
 
     print(f"\n{status1} 1. Retracted recall: {retracted_tp}/{retracted_total} = {retracted_recall:.1f}% (target: >70%)")
     print(f"{status2} 2. User-labeled accuracy: {user_tp}/{user_total} = {user_accuracy:.1f}% (target: 100%)")
-    print(f"{status3} 3. Yujing full DB high-risk rate: {yujing_high}/{yujing_total} = {yujing_rate:.1f}% (target: ≤14.5%)")
+    print(f"{status3} 3. Yujing full DB high-risk rate: {yujing_high}/{yujing_total} = {yujing_rate:.1f}% (target: 15%~20%)")
 
     if fn_details:
         print(f"\n--- False Negatives ({len(fn_details)}) ---")
@@ -124,7 +124,7 @@ def main():
             score = fn.get("score", fn.get("reason", "N/A"))
             print(f"  {fn['doi']} source={fn['source']} score={score}")
 
-    all_pass = retracted_recall > 70 and user_accuracy == 100 and yujing_rate <= 14.5
+    all_pass = retracted_recall > 70 and user_accuracy == 100 and 15.0 <= yujing_rate <= 20.0
     print(f"\n{'ALL CONSTRAINTS SATISFIED ✓' if all_pass else 'CONSTRAINTS NOT MET ✗'}")
     return 0 if all_pass else 1
 

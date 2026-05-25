@@ -594,7 +594,7 @@ def _compute_overall_risk(findings: dict) -> dict:
     full_dup_trigger = 4 <= cross_page_full_dup <= 30
 
     is_high = (
-        data_risk["score"] >= 35
+        data_risk["score"] >= 30
         or cross_page_imgs >= 10
         or full_dup_trigger
         or (fraud_count >= 4 and 0 < image_risk["score"] < 80)
@@ -604,7 +604,7 @@ def _compute_overall_risk(findings: dict) -> dict:
 
     high_dims = set()
     if is_high:
-        if data_risk["score"] >= 35:
+        if data_risk["score"] >= 30:
             high_dims.add("data")
         if cross_page_imgs >= 10:
             high_dims.add("image")

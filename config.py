@@ -41,6 +41,12 @@ CROSS_GROUP_OVERLAP_THRESHOLD = 0.5  # >50% overlap is suspicious
 LINEAR_DEP_R2_THRESHOLD = 0.9999     # R² > 0.9999 flags near-perfect linear dependency
 LINEAR_DEP_MIN_SAMPLES = 50          # Minimum data points for linear dependency check
 
+# ---------- Cross-Sheet Detection Thresholds ----------
+CROSS_SHEET_MIN_MATCHING_ROWS = 3    # Minimum matching rows to flag cross-sheet duplicate
+CROSS_SHEET_COL_MATCH_RATIO = 0.9    # Column match ratio threshold (90%+ values identical)
+VALUE_RECYCLING_MIN_SAMPLES = 10     # Minimum data points for value recycling check
+VALUE_RECYCLING_RATIO_THRESHOLD = 0.3  # unique/total < 0.3 is suspicious
+
 # ---------- Reference Check ----------
 CROSSREF_API_BASE = "https://api.crossref.org"
 CROSSREF_MAILTO = "paper-check@example.com"
