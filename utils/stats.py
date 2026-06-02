@@ -265,3 +265,157 @@ def check_value_recycling(values: np.ndarray, min_samples: int = 10) -> dict:
         "total_count": int(total_count),
         "severity": severity,
     }
+
+
+def _last_significant_digit(v) -> int | None:
+    """Return the last significant digit of a number (trailing zeros stripped)."""
+    if not np.isfinite(v):
+        return None
+    s = f"{abs(float(v)):.10f}".rstrip("0").rstrip(".").replace(".", "")
+    if s and s[-1].isdigit():
+        return int(s[-1])
+    return None
+
+
+def terminal_digit_test(values: np.ndarray, min_samples: int = 50) -> dict:
+    """Terminal-digit test for INTEGER measurement data (e.g. counts): the last digit
+    (v % 10) of genuine counts is distributed ~uniformly over 0-9, so a strong
+    chi-square deviation can indicate manually constructed numbers.
+
+    Restricted to integer-valued columns on purpose: source spreadsheets are parsed as
+    floats, which lose trailing zeros, so the "last significant digit" of decimal data
+    systematically undercounts 0 and would false-positive. Decimal-precision fabrication
+    is covered separately by decimal_uniformity / cross-sheet precision checks. Never
+    rated above 'medium' on its own."""
+    values = values[~np.isnan(values)]
+    if len(values) < min_samples:
+        return {"testable": False, "reason": "insufficient_data", "n": len(values)}
+
+    # Integer-only: last digit is unbiased and 0 is a legitimate outcome.
+    if not np.all(values == np.floor(values)):
+        return {"testable": False, "reason": "non_integer_data", "n": len(values)}
+    # Need values large enough that the last digit can plausibly be uniform.
+    if np.median(np.abs(values)) < 10:
+        return {"testable": False, "reason": "values_too_small", "n": len(values)}
+    # Avoid recycled / low-cardinality columns (IDs, small code sets).
+    if len(np.unique(values)) < 10:
+        return {"testable": False, "reason": "low_cardinality", "n": len(values)}
+
+    digits = (np.abs(values).astype(np.int64) % 10)
+    counts = np.array([int(np.sum(digits == d)) for d in range(10)])
+    n = int(counts.sum())
+    expected = np.full(10, n / 10.0)
+    chi2, p_value = scipy_stats.chisquare(counts, expected)
+
+    if p_value < 0.001:
+        severity = "medium"
+    elif p_value < 0.01:
+        severity = "low"
+    else:
+        severity = None
+
+    return {
+        "testable": True,
+        "n": n,
+        "chi2": float(chi2),
+        "p_value": float(p_value),
+        "digit_counts": counts.tolist(),
+        "flagged": severity is not None,
+        "severity": severity,
+    }
+
+
+def sd_regularity_test(values: np.ndarray) -> dict:
+    """Detect suspiciously regular dispersion (SD/SE) columns: all-integer values,
+    identical decimal precision, or all half-steps (multiples of 0.5) — patterns that
+    are unusual for genuine standard deviations/errors. Rated 'low' (agent decides)."""
+    values = values[~np.isnan(values)]
+    if len(values) < 4:
+        return {"testable": False, "n": len(values)}
+    if np.all(values == 0):
+        return {"testable": False, "reason": "all_zero"}
+
+    all_integer = bool(np.all(values == np.floor(values)))
+    all_half = bool(np.all(np.abs(values * 2 - np.round(values * 2)) < 1e-9))
+    dec = check_decimal_uniformity(values)
+    uniform_dec = dec.get("uniform_decimals", False) and dec.get("unique_decimal_lengths", 0) == 1
+
+    if all_integer:
+        pattern = "all_integer"
+    elif all_half:
+        pattern = "all_half_step"
+    elif uniform_dec:
+        pattern = "uniform_decimals"
+    else:
+        pattern = None
+
+    return {
+        "testable": True,
+        "n": len(values),
+        "flagged": pattern is not None,
+        "pattern": pattern,
+        "severity": "low" if pattern else None,
+    }
+
+
+def grimmer_test(reported_mean: float, reported_sd: float, n: int,
+                 mean_precision: int = 2, sd_precision: int = 2) -> dict:
+    """GRIMMER test: check whether a reported SD is consistent with an integer-valued
+    sample of size n having the reported mean. Returns flagged=True if no valid integer
+    sum-of-squares exists in the SD's rounding interval (i.e. the SD is impossible)."""
+    if n < 2:
+        return {"testable": False}
+
+    S = round(reported_mean * n)            # integer sum implied by GRIM
+    half = 0.5 * 10 ** (-sd_precision)
+    bounds = []
+    for sd_b in (max(0.0, reported_sd - half), reported_sd + half):
+        var = sd_b ** 2
+        bounds.append(var * (n - 1) + S * S / n)   # SS = var*(n-1) + S^2/n  (ddof=1)
+    lo, hi = min(bounds), max(bounds)
+    floor_ss = S * S / n                     # variance >= 0 => SS >= S^2/n
+
+    found = False
+    for ss in range(int(np.floor(lo)), int(np.ceil(hi)) + 1):
+        if ss < lo or ss > hi:
+            continue
+        if ss + 1e-9 < floor_ss:
+            continue
+        if ss % 2 == S % 2:                  # parity: sum(x^2) == sum(x) (mod 2)
+            found = True
+            break
+
+    return {
+        "testable": True,
+        "consistent": found,
+        "flagged": not found,
+        "reported_mean": reported_mean,
+        "reported_sd": reported_sd,
+        "n": n,
+    }
+
+
+def recompute_p(stat_type: str, stat_value: float, df1: float,
+                df2: float = None, tail: str = "two") -> dict:
+    """Recompute a p-value from a reported test statistic and its degrees of freedom
+    (statcheck-style). Supports t, F, chi2, and r. Used to detect reported p-values
+    that contradict the statistic they were supposedly derived from."""
+    st = str(stat_type).lower()
+    x = abs(float(stat_value))
+    try:
+        if st == "t":
+            p = scipy_stats.t.sf(x, df1) * (2 if tail == "two" else 1)
+        elif st == "f":
+            p = scipy_stats.f.sf(x, df1, df2)
+        elif st in ("chi2", "chisq", "x2"):
+            p = scipy_stats.chi2.sf(x, df1)
+        elif st == "r":
+            if x >= 1:
+                return {"testable": False, "reason": "invalid_r"}
+            t = x * np.sqrt(df1 / (1 - x * x))
+            p = scipy_stats.t.sf(t, df1) * (2 if tail == "two" else 1)
+        else:
+            return {"testable": False, "reason": "unknown_stat_type"}
+    except (ValueError, ZeroDivisionError, TypeError):
+        return {"testable": False, "reason": "compute_error"}
+    return {"testable": True, "recomputed_p": float(min(p, 1.0))}

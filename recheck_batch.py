@@ -125,13 +125,16 @@ def main():
             low = sum(1 for a in new_data if a.get("severity") == "low")
             img_issues = len(findings.get("image_duplicates", []))
             ref_issues = len(findings.get("reference_issues", []))
+            splice = findings.get("image_splicing", [])
             findings["summary"] = {
-                "total_issues": len(new_data) + img_issues + ref_issues,
+                "total_issues": len(new_data) + img_issues + ref_issues + len(splice),
                 "high_severity": high + sum(1 for a in findings.get("image_duplicates", []) if a.get("severity") == "high") + sum(1 for a in findings.get("reference_issues", []) if a.get("severity") == "high"),
-                "medium_severity": medium + sum(1 for a in findings.get("image_duplicates", []) if a.get("severity") == "medium") + sum(1 for a in findings.get("reference_issues", []) if a.get("severity") == "medium"),
+                # splice findings are always severity 'medium' (conservative pre-screen)
+                "medium_severity": medium + sum(1 for a in findings.get("image_duplicates", []) if a.get("severity") == "medium") + sum(1 for a in findings.get("reference_issues", []) if a.get("severity") == "medium") + len(splice),
                 "low_severity": low + sum(1 for a in findings.get("image_duplicates", []) if a.get("severity") == "low") + sum(1 for a in findings.get("reference_issues", []) if a.get("severity") == "low"),
                 "data_issues": len(new_data),
                 "image_issues": img_issues,
+                "image_splicing_suspects": len(splice),
                 "reference_issues": ref_issues,
             }
 

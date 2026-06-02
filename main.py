@@ -12,6 +12,7 @@ Usage:
 import argparse
 import json
 import logging
+import re
 import shutil
 import sys
 import threading
@@ -35,11 +36,22 @@ logging.basicConfig(
 log = logging.getLogger("paper-checker")
 
 
-def _analyze_one(input_dir: str, output_dir: str, skip_refs: bool = False, chinese_reports_dir: str = None, author_type: str = "") -> dict:
+def _safe_report_namespace(namespace: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", (namespace or "").strip()).strip("._-")
+    return cleaned[:80]
+
+
+def _chinese_reports_dir(output_root: str, report_namespace: str = "") -> str:
+    base = Path(output_root) / "chinese_reports"
+    namespace = _safe_report_namespace(report_namespace)
+    return str(base / namespace) if namespace else str(base)
+
+
+def _analyze_one(input_dir: str, output_dir: str, skip_refs: bool = False, chinese_reports_dir: str = None, author_type: str = "", doi_override: str = "") -> dict:
     if is_nature_crawl(input_dir):
-        return analyze_nature_paper(input_dir, output_dir, skip_refs=skip_refs, chinese_reports_dir=chinese_reports_dir, author_type=author_type)
+        return analyze_nature_paper(input_dir, output_dir, skip_refs=skip_refs, chinese_reports_dir=chinese_reports_dir, author_type=author_type, doi_override=doi_override)
     else:
-        return analyze_paper(input_dir, output_dir, skip_refs=skip_refs, chinese_reports_dir=chinese_reports_dir, author_type=author_type)
+        return analyze_paper(input_dir, output_dir, skip_refs=skip_refs, chinese_reports_dir=chinese_reports_dir, author_type=author_type, doi_override=doi_override)
 
 
 def _dir_doi(paper_dir: Path) -> str:
@@ -50,11 +62,11 @@ def _dir_doi(paper_dir: Path) -> str:
     return paper_dir.name.replace("__", "/")
 
 
-def run_single(input_dir: str, output_dir: str, skip_refs: bool = False, author_type: str = "", no_db: bool = False):
+def run_single(input_dir: str, output_dir: str, skip_refs: bool = False, author_type: str = "", no_db: bool = False, doi: str = "", report_namespace: str = ""):
     paper_name = Path(input_dir).name
     out = Path(output_dir) / paper_name
-    cn_dir = str(Path(output_dir) / "chinese_reports")
-    findings = _analyze_one(input_dir, str(out), skip_refs=skip_refs, chinese_reports_dir=cn_dir, author_type=author_type)
+    cn_dir = _chinese_reports_dir(output_dir, report_namespace)
+    findings = _analyze_one(input_dir, str(out), skip_refs=skip_refs, chinese_reports_dir=cn_dir, author_type=author_type, doi_override=doi)
 
     excel_path = find_batch_excel(Path(input_dir).parent)
     if excel_path:
@@ -102,7 +114,7 @@ def _discover_papers(input_root: Path) -> list[Path]:
     return paper_dirs
 
 
-def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_workers: int = 4, author_type: str = "", force: bool = False, no_db: bool = False):
+def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_workers: int = 4, author_type: str = "", force: bool = False, no_db: bool = False, report_namespace: str = ""):
     input_root = Path(input_root)
     output_root = Path(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -140,7 +152,7 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
         t0 = time.time()
         try:
             out = output_root / paper_dir.name
-            cn_dir = str(output_root / "chinese_reports")
+            cn_dir = _chinese_reports_dir(str(output_root), report_namespace)
             findings = _analyze_one(str(paper_dir), str(out), skip_refs=skip_refs, chinese_reports_dir=cn_dir, author_type=author_type)
             elapsed = time.time() - t0
 
@@ -218,6 +230,20 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
     print(f"Summary: {summary_path}")
     print(f"{'='*60}\n")
 
+    if failed > 0:
+        failed_items = [r for r in batch_results if r["status"] == "error"]
+        failed_path = output_root / "failed_papers.json"
+        with open(failed_path, "w", encoding="utf-8") as f:
+            json.dump(failed_items, f, ensure_ascii=False, indent=2)
+
+        print(f"{'!'*60}")
+        print(f"  WARNING: {failed} paper(s) FAILED processing")
+        print(f"  Failed list saved to: {failed_path}")
+        print(f"{'!'*60}")
+        for r in failed_items:
+            print(f"  FAILED: {r['paper']} — {r.get('error', 'unknown error')}")
+        print()
+
 
 def run_recheck(paper_dir: str, output_dir: str, skip_refs: bool = False, author_type: str = ""):
     paper_name = Path(paper_dir).name
@@ -237,6 +263,8 @@ def main():
     parser.add_argument("--workers", "-w", type=int, default=4, help="Concurrent workers for batch mode")
     parser.add_argument("--recheck", help="Re-check a single paper (clears old output)")
     parser.add_argument("--author-type", default="", help="SJTU author type for this batch (e.g. 通讯作者, 第一作者)")
+    parser.add_argument("--doi", default="", help="Override DOI for a single paper (authoritative; --input only)")
+    parser.add_argument("--report-namespace", default="", help="Subdirectory under chinese_reports for generated PDFs")
     parser.add_argument("--no-db", action="store_true", help="Skip database insertion")
     parser.add_argument("--force", action="store_true", help="Force re-analysis even if paper already in DB")
     args = parser.parse_args()
@@ -248,9 +276,9 @@ def main():
     if args.recheck:
         run_recheck(args.recheck, args.output, args.skip_refs, author_type=args.author_type)
     elif args.input:
-        run_single(args.input, args.output, args.skip_refs, author_type=args.author_type, no_db=args.no_db)
+        run_single(args.input, args.output, args.skip_refs, author_type=args.author_type, no_db=args.no_db, doi=args.doi, report_namespace=args.report_namespace)
     elif args.batch:
-        run_batch(args.batch, args.output, args.skip_refs, max_workers=args.workers, author_type=args.author_type, force=args.force, no_db=args.no_db)
+        run_batch(args.batch, args.output, args.skip_refs, max_workers=args.workers, author_type=args.author_type, force=args.force, no_db=args.no_db, report_namespace=args.report_namespace)
 
 
 if __name__ == "__main__":

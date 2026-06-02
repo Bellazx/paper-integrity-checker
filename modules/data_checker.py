@@ -19,7 +19,7 @@ from utils.stats import (
     check_cv, check_arithmetic_sequence, check_geometric_sequence,
     grim_test, benfords_law_test, check_cross_group_duplicates,
     check_decimal_uniformity, check_linear_dependency,
-    check_value_recycling,
+    check_value_recycling, terminal_digit_test, sd_regularity_test,
 )
 
 log = logging.getLogger(__name__)
@@ -67,6 +67,18 @@ def _is_stat_column(col_name: str) -> bool:
 
 def _is_unnamed_column(col_name: str) -> bool:
     return bool(re.match(r'^col_\d+$', str(col_name).strip()))
+
+
+_SD_COL_PATTERN = re.compile(
+    r'(^|[\s_\-(（])(sd|s\.d|se|s\.e|sem|std|stdev|stderr|error)([\s_\-)）.]|$)'
+    r'|±|标准差|标准误',
+    re.IGNORECASE,
+)
+
+
+def _is_sd_column(col_name: str) -> bool:
+    """Check if a column name suggests it holds standard deviations / standard errors."""
+    return bool(_SD_COL_PATTERN.search(str(col_name)))
 
 
 def _is_independent_variable(col_name: str) -> bool:
@@ -280,13 +292,17 @@ def _load_data_files(data_dir: str) -> tuple[dict[str, dict[str, pd.DataFrame]],
 
 def _looks_like_row_index(values: np.ndarray) -> bool:
     """Detect columns that are simple integer row indices (1,2,3,... or 0,1,2,...)."""
-    if len(values) < 3:
+    if values.ndim != 1 or len(values) < 3:
         return False
-    if not np.all(values == values.astype(int)):
+    try:
+        if not np.all(values == values.astype(int)):
+            return False
+        ints = values.astype(int)
+        first = int(ints[0])
+        if first in (0, 1) and np.array_equal(ints, np.arange(first, first + len(ints))):
+            return True
+    except (ValueError, TypeError):
         return False
-    ints = values.astype(int)
-    if ints[0] in (0, 1) and np.array_equal(ints, np.arange(ints[0], ints[0] + len(ints))):
-        return True
     return False
 
 
@@ -371,6 +387,31 @@ def _analyze_column_group(values: np.ndarray, location: str, col_name: str = "")
                 "description": f"Only {recycle_result['unique_count']} unique values fill "
                                f"{recycle_result['total_count']} data points "
                                f"(ratio={recycle_result['ratio']:.2f})",
+            })
+
+    if not is_iv:
+        td_result = terminal_digit_test(values)
+        if td_result.get("testable") and td_result.get("flagged"):
+            anomalies.append({
+                "test": "terminal_digit",
+                "location": location,
+                "severity": td_result["severity"],
+                "details": td_result,
+                "description": f"Last-digit distribution deviates from uniform "
+                               f"(chi2={td_result['chi2']:.2f}, p={td_result['p_value']:.4f}, "
+                               f"n={td_result['n']})",
+            })
+
+    if _is_sd_column(col_name):
+        sd_result = sd_regularity_test(values)
+        if sd_result.get("testable") and sd_result.get("flagged"):
+            anomalies.append({
+                "test": "sd_regularity",
+                "location": location,
+                "severity": sd_result["severity"],
+                "details": sd_result,
+                "description": f"Dispersion column shows regular pattern "
+                               f"({sd_result['pattern']}, n={sd_result['n']})",
             })
 
     return anomalies
@@ -553,11 +594,11 @@ def _find_matching_columns(df_a: pd.DataFrame, df_b: pd.DataFrame) -> list[dict]
     matches = []
     for col_a in df_a.columns:
         vals_a = df_a[col_a].dropna().values
-        if len(vals_a) < 3:
+        if vals_a.ndim != 1 or len(vals_a) < 3:
             continue
         for col_b in df_b.columns:
             vals_b = df_b[col_b].dropna().values
-            if len(vals_b) < 3:
+            if vals_b.ndim != 1 or len(vals_b) < 3:
                 continue
             n = min(len(vals_a), len(vals_b))
             if n < 3:

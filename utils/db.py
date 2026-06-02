@@ -96,24 +96,28 @@ def _find_sjtu_authors(html_path: str) -> dict:
 
 def _make_report_url(findings: dict, chinese_reports_dir: str = None) -> str:
     from modules.chinese_report_generator import _make_filename
+    from config import OUTPUT_DIR
     doi = findings["paper"].get("doi", "unknown")
     title = findings["paper"].get("title", "unknown")
     filename = _make_filename(doi, title)
-    return f"{REPORT_BASE_URL}/{filename}"
+    base_url = REPORT_BASE_URL
+    if chinese_reports_dir:
+        try:
+            root = (OUTPUT_DIR / "chinese_reports").resolve()
+            rel = Path(chinese_reports_dir).resolve().relative_to(root)
+            if str(rel) != ".":
+                base_url = f"{REPORT_BASE_URL}/{rel.as_posix()}"
+        except Exception:
+            pass
+    return f"{base_url}/{filename}"
 
 
-def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: str = None):
-    """Insert analysis results into SQL Server."""
-    from modules.chinese_report_generator import _compute_dimension_risk, _compute_overall_risk, _apply_data_caps
-
+def build_paper_metadata(findings: dict, html_path: str = None) -> dict:
+    """Extract paper bibliographic metadata + SJTU author/department resolution from a
+    findings dict. Returns RAW (untruncated) values; callers apply their own column-width
+    truncation. Shared by insert_findings (yujing_* tables) and the detection_reports
+    writer so the SJTU-author backfill logic lives in exactly one place."""
     paper = findings.get("paper", {})
-    summary = findings.get("summary", {})
-
-    image_risk = _compute_dimension_risk(findings.get("image_duplicates", []))
-    capped_data = _apply_data_caps(findings.get("data_anomalies", []))
-    data_risk = _compute_dimension_risk(capped_data)
-    ref_risk = _compute_dimension_risk(findings.get("reference_issues", []))
-    overall = _compute_overall_risk(findings)
 
     sjtu_authors, sjtu_depts, sjtu_type = [], [], ""
     if paper.get("sjtu_authors"):
@@ -152,17 +156,55 @@ def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: 
             if not sjtu_authors:
                 sjtu_authors = [authors_full[0].strip().rstrip(',')]
 
+    return {
+        "title": paper.get("title") or "",
+        "author": ", ".join(sjtu_authors) if sjtu_authors else (paper.get("author") or ""),
+        "author_type": sjtu_type or "通讯作者",
+        "department": "; ".join(sjtu_depts) if sjtu_depts else "",
+        "author_all": ", ".join(authors_full) if authors_full else (paper.get("author") or ""),
+        "department_all": "; ".join(affiliations) if affiliations else "",
+        "journal": paper.get("journal") or "",
+        "doi": paper.get("doi") or "",
+    }
+
+
+def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: str = None):
+    """Insert analysis results into SQL Server."""
+    from modules.chinese_report_generator import (
+        _compute_dimension_risk, _compute_image_risk, _compute_overall_risk, _apply_data_caps,
+    )
+
+    paper = findings.get("paper", {})
+    summary = findings.get("summary", {})
+
+    image_risk = _compute_image_risk(findings)
+    capped_data = _apply_data_caps(findings.get("data_anomalies", []))
+    data_risk = _compute_dimension_risk(capped_data)
+    ref_risk = _compute_dimension_risk(findings.get("reference_issues", []))
+    overall = _compute_overall_risk(findings)
+
+    if overall["level"] == "高风险":
+        for dim in overall.get("high_dimensions", []):
+            if dim == "data" and data_risk["level"] != "高风险":
+                data_risk["level"] = "高风险"
+                data_risk["color"] = "#c00"
+            elif dim == "image" and image_risk["level"] != "高风险":
+                image_risk["level"] = "高风险"
+                image_risk["color"] = "#c00"
+
+    meta = build_paper_metadata(findings, html_path=html_path)
+
     report_url = _make_report_url(findings, chinese_reports_dir)
 
     row = {
-        "title": (paper.get("title") or "")[:500],
-        "author": ", ".join(sjtu_authors)[:500] if sjtu_authors else (paper.get("author") or "")[:500],
-        "author_type": sjtu_type or "通讯作者",
-        "department": "; ".join(sjtu_depts)[:500] if sjtu_depts else "",
-        "author_all": ", ".join(authors_full) if authors_full else (paper.get("author") or ""),
-        "department_all": "; ".join(affiliations) if affiliations else "",
-        "journal": (paper.get("journal") or "")[:200],
-        "doi": (paper.get("doi") or "")[:200],
+        "title": meta["title"][:500],
+        "author": meta["author"][:500],
+        "author_type": meta["author_type"],
+        "department": meta["department"][:500],
+        "author_all": meta["author_all"],
+        "department_all": meta["department_all"],
+        "journal": meta["journal"][:200],
+        "doi": meta["doi"][:200],
         "page": paper.get("total_pages", 0),
         "pic_num": paper.get("total_images", 0),
         "data_num": summary.get("data_issues", 0),

@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.pdf_utils import extract_images
 from modules.image_checker import check_image_duplicates
+from modules.splice_checker import check_splicing
 from modules.data_checker import check_data_anomalies, check_data_with_validation
 from modules.reference_checker import (
     _verify_by_doi, _verify_by_text, _compare_titles,
@@ -336,12 +337,18 @@ def analyze_nature_paper(
     skip_refs: bool = False,
     chinese_reports_dir: str = None,
     author_type: str = "",
+    doi_override: str = "",
 ) -> dict:
     paper_dir = str(Path(paper_dir).resolve())
     output_dir = str(Path(output_dir).resolve())
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     metadata = extract_metadata_from_manifest(paper_dir)
+
+    # A user-supplied DOI is authoritative — apply it over the manifest DOI so the
+    # override behaves identically on the Nature path and the normal PDF path.
+    if doi_override:
+        metadata["doi"] = doi_override
 
     log.info("=" * 60)
     log.info("Analyzing (Nature): %s", metadata["title"])
@@ -376,6 +383,9 @@ def analyze_nature_paper(
             all_image_results.extend(results)
         log.info("  %s: %d images extracted", pdf_name[-40:], len(images))
     log.info("Total images: %d from %d PDFs", len(all_images), len(image_pdfs))
+
+    log.info("Screening images for splicing artifacts...")
+    all_splice_results = check_splicing(all_images, output_dir)
 
     log.info("[2/4] Checking source data anomalies...")
     data_dirs = _find_data_dirs(paper_dir)
@@ -426,15 +436,18 @@ def analyze_nature_paper(
             "sjtu_departments": sjtu_info["sjtu_departments"],
         },
         "image_duplicates": all_image_results,
+        "image_splicing": all_splice_results,
         "data_anomalies": all_data_results,
         "reference_issues": ref_results,
         "summary": {
-            "total_issues": len(all_image_results) + len(all_data_results) + len(ref_results),
+            "total_issues": len(all_image_results) + len(all_data_results) + len(ref_results) + len(all_splice_results),
             "image_issues": len(all_image_results),
+            "image_splicing_suspects": len(all_splice_results),
             "data_issues": len(all_data_results),
             "reference_issues": len(ref_results),
             "high_severity": sum(1 for r in all_image_results + all_data_results + ref_results if r.get("severity") == "high"),
-            "medium_severity": sum(1 for r in all_image_results + all_data_results + ref_results if r.get("severity") == "medium"),
+            # splice findings are always severity 'medium' (conservative pre-screen)
+            "medium_severity": sum(1 for r in all_image_results + all_data_results + ref_results if r.get("severity") == "medium") + len(all_splice_results),
             "low_severity": sum(1 for r in all_image_results + all_data_results + ref_results if r.get("severity") == "low"),
         },
     }
@@ -488,11 +501,13 @@ def _empty_findings(metadata: dict, reason: str) -> dict:
             "skipped_reason": reason,
         },
         "image_duplicates": [],
+        "image_splicing": [],
         "data_anomalies": [],
         "reference_issues": [],
         "summary": {
             "total_issues": 0,
             "image_issues": 0,
+            "image_splicing_suspects": 0,
             "data_issues": 0,
             "reference_issues": 0,
             "high_severity": 0,

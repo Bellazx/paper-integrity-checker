@@ -22,7 +22,7 @@ METHODS_HTML = """
 <p style="font-size:9.5pt; color:#333; margin-bottom:8pt;">本报告采用以下自动化检测方法对论文进行分析：</p>
 
 <p style="font-size:10pt; font-weight:bold; color:#1a1a1a; margin-top:10pt; margin-bottom:4pt;">1. 图像重复检测</p>
-<p style="font-size:9.5pt; color:#333; margin-bottom:3pt;">本系统通过三个步骤逐层筛查论文中的图像是否存在重复或篡改：</p>
+<p style="font-size:9.5pt; color:#333; margin-bottom:3pt;">本系统通过三个步骤逐层筛查论文中的图像是否存在重复或异常：</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>第一步"指纹比对"：</b>将每张图像压缩为一个简短的数字指纹，快速比较所有图像对之间的相似程度，初步筛选出可能重复的图像。</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>第二步"局部特征匹配"：</b>对初筛通过的图像，提取图像中的关键特征点（如边缘、纹理等），逐一比对两张图像中是否存在相同的局部区域。即使图像被缩放、旋转或裁剪，该方法仍能识别出重复片段。</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:8pt;"><b>第三步"精确验证"：</b>对第二步标记的可疑区域，在多种缩放比例下进行逐像素比对确认，最终判定是否存在真实的图像重复。</p>
@@ -30,13 +30,21 @@ METHODS_HTML = """
 <p style="font-size:10pt; font-weight:bold; color:#1a1a1a; margin-top:10pt; margin-bottom:4pt;">2. 数据异常检测</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:3pt;">本系统对论文附带的源数据文件（Excel/CSV）进行以下统计检验：</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>变异系数检验：</b>计算每组数据的离散程度。真实的实验测量数据天然存在波动，若一组重复测量值完全相同（变异系数为0）或极度接近，则高度可疑。</p>
-<p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>等差/等比数列检验：</b>检查数据值是否排列成完美的数学数列。真实实验数据不可能呈现完美的等差或等比规律，出现此类模式强烈提示数据为人工编造。</p>
-<p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>本福特定律检验：</b>自然产生的数值数据中，首位数字"1"出现的频率远高于"9"。人为编造的数据往往不符合这一规律，通过统计检验可以识别出偏离自然分布的数据集。</p>
+<p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>等差/等比数列检验：</b>检查数据值是否排列成完美的数学数列。真实实验数据不可能呈现完美的等差或等比规律，出现此类模式提示数据可能非自然生成。</p>
+<p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>本福特定律检验：</b>自然产生的数值数据中，首位数字"1"出现的频率远高于"9"。人为构造的数据往往不符合这一规律，通过统计检验可以识别出偏离自然分布的数据集。</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>跨组重复检验：</b>比较不同实验组之间的数值重叠比例。若两组本应独立的实验数据中有超过50%的数值完全相同，则提示数据可能被复制或重复使用。</p>
-<p style="font-size:9.5pt; color:#333; margin-bottom:8pt;"><b>跨列线性依赖检验：</b>对同一数据表中的各组数据列进行两两线性回归分析，检测是否存在近乎完美的线性关系（y = a×x + b, R²≥0.9999）。若两条本应独立采集的实验曲线之间R²接近1.0，尤其当斜率恰好为整数倍（如2、5、10）时，强烈提示其中一条曲线可能是通过对另一条曲线进行数学缩放/平移生成的，而非真实独立测量所得。</p>
+<p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>跨列线性依赖检验：</b>对同一数据表中的各组数据列进行两两线性回归分析，检测是否存在近乎完美的线性关系（y = a×x + b, R²≥0.9999）。若两条本应独立采集的实验曲线之间R²接近1.0，尤其当斜率恰好为整数倍（如2、5、10）时，强烈提示其中一条曲线可能是通过对另一条曲线进行数学缩放/平移生成的，而非真实独立测量所得。</p>
+<p style="font-size:9.5pt; color:#333; margin-bottom:8pt;"><b>数值合理性检验：</b>对测量数据的末位数字分布、标准差列的取值规律等进行核查。真实测量数据的末位数字通常较为均匀，标准差也极少全为整数或完全相同的精度；若出现明显偏离，提示相关数值可能并非自然测量所得。</p>
 
 <p style="font-size:10pt; font-weight:bold; color:#1a1a1a; margin-top:10pt; margin-bottom:4pt;">3. 参考文献核验</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:8pt;">通过DOI（数字对象标识符）向CrossRef国际学术数据库查询每条参考文献的真实性，验证其是否真实存在、标题与作者是否匹配。</p>
+
+<p style="font-size:10pt; font-weight:bold; color:#1a1a1a; margin-top:10pt; margin-bottom:4pt;">4. 图像拼接检测</p>
+<p style="font-size:9.5pt; color:#333; margin-bottom:3pt;">针对蛋白质印迹（Western blot）、凝胶电泳等条带类图像，初步筛查是否存在拼接迹象，重点关注以下特征：</p>
+<p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>泳道分界：</b>泳道之间是否出现不自然的、贯穿上下的清晰竖直分界线。</p>
+<p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>背景一致性：</b>图像不同区域的背景灰度与纹理是否连续一致，分界两侧是否出现突变。</p>
+<p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>曝光水平：</b>相邻泳道之间的明暗（曝光）水平是否平滑过渡，有无突然跳变。</p>
+<p style="font-size:9.5pt; color:#333; margin-bottom:8pt;"><b>分辨率与压缩：</b>图像各区域的清晰度、噪声颗粒与压缩质量是否一致，有无来自不同来源的拼接区域。本项为初步筛查，最终须经人工查看图像确认。</p>
 """
 
 DISCLAIMER_HTML = """
@@ -54,13 +62,15 @@ CN_SYSTEM_PROMPT = """你是学术论文风险检测领域的专家。
 2. 引用具体数据和位置（页码、列名、数值）
 3. 严格按照指定的格式输出
 4. 使用"提示""可能""有待进一步调查"等客观措辞，避免直接下结论
-5. 不要使用emoji表情符号"""
+5. 作者姓名和机构名称必须保持论文原文语言和拼写，不要翻译、意译或中英混写
+6. 不要使用emoji表情符号"""
 
 CN_REPORT_PROMPT = """请完成以下两项任务。
 
 ## 任务一：提取作者和机构信息
 
 从以下论文前几页文本中，提取所有作者姓名和机构信息。
+必须逐字保留论文原文中的作者姓名、机构名称、城市和国家/地区写法；不要翻译机构名，不要把英文机构改写成中文。如果原文就是中文则保留中文。如果无法确认完整机构，宁可留空也不要补写或翻译。
 
 论文文本：
 {first_pages_text}
@@ -86,6 +96,9 @@ CN_REPORT_PROMPT = """请完成以下两项任务。
 图像重复检测结果：
 {image_section}
 
+图像拼接检测结果：
+{splice_section}
+
 数据异常检测结果：
 {data_section}
 
@@ -97,7 +110,7 @@ CN_REPORT_PROMPT = """请完成以下两项任务。
 请严格按照以下格式输出（不要包含```标记）：
 
 ===METADATA_JSON===
-{{"authors": ["作者1", "作者2", ...], "affiliations": ["1. 机构1", "2. 机构2", ...]}}
+{{"authors": ["按论文原文抄录的作者1", "按论文原文抄录的作者2", ...], "affiliations": ["1. 按论文原文抄录的机构1", "2. 按论文原文抄录的机构2", ...]}}
 ===ANALYSIS_HTML===
 <h2 style="font-size:13pt; color:#1a1a1a; margin-top:18pt; margin-bottom:6pt;">三、检测结果总览</h2>
 [用一段话概述整体风险等级和关键发现。注意：整体风险等级必须与系统计算的一致（{overall_level}），不要自行判断风险等级，不要出现任何分值/分数。然后用列表列出三个维度的问题数量和严重程度分布]
@@ -115,7 +128,7 @@ CN_REPORT_PROMPT = """请完成以下两项任务。
 - 禁止使用<table>标签，改用段落和列表展示数据
 - 禁止使用Markdown语法（如**加粗**、*斜体*、#标题），必须使用HTML标签
 - 列表使用: <ul style="font-size:9.5pt; color:#333; margin:3pt 0;"><li>内容</li></ul>
-- 高风险用红色<span style="color:#c00;">高风险</span>，中风险用橙色<span style="color:#e67e00;">中风险</span>，低风险用绿色<span style="color:#080;">低风险</span>"""
+- 高风险用红色<span style="color:#c00;">高风险</span>，低风险用绿色<span style="color:#080;">低风险</span>（不要使用"中风险"，结论仅高风险或低风险两类）"""
 
 
 def _format_image_findings(findings: list[dict]) -> str:
@@ -133,6 +146,21 @@ def _format_image_findings(findings: list[dict]) -> str:
     high = sum(1 for f in findings if f.get("severity") == "high")
     med = sum(1 for f in findings if f.get("severity") == "medium")
     lines.append(f"\n严重程度分布: 高={high}, 中={med}, 低={len(findings)-high-med}")
+    return "\n".join(lines)
+
+
+def _format_splice_findings(findings: list[dict]) -> str:
+    if not findings:
+        return "未检测到疑似图像拼接。"
+    lines = [f"共发现 {len(findings)} 处疑似图像拼接：\n"]
+    for i, f in enumerate(findings[:30]):
+        lines.append(f"疑似拼接{i+1}: 第{f.get('page', '?')}页, 严重程度={f.get('severity', 'medium')}")
+        if f.get("details"):
+            lines.append(f"  详情: {f['details']}")
+        if f.get("annotation_path"):
+            lines.append(f"  标注图: {f['annotation_path']}")
+    if len(findings) > 30:
+        lines.append(f"\n... 以及其他 {len(findings)-30} 处（已省略）")
     return "\n".join(lines)
 
 
@@ -161,7 +189,7 @@ def _format_data_findings(findings: list[dict]) -> str:
     low = [f for f in findings if f.get("severity") == "low"]
     type_counts = Counter(f.get("test", "unknown") for f in findings)
 
-    lines = [f"共发现 {len(findings)} 个数据异常（高风险{len(high)}个，中风险{len(medium)}个，低风险{len(low)}个）。"]
+    lines = [f"共发现 {len(findings)} 个数据异常（高风险{len(high)}个，中等{len(medium)}个，低风险{len(low)}个）。"]
     lines.append(f"因异常数量过多，以下按类别汇总并展示代表性样例：\n")
     lines.append("各类型异常分布：")
     for test_type, count in type_counts.most_common():
@@ -180,7 +208,7 @@ def _format_data_findings(findings: list[dict]) -> str:
 
     sample_m = min(10, len(medium))
     if medium:
-        lines.append(f"中风险异常代表样例（共{len(medium)}个，展示{sample_m}个）：")
+        lines.append(f"中等严重程度异常代表样例（共{len(medium)}个，展示{sample_m}个）：")
         for i, f in enumerate(medium[:sample_m]):
             lines.append(f"  [{i+1}] {f['test']} | {f['location']}")
             lines.append(f"      {f['description']}")
@@ -206,7 +234,7 @@ def _generate_analysis_html(findings: dict, first_pages_text: str) -> tuple[dict
     Returns (metadata_dict, analysis_html)."""
     paper = findings.get("paper", {})
 
-    image_risk = _compute_dimension_risk(findings.get("image_duplicates", []))
+    image_risk = _compute_image_risk(findings)
     capped_data = _apply_data_caps(findings.get("data_anomalies", []))
     data_risk = _compute_dimension_risk(capped_data)
     ref_risk = _compute_dimension_risk(findings.get("reference_issues", []))
@@ -239,6 +267,7 @@ def _generate_analysis_html(findings: dict, first_pages_text: str) -> tuple[dict
         total_images=paper.get("total_images", 0),
         total_references=paper.get("total_references", 0),
         image_section=_format_image_findings(findings.get("image_duplicates", [])),
+        splice_section=_format_splice_findings(findings.get("image_splicing", [])),
         data_section=_format_data_findings(findings.get("data_anomalies", [])),
         reference_section=_format_reference_findings(findings.get("reference_issues", [])),
         **risk_kwargs,
@@ -248,7 +277,7 @@ def _generate_analysis_html(findings: dict, first_pages_text: str) -> tuple[dict
     if prompt_len > 20000:
         log.warning("Combined prompt too long (%d chars), rebuilding with compact format", prompt_len)
         findings_copy = findings.copy()
-        for key in ("image_duplicates", "data_anomalies", "reference_issues"):
+        for key in ("image_duplicates", "image_splicing", "data_anomalies", "reference_issues"):
             items = findings_copy.get(key, [])
             high_medium = [x for x in items if x.get("severity") in ("high", "medium")]
             if len(high_medium) < len(items):
@@ -262,6 +291,7 @@ def _generate_analysis_html(findings: dict, first_pages_text: str) -> tuple[dict
             total_images=paper.get("total_images", 0),
             total_references=paper.get("total_references", 0),
             image_section=_format_image_findings(findings_copy.get("image_duplicates", [])),
+            splice_section=_format_splice_findings(findings_copy.get("image_splicing", [])),
             data_section=_format_data_findings(findings_copy.get("data_anomalies", [])),
             reference_section=_format_reference_findings(findings_copy.get("reference_issues", [])),
             **risk_kwargs,
@@ -309,6 +339,9 @@ FRAUD_BONUS_4 = 5
 _DATA_HIGH_CAPS = {
     "arithmetic_sequence": 8,
     "coefficient_of_variation": 6,
+    # terminal_digit / sd_regularity emit only medium/low (never high), so they are
+    # bounded by the medium/low score ceilings (min(25,..)/min(12,..)) in
+    # _compute_dimension_risk and cannot, on their own, reach the data high-risk gate.
 }
 
 
@@ -362,6 +395,14 @@ def _reclassify_severity(issue: dict) -> str:
             space_r = ref_text.count(' ') / max(len(ref_text), 1)
             if avg_wl > 20 or space_r < 0.04:
                 return "low"
+        # Title-less (Vancouver-style) citations carry no article title, so a low
+        # title-similarity is not a mismatch — never escalate these to high here.
+        try:
+            from modules.reference_checker import _is_titleless_citation
+            if _is_titleless_citation(ref_text):
+                return "medium" if issue.get("severity") == "high" else issue.get("severity", "low")
+        except Exception:
+            pass
         sim = issue.get("details", {}).get("title_similarity", 1.0)
         crossref_title = issue.get("details", {}).get("crossref_title", "")
         if crossref_title and "<" in crossref_title:
@@ -405,13 +446,33 @@ def _compute_dimension_risk(issues: list[dict]) -> dict:
     if score <= 30:
         level, color = "低风险", "#080"
     elif score <= 60:
-        level, color = "中风险", "#e67e00"
+        # No 中风险 outcome anywhere: a dimension scoring 31-60 is labelled 低风险
+        # (it stays below the high-risk gate; high-risk is decided by is_high on
+        # scores, not on this label). Kept the score for the breakdown display.
+        level, color = "低风险", "#080"
     else:
         level, color = "高风险", "#c00"
     return {
         "score": score, "level": level, "color": color,
         "high": high, "medium": medium, "low": low,
     }
+
+
+def _compute_image_risk(findings: dict) -> dict:
+    """Combined image-dimension risk for DB/API summaries.
+
+    Image duplicates still carry their normal score. Splice findings are conservative
+    medium findings, but >=2 corroborated splice suspects is an explicit high-risk gate.
+    """
+    issues = list(findings.get("image_duplicates", [])) + list(findings.get("image_splicing", []))
+    risk = _compute_dimension_risk(issues)
+    splice_count = len(findings.get("image_splicing", []))
+    if splice_count >= 2 and risk["score"] < 56:
+        risk = dict(risk)
+        risk["score"] = 56
+        risk["level"] = "高风险"
+        risk["color"] = "#c00"
+    return risk
 
 
 def _count_fraud_indicators(findings: dict) -> int:
@@ -444,7 +505,7 @@ def _count_fraud_indicators(findings: dict) -> int:
 
 
 def _compute_overall_risk(findings: dict) -> dict:
-    image_risk = _compute_dimension_risk(findings.get("image_duplicates", []))
+    image_risk = _compute_image_risk(findings)
     capped_data = _apply_data_caps(findings.get("data_anomalies", []))
     data_risk = _compute_dimension_risk(capped_data)
     ref_risk = _compute_dimension_risk(findings.get("reference_issues", []))
@@ -537,6 +598,18 @@ def _compute_overall_risk(findings: dict) -> dict:
     for r in ref_issues:
         if _reclassify_severity(r) != "high":
             continue
+        # A resolved DOI means the citation points to a REAL existing paper. A low
+        # title-similarity in that case is usually an extraction/format artifact
+        # (e.g. authors-first citation styles), NOT fabrication. Genuine reference
+        # fabrication shows up as an unresolvable DOI (doi_not_found / not_found).
+        # The runtime "verified" flag is popped before report.json is written, so we
+        # detect resolution via the recorded DOI in details instead.
+        issue_type = r.get("issue_type", "")
+        _det = r.get("details", {})
+        _resolved_doi = _det.get("doi") or _det.get("matched_doi")
+        if issue_type in ("title_mismatch", "low_match_score") and _resolved_doi:
+            ref_high_filtered += 1
+            continue
         ref_text = r.get("ref_text", "")
         words = ref_text.split()
         avg_word_len = sum(len(w) for w in words) / max(len(words), 1)
@@ -593,13 +666,24 @@ def _compute_overall_risk(findings: dict) -> dict:
     )
     full_dup_trigger = 4 <= cross_page_full_dup <= 30
 
+    # Splice pre-screen: a single suspect is too false-positive-prone to escalate
+    # (legitimate lane dividers can trip one seam), so require >=2 confirmed findings.
+    # check_splicing already gates each finding on a corroborated seam; two or more
+    # suspects raise the image dimension and overall score to a consistent review gate.
+    splice_count = len(findings.get("image_splicing", []))
+    splice_trigger = splice_count >= 2
+    if splice_trigger and score < 56:
+        score = 56
+
     is_high = (
         data_risk["score"] >= 30
         or cross_page_imgs >= 10
         or full_dup_trigger
+        or ref_fabrication_trigger
         or (fraud_count >= 4 and 0 < image_risk["score"] < 80)
         or (score >= 60 and data_risk["score"] >= 60)
         or (image_risk["score"] >= 40 and data_risk["score"] >= 10)
+        or splice_trigger
     )
 
     high_dims = set()
@@ -610,11 +694,15 @@ def _compute_overall_risk(findings: dict) -> dict:
             high_dims.add("image")
         if full_dup_trigger:
             high_dims.add("image")
+        if ref_fabrication_trigger:
+            high_dims.add("reference")
         if fraud_count >= 4 and 0 < image_risk["score"] < 80:
             high_dims.add("data")
         if score >= 60 and data_risk["score"] >= 60:
             high_dims.add("data")
         if image_risk["score"] >= 40 and data_risk["score"] >= 10:
+            high_dims.add("image")
+        if splice_trigger:
             high_dims.add("image")
 
     if findings.get("_force_risk_level"):
@@ -626,6 +714,7 @@ def _compute_overall_risk(findings: dict) -> dict:
         level, color = "低风险", "#080"
 
     all_issues = (findings.get("image_duplicates", []) +
+                  findings.get("image_splicing", []) +
                   findings.get("data_anomalies", []) +
                   findings.get("reference_issues", []))
     high = sum(1 for x in all_issues if x.get("severity") == "high")
@@ -639,7 +728,8 @@ def _compute_overall_risk(findings: dict) -> dict:
 
 
 def _build_risk_score_html(findings: dict) -> str:
-    image_risk = _compute_dimension_risk(findings.get("image_duplicates", []))
+    duplicate_risk = _compute_dimension_risk(findings.get("image_duplicates", []))
+    image_risk = _compute_image_risk(findings)
     raw_data = findings.get("data_anomalies", [])
     raw_data_high = sum(1 for x in raw_data if x.get("severity") == "high")
     raw_data_medium = sum(1 for x in raw_data if x.get("severity") == "medium")
@@ -652,6 +742,15 @@ def _build_risk_score_html(findings: dict) -> str:
         overall["level"] = findings["_force_risk_level"]
         overall["color"] = "#c00" if overall["level"] == "高风险" else "#080"
 
+    if overall["level"] == "高风险":
+        for dim in overall.get("high_dimensions", []):
+            if dim == "data" and capped_data_risk["level"] != "高风险":
+                capped_data_risk["level"] = "高风险"
+                capped_data_risk["color"] = "#c00"
+            elif dim == "image" and image_risk["level"] != "高风险":
+                image_risk["level"] = "高风险"
+                image_risk["color"] = "#c00"
+
     scored_high = capped_data_risk["high"]
     note_html = ""
     if scored_high != raw_data_high:
@@ -660,8 +759,35 @@ def _build_risk_score_html(findings: dict) -> str:
 注：原始{raw_data_high}项HIGH告警经评分规则调整（含线性依赖重分类及同类型封顶），风险等级按{scored_high}项HIGH计算。
 </p>"""
 
+    # Splice pre-screen line — rendered deterministically (not via the LLM) so the
+    # risk overview has a stable set of dimensions. Shows counts only (no score);
+    # >=2 suspects is 高风险 (matches the is_high trigger), 0/1 suspects stay 低风险.
+    splice = findings.get("image_splicing", [])
+    n = len(splice)
+    sp_level = "高风险" if n >= 2 else "低风险"
+    sp_color = "#c00" if n >= 2 else "#080"
+    if splice:
+        sp_summary = f"检出 {n} 处疑似拼接图像（达到2处升级为高风险，须经人工查看标注图确认）"
+        items = "".join(
+            f'<li>第{s.get("page", "?")}页：{s.get("details", "疑似拼接")}</li>'
+            for s in splice[:15]
+        )
+        more = f'<li>……另有 {n - 15} 处（略）</li>' if n > 15 else ""
+        splice_items_html = f'\n<ul style="font-size:9pt; color:#555; margin:2pt 0 6pt 0;">{items}{more}</ul>'
+    else:
+        sp_summary = "未检出疑似拼接图像"
+        splice_items_html = ""
+    splice_html = f"""
+<p style="font-size:9.5pt; color:#333; margin-bottom:4pt;">
+<b>图像拼接检测：</b><span style="color:{sp_color}; font-weight:bold;">{sp_level}</span>
+　　{sp_summary}
+</p>
+{splice_items_html}"""
+
     return f"""
-<h2 style="font-size:13pt; color:#1a1a1a; margin-top:18pt; margin-bottom:6pt;">二、风险评估概览</h2>
+<h2 style="font-size:13pt; color:#1a1a1a; margin-top:18pt; margin-bottom:6pt;">二、初筛风险概览</h2>
+
+<p style="font-size:9pt; color:#666; margin-bottom:8pt;">以下为代码确定性规则的初筛结果，最终以 AI 复核结论为准。</p>
 
 <p style="font-size:16pt; font-weight:bold; color:{overall['color']}; text-align:center; margin:14pt 0 6pt 0;">
 综合风险等级：{overall['level']}
@@ -672,20 +798,20 @@ def _build_risk_score_html(findings: dict) -> str:
 <p style="font-size:10pt; font-weight:bold; color:#1a1a1a; margin-top:10pt; margin-bottom:6pt;">各维度风险评估：</p>
 
 <p style="font-size:9.5pt; color:#333; margin-bottom:4pt;">
-<b>图像重复检测：</b><span style="color:{image_risk['color']}; font-weight:bold;">{image_risk['level']}</span>
-　　高风险 {image_risk['high']}项　中风险 {image_risk['medium']}项　低风险 {image_risk['low']}项
+<b>图像重复检测：</b><span style="color:{duplicate_risk['color']}; font-weight:bold;">{duplicate_risk['level']}</span>
+　　高风险 {duplicate_risk['high']}项　中等 {duplicate_risk['medium']}项　低风险 {duplicate_risk['low']}项
 </p>
+{splice_html}
 
 <p style="font-size:9.5pt; color:#333; margin-bottom:4pt;">
 <b>数据异常检测：</b><span style="color:{capped_data_risk['color']}; font-weight:bold;">{capped_data_risk['level']}</span>
-　　高风险 {raw_data_high}项　中风险 {raw_data_medium}项　低风险 {raw_data_low}项
+　　高风险 {raw_data_high}项　中等 {raw_data_medium}项　低风险 {raw_data_low}项
 </p>{note_html}
 
 <p style="font-size:9.5pt; color:#333; margin-bottom:4pt;">
 <b>参考文献核验：</b><span style="color:{ref_risk['color']}; font-weight:bold;">{ref_risk['level']}</span>
-　　高风险 {ref_risk['high']}项　中风险 {ref_risk['medium']}项　低风险 {ref_risk['low']}项
+　　高风险 {ref_risk['high']}项　中等 {ref_risk['medium']}项　低风险 {ref_risk['low']}项
 </p>
-
 <hr style="border:none; border-top:1px solid #eee; margin:10pt 0;">
 """
 
@@ -770,7 +896,16 @@ def _build_full_html(findings: dict, analysis_html: str) -> str:
     return full_html
 
 
+def _soften_risk_wording(html: str) -> str:
+    """Display-only wording: render "高风险" / "建议高风险" as "疑似高风险" in the final
+    report HTML. This runs at the PDF render boundary ONLY — it never touches the risk
+    *values* used for logic, comparisons, DB writes or queries (those stay "高风险").
+    The negative lookbehind makes it idempotent (won't produce "疑似疑似高风险")."""
+    return re.sub(r"(?<!疑似)(?:建议)?高风险", "疑似高风险", html)
+
+
 def _render_pdf(html: str, output_path: str):
+    html = _soften_risk_wording(html)
     story = fitz.Story(html)
     writer = fitz.DocumentWriter(output_path)
     mediabox = fitz.paper_rect("a4")
@@ -795,6 +930,25 @@ def _make_filename(doi: str, title: str) -> str:
     return safe_chars + ".pdf"
 
 
+def doi_to_slug(doi: str) -> str:
+    """Filesystem-safe slug for a DOI, shared by the 初审 and 复核 report paths so a
+    stored URL always matches the file actually written. Strips the doi.org prefix,
+    maps '/' to '_', and removes the same unsafe characters as _make_filename (a plain
+    doi.replace('/','_') diverged for DOIs containing < > : " \\ | ? *)."""
+    doi_clean = (doi or "").replace("https://doi.org/", "").replace("/", "_")
+    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', doi_clean)
+
+
+def _coalesce_metadata(existing: dict, extracted: dict) -> dict:
+    """Prefer deterministic upstream metadata over the report-writing LLM output."""
+    existing_authors = existing.get("authors_full") or []
+    existing_affiliations = existing.get("affiliations") or []
+    return {
+        "authors_full": existing_authors or extracted.get("authors_full", []) or [],
+        "affiliations": existing_affiliations or extracted.get("affiliations", []) or [],
+    }
+
+
 def generate_chinese_pdf(findings: dict, chinese_reports_dir: str, first_pages_text: str = ""):
     """Generate Chinese PDF report. Returns (output_path, metadata_dict) or (None, metadata_dict)."""
     paper = findings.get("paper", {})
@@ -809,6 +963,7 @@ def generate_chinese_pdf(findings: dict, chinese_reports_dir: str, first_pages_t
 
     try:
         metadata, analysis_html = _generate_analysis_html(findings, first_pages_text)
+        metadata = _coalesce_metadata(paper, metadata)
         findings["paper"]["authors_full"] = metadata.get("authors_full", [])
         findings["paper"]["affiliations"] = metadata.get("affiliations", [])
         full_html = _build_full_html(findings, analysis_html)

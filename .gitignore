@@ -38,3 +38,5 @@ Thumbs.db
 # Environment
 .env
 venv/
+*.db
+paper_integrity.db

@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.pdf_utils import extract_images, extract_text
 from modules.image_checker import check_image_duplicates
+from modules.splice_checker import check_splicing
 from modules.data_checker import check_data_anomalies
 from modules.reference_checker import check_references
 from modules.chinese_report_generator import generate_chinese_pdf
@@ -162,14 +163,16 @@ def extract_full_metadata(pdf_path: str) -> dict:
 要求：
 1. 提取完整的作者列表（保持原文顺序）
 2. 提取所有机构/单位信息
-3. 用JSON格式返回，格式如下：
+3. 作者姓名和机构名称必须保持论文原文语言和拼写，不要翻译、意译或中英混写
+4. 如果无法确认完整机构，宁可留空也不要补写或翻译
+5. 用JSON格式返回，格式如下：
 {{"authors": ["作者1", "作者2", ...], "affiliations": ["1. 机构1", "2. 机构2", ...]}}
-4. 只输出JSON，不要其他文字
+6. 只输出JSON，不要其他文字
 
 论文文本：
 {first_pages_text[:6000]}"""
 
-    system = "你是学术论文元数据提取专家。请从论文文本中准确提取作者和机构信息，以JSON格式返回。只输出JSON。"
+    system = "你是学术论文元数据提取专家。请从论文文本中准确提取作者和机构信息，保持原文语言和拼写，不要翻译，以JSON格式返回。只输出JSON。"
 
     try:
         response = chat(prompt, system=system, temperature=0.1)
@@ -186,7 +189,7 @@ def extract_full_metadata(pdf_path: str) -> dict:
         return {"authors_full": [], "affiliations": []}
 
 
-def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chinese_reports_dir: str = None, author_type: str = "") -> dict:
+def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chinese_reports_dir: str = None, author_type: str = "", doi_override: str = "") -> dict:
     """Run the full analysis pipeline on a single paper."""
     paper_dir = str(Path(paper_dir).resolve())
     output_dir = str(Path(output_dir).resolve())
@@ -198,6 +201,11 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
 
     pdf_name = Path(pdf_path).name
     metadata = extract_metadata(pdf_path)
+
+    # A user-supplied DOI is authoritative: apply it before the doi.txt/folder-name
+    # fallback, CrossRef enrichment, the reference self-DOI header filter, and DB metadata.
+    if doi_override:
+        metadata["doi"] = doi_override
 
     if not metadata.get("doi"):
         doi_file = Path(paper_dir) / "doi.txt"
@@ -240,6 +248,9 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
     log.info("[2/4] Checking image duplicates...")
     image_results = check_image_duplicates(images, output_dir)
 
+    log.info("Screening images for splicing artifacts...")
+    splice_results = check_splicing(images, output_dir)
+
     log.info("[3/4] Checking source data anomalies...")
     data_dir = find_data_dir(paper_dir)
     data_results = check_data_anomalies(data_dir) if data_dir else []
@@ -249,7 +260,7 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
         log.info("Reference check skipped (--skip-refs)")
         ref_results = []
     else:
-        ref_results = check_references(pdf_path)
+        ref_results = check_references(pdf_path, metadata.get("doi"))
 
     ref_count = 0
     text_pages = extract_text(pdf_path)
@@ -277,20 +288,24 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
             "sjtu_author_type": author_type,
         },
         "image_duplicates": image_results,
+        "image_splicing": splice_results,
         "data_anomalies": data_results,
         "reference_issues": ref_results,
         "summary": {
-            "total_issues": len(image_results) + len(data_results) + len(ref_results),
+            "total_issues": len(image_results) + len(data_results) + len(ref_results) + len(splice_results),
             "image_issues": len(image_results),
+            "image_splicing_suspects": len(splice_results),
             "data_issues": len(data_results),
             "reference_issues": len(ref_results),
             "high_severity": sum(1 for r in image_results + data_results + ref_results if r.get("severity") == "high"),
-            "medium_severity": sum(1 for r in image_results + data_results + ref_results if r.get("severity") == "medium"),
+            # splice findings are always severity 'medium' (conservative pre-screen)
+            "medium_severity": sum(1 for r in image_results + data_results + ref_results if r.get("severity") == "medium") + len(splice_results),
             "low_severity": sum(1 for r in image_results + data_results + ref_results if r.get("severity") == "low"),
         },
     }
 
     log.info("Generating Chinese PDF report (combined metadata + analysis)...")
+    cn_path = None
     try:
         cn_dir = chinese_reports_dir or str(Path(output_dir).parent / "chinese_reports")
         cn_path, full_meta = generate_chinese_pdf(findings, cn_dir, first_pages_text)
@@ -300,8 +315,14 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
                  len(findings["paper"]["authors_full"]), len(findings["paper"]["affiliations"]))
         if cn_path:
             log.info("Chinese PDF: %s", cn_path)
+        else:
+            log.error("Chinese PDF generation returned None, paper will not be inserted to DB")
     except Exception as e:
         log.error("Failed to generate Chinese PDF: %s", e)
+
+    # Persisted to report.json below so downstream readers (main.py DB guards, API
+    # self-insert paths) skip inserting records that would point at a missing PDF.
+    findings["pdf_generated"] = cn_path is not None
 
     json_path = Path(output_dir) / "report.json"
     with open(json_path, "w", encoding="utf-8") as f:
