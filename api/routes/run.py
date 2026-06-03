@@ -271,6 +271,8 @@ async def _run_stream(
                         output_dir=paper.output_dir,
                     )
                     review.setdefault("trigger", "auto_detection")
+                    review["_input_dir"] = paper.input_dir
+                    review["_report_json"] = paper.report_json
                     review_results.append(review)
                     verdict = review.get("verdict", "")
                     result = review.get("result", "")

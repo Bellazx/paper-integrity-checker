@@ -458,13 +458,31 @@ def _compute_dimension_risk(issues: list[dict]) -> dict:
     }
 
 
+def _is_cross_image_duplicate(issue: dict) -> bool:
+    """True for duplicate evidence across distinct images/pages; false for same-page layout echoes."""
+    if not isinstance(issue, dict):
+        return False
+    a, b = issue.get("image_a", ""), issue.get("image_b", "")
+    pa, pb = issue.get("page_a", 0), issue.get("page_b", 0)
+    if a and b and a == b:
+        return False
+    if pa == pb and pa > 0:
+        return False
+    return True
+
+
 def _compute_image_risk(findings: dict) -> dict:
     """Combined image-dimension risk for DB/API summaries.
 
-    Image duplicates still carry their normal score. Splice findings are conservative
-    medium findings, but >=2 corroborated splice suspects is an explicit high-risk gate.
+    Only cross-image/page duplicate evidence contributes to the duplicate score. Same-page
+    echoes are too often layout/template artefacts. Splice findings remain conservative
+    medium findings, with >=2 corroborated suspects as an explicit high-risk gate.
     """
-    issues = list(findings.get("image_duplicates", [])) + list(findings.get("image_splicing", []))
+    cross_duplicates = [
+        d for d in findings.get("image_duplicates", [])
+        if _is_cross_image_duplicate(d)
+    ]
+    issues = cross_duplicates + list(findings.get("image_splicing", []))
     risk = _compute_dimension_risk(issues)
     splice_count = len(findings.get("image_splicing", []))
     if splice_count >= 2 and risk["score"] < 56:
@@ -486,7 +504,7 @@ def _count_fraud_indicators(findings: dict) -> int:
         and x.get("details", {}).get("overlap_ratio", 0) >= 0.80
         for x in data
     )
-    has_img = any(x.get("severity") == "high" for x in img)
+    has_img = any(x.get("severity") == "high" and _is_cross_image_duplicate(x) for x in img)
     has_identity_dep = any(
         x.get("test") == "linear_dependency"
         and x.get("details", {}).get("r_squared", 0) > 0.99999
@@ -536,7 +554,7 @@ def _compute_overall_risk(findings: dict) -> dict:
     if max_dim > 60 and score <= 60:
         score = 61
 
-    has_img_issues = len(findings.get("image_duplicates", [])) > 0
+    has_img_issues = any(_is_cross_image_duplicate(x) for x in findings.get("image_duplicates", []))
     has_data_issues = len(findings.get("data_anomalies", [])) >= 5
     if has_img_issues and has_data_issues and score < 56:
         score = 56
@@ -547,27 +565,23 @@ def _compute_overall_risk(findings: dict) -> dict:
     for d in findings.get("image_duplicates", []):
         if not isinstance(d, dict):
             continue
-        if d.get("page_a") == d.get("page_b"):
-            continue
-        pa, pb = d.get("page_a", 0), d.get("page_b", 0)
-        if pa == 0 or pb == 0:
+        if not _is_cross_image_duplicate(d):
             continue
         a, b = d.get("image_a", ""), d.get("image_b", "")
+        pa, pb = d.get("page_a", 0), d.get("page_b", 0)
         cross_page_img_counts[a] += 1
         cross_page_img_counts[b] += 1
-        cross_page_page_pairs.add((min(pa, pb), max(pa, pb)))
+        cross_page_page_pairs.add((min(pa, pb), max(pa, pb)) if (pa > 0 and pb > 0) else (min(a, b), max(a, b)))
     cross_page_imgs = 0
     if len(cross_page_page_pairs) <= 8:
         seen_pairs = set()
         for d in findings.get("image_duplicates", []):
             if not isinstance(d, dict):
                 continue
-            if d.get("page_a") == d.get("page_b"):
-                continue
-            pa, pb = d.get("page_a", 0), d.get("page_b", 0)
-            if pa == 0 or pb == 0:
+            if not _is_cross_image_duplicate(d):
                 continue
             a, b = d.get("image_a", ""), d.get("image_b", "")
+            pa, pb = d.get("page_a", 0), d.get("page_b", 0)
             pair_key = (min(a, b), max(a, b))
             if pair_key in seen_pairs:
                 continue
@@ -661,8 +675,8 @@ def _compute_overall_risk(findings: dict) -> dict:
     cross_page_full_dup = sum(
         1 for d in findings.get("image_duplicates", [])
         if isinstance(d, dict) and d.get("match_type") == "full_duplicate"
-        and d.get("severity") == "high" and d.get("page_a") != d.get("page_b")
-        and d.get("page_a", 1) > 0 and d.get("page_b", 1) > 0
+        and d.get("severity") == "high"
+        and _is_cross_image_duplicate(d)
     )
     full_dup_trigger = 4 <= cross_page_full_dup <= 30
 
@@ -675,8 +689,9 @@ def _compute_overall_risk(findings: dict) -> dict:
     if splice_trigger and score < 56:
         score = 56
 
+    data_high_trigger = data_risk["score"] > 60
     is_high = (
-        data_risk["score"] >= 30
+        data_high_trigger
         or cross_page_imgs >= 10
         or full_dup_trigger
         or ref_fabrication_trigger
@@ -688,7 +703,7 @@ def _compute_overall_risk(findings: dict) -> dict:
 
     high_dims = set()
     if is_high:
-        if data_risk["score"] >= 30:
+        if data_high_trigger:
             high_dims.add("data")
         if cross_page_imgs >= 10:
             high_dims.add("image")

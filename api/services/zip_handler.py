@@ -3,12 +3,14 @@ from __future__ import annotations
 import logging
 import shutil
 import zipfile
-from datetime import datetime
 from pathlib import Path
 
 import rarfile
 
-from api.config import INPUT_DIR, MAX_UPLOAD_SIZE_BYTES, OUTPUT_DIR, RUNTIME_TMP_DIR
+from api.config import (
+    MAX_UPLOAD_SIZE_BYTES, RUNTIME_TMP_DIR,
+    input_task_root, output_task_root,
+)
 from api.models import PaperInfo
 
 log = logging.getLogger(__name__)
@@ -61,6 +63,18 @@ def _read_doi_from_file(paper_dir: Path) -> str:
     return ""
 
 
+def _unique_dir(root: Path, desired_name: str, used: set[str] | None = None) -> Path:
+    used = used if used is not None else set()
+    base = desired_name.strip() or "paper"
+    candidate = base
+    index = 2
+    while candidate in used or (root / candidate).exists():
+        candidate = f"{base}__{index}"
+        index += 1
+    used.add(candidate)
+    return root / candidate
+
+
 def apply_doi_override(paper: PaperInfo, doi: str) -> PaperInfo:
     """Make a user-supplied DOI authoritative across paths and filenames.
 
@@ -87,13 +101,12 @@ def apply_doi_override(paper: PaperInfo, doi: str) -> PaperInfo:
     Path(paper.input_dir, "doi.txt").write_text(doi, encoding="utf-8")
     paper.doi = doi
     paper.doi_slug = doi_slug
-    paper.output_dir = str(OUTPUT_DIR / doi_slug)
+    paper.output_dir = str(Path(paper.output_dir).parent / doi_slug)
     return paper
 
 
 def extract_single(archive_path: Path, task_id: str) -> list[PaperInfo]:
     validate_archive(archive_path)
-    date_str = datetime.now().strftime("%Y%m%d")
     extract_dir = RUNTIME_TMP_DIR / f"paper_extract_{task_id}"
     extract_dir.mkdir(parents=True, exist_ok=True)
 
@@ -120,7 +133,9 @@ def extract_single(archive_path: Path, task_id: str) -> list[PaperInfo]:
     else:
         doi_slug = f"task_{task_id}"
 
-    target_dir = INPUT_DIR / date_str / doi_slug
+    task_input_root = input_task_root(task_id)
+    task_output_root = output_task_root(task_id)
+    target_dir = task_input_root / doi_slug
     target_dir.mkdir(parents=True, exist_ok=True)
 
     for item in source_dir.iterdir():
@@ -134,19 +149,17 @@ def extract_single(archive_path: Path, task_id: str) -> list[PaperInfo]:
 
     shutil.rmtree(extract_dir, ignore_errors=True)
 
-    from api.config import OUTPUT_DIR
     paper = PaperInfo(
         doi_slug=doi_slug,
         doi=doi,
         input_dir=str(target_dir),
-        output_dir=str(OUTPUT_DIR / doi_slug),
+        output_dir=str(task_output_root / doi_slug),
     )
     return [paper]
 
 
 def extract_batch(archive_path: Path, task_id: str) -> list[PaperInfo]:
     validate_archive(archive_path)
-    date_str = datetime.now().strftime("%Y%m%d")
     extract_dir = RUNTIME_TMP_DIR / f"paper_extract_{task_id}"
     extract_dir.mkdir(parents=True, exist_ok=True)
 
@@ -162,7 +175,9 @@ def extract_batch(archive_path: Path, task_id: str) -> list[PaperInfo]:
         root = extract_dir
 
     papers = []
-    from api.config import OUTPUT_DIR
+    task_input_root = input_task_root(task_id)
+    task_output_root = output_task_root(task_id)
+    used_names: set[str] = set()
 
     for subdir in sorted(root.iterdir()):
         if not subdir.is_dir() or subdir.name.startswith("__MACOSX"):
@@ -178,7 +193,8 @@ def extract_batch(archive_path: Path, task_id: str) -> list[PaperInfo]:
 
         doi_slug = doi.replace("/", "_") if doi else subdir.name
 
-        target_dir = INPUT_DIR / date_str / doi_slug
+        target_dir = _unique_dir(task_input_root, doi_slug, used_names)
+        doi_slug = target_dir.name
         target_dir.mkdir(parents=True, exist_ok=True)
 
         for item in subdir.iterdir():
@@ -194,7 +210,7 @@ def extract_batch(archive_path: Path, task_id: str) -> list[PaperInfo]:
             doi_slug=doi_slug,
             doi=doi,
             input_dir=str(target_dir),
-            output_dir=str(OUTPUT_DIR / doi_slug),
+            output_dir=str(task_output_root / doi_slug),
             fold_name=subdir.name,
         ))
 

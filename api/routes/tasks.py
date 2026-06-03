@@ -10,7 +10,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from api.config import (
     DEFAULT_TABLE, MAX_BATCH_PAPERS, MAX_PENDING_TASKS, MAX_UPLOAD_SIZE_BYTES,
-    TASKS_DIR, UPLOADS_DIR, validate_table_name,
+    TASKS_DIR, validate_table_name, resolve_upload_dir,
 )
 from api.models import (
     PaperInfo, SubmitRequest, TaskConfig, TaskCreatedResponse,
@@ -77,7 +77,7 @@ def create_task_guarded(tm, mode, config):
 @router.post("/submit", response_model=TaskCreatedResponse)
 async def submit_task(req: SubmitRequest):
     # Validate fileId exists — find the archive (zip or rar)
-    upload_dir = UPLOADS_DIR / req.file_id
+    upload_dir = resolve_upload_dir(req.file_id)
     archive_path = None
     for ext in (".zip", ".rar"):
         candidate = upload_dir / f"upload{ext}"

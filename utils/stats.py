@@ -124,6 +124,21 @@ def benfords_law_test(values: np.ndarray, min_samples: int = 100) -> dict:
     }
 
 
+def _is_monotonic_arithmetic(arr: np.ndarray) -> bool:
+    """Inline axis test (stats.py can't import data_checker): strictly monotonic, near-perfect
+    constant-step sequence with >=4 points = an X-axis / swept parameter, not measurement data."""
+    v = arr[np.isfinite(arr)]
+    if len(v) < 4:
+        return False
+    diffs = np.diff(v)
+    if not (np.all(diffs > 0) or np.all(diffs < 0)):
+        return False
+    step = np.median(diffs)
+    if step == 0:
+        return False
+    return bool(np.max(np.abs(diffs - step)) / abs(step) <= 0.02)
+
+
 def check_cross_group_duplicates(groups: dict[str, np.ndarray]) -> list[dict]:
     """Check for duplicate data values across experimental groups."""
     _SEV_ORDER = {"low": 0, "medium": 1, "high": 2}
@@ -137,14 +152,19 @@ def check_cross_group_duplicates(groups: dict[str, np.ndarray]) -> list[dict]:
             if len(a) == 0 or len(b) == 0:
                 continue
 
+            if _is_monotonic_arithmetic(a) and _is_monotonic_arithmetic(b):
+                continue
+            n = min(len(a), len(b))
+            aligned = float(np.mean(np.round(a[:n], 8) == np.round(b[:n], 8))) if n else 0.0
+
             common = np.intersect1d(a, b)
             overlap = len(common) / max(len(a), len(b))
 
-            if overlap >= 0.95:
+            if aligned >= 0.95:
                 severity = "high"
-            elif overlap >= 0.8:
+            elif aligned >= 0.8:
                 severity = "medium"
-            elif overlap > 0.5:
+            elif aligned > 0.5:
                 severity = "low"
             else:
                 continue
@@ -159,7 +179,8 @@ def check_cross_group_duplicates(groups: dict[str, np.ndarray]) -> list[dict]:
             flagged.append({
                 "group_a": names[i],
                 "group_b": names[j],
-                "overlap_ratio": float(overlap),
+                "overlap_ratio": float(aligned),
+                "set_overlap_ratio": float(overlap),
                 "common_values": common.tolist(),
                 "high_precision_matches": high_precision_count,
                 "severity": severity,
@@ -256,7 +277,12 @@ def check_value_recycling(values: np.ndarray, min_samples: int = 10) -> dict:
     if not flagged:
         return {"testable": True, "flagged": False, "ratio": float(ratio)}
 
-    severity = "high" if ratio < 0.15 else "medium"
+    # Dense curves/spectra (thousands of sampled points) naturally repeat rounded values —
+    # a low unique/total ratio there is NOT fabrication. For large columns, demand a much
+    # lower ratio before calling it HIGH; small tables keep the sensitive 0.15 threshold
+    # (that's where fabricated small datasets actually show up).
+    high_ratio_cutoff = 0.05 if total_count >= 500 else 0.15
+    severity = "high" if ratio < high_ratio_cutoff else "medium"
     return {
         "testable": True,
         "flagged": True,

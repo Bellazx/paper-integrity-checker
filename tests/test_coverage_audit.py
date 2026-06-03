@@ -52,6 +52,47 @@ class CoverageAuditTests(unittest.TestCase):
         self.assertEqual(validated["_coverage_status"], "warning")
         self.assertNotIn("_coverage_downgraded", validated)
 
+    def test_validator_checks_grouped_cross_sheet_reuse_not_every_raw_member(self):
+        result = {
+            "doi": "10.1/x",
+            "result": "低风险",
+            "verdict": "建议低风险",
+            "image_review": "未见图像完整性问题。",
+            "data_review": (
+                "已核查跨表复用组1的代表样例，Sheet1 与 Sheet2 的 Area 列来自同一"
+                "归一化源数据导出；该类126条跨表复用均属于同一处理链路，未见独立完整性问题。"
+            ),
+            "ref_review": "参考文献未见异常。",
+            "reason": "跨表复用按分组核验后可解释，综合建议低风险。",
+        }
+        raw = [
+            {"locations": [f"a.xlsx::Sheet{i}::Area", f"b.xlsx::Sheet{i}::Area"]}
+            for i in range(1, 4)
+        ]
+        evidence = {
+            "main_figures": [],
+            "high_findings": [],
+            "deterministic_findings": {
+                "duplicate_column_pairs": [],
+                "cross_sheet_reuse": raw,
+                "cross_sheet_reuse_groups": [{
+                    "group_id": "reuse_group_1",
+                    "count": 126,
+                    "headers_sample": ["Area"],
+                    "locations_sample": ["a.xlsx::Sheet1::Area"],
+                    "representatives": [{"locations": ["a.xlsx::Sheet1::Area", "b.xlsx::Sheet2::Area"]}],
+                    "requires_expansion": True,
+                }],
+                "decimal_precision_mismatch": [],
+            },
+        }
+
+        validated, gaps = coverage_validator.validate(result, evidence)
+
+        self.assertFalse(gaps)
+        self.assertEqual(validated["_coverage_status"], "ok")
+        self.assertEqual(validated["result"], "低风险")
+
     def test_report_coverage_check_uses_cached_evidence_and_keeps_low_risk(self):
         grr = _load_generate_review_report()
         review = {

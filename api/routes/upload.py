@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import shutil
 import zipfile
 from datetime import datetime
@@ -15,6 +16,7 @@ from fastapi.responses import JSONResponse
 from api.config import (
     FORBIDDEN_EXTENSIONS, MAX_BATCH_PAPERS,
     MAX_UPLOAD_SIZE_BYTES, MAX_UPLOAD_SIZE_MB, UPLOADS_DIR,
+    upload_dir_for_file_id,
 )
 from api.models import FileInfo, UploadResponse
 
@@ -52,9 +54,9 @@ async def upload_file(
     # 2. Generate fileId
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     safe_username = "".join(c for c in username if c.isalnum() or c in "_-")[:20] or "anonymous"
-    file_id = f"{timestamp}_{safe_username}"
+    file_id = f"{timestamp}_{safe_username}_{secrets.token_hex(4)}"
 
-    upload_dir = UPLOADS_DIR / file_id
+    upload_dir = upload_dir_for_file_id(file_id)
     upload_dir.mkdir(parents=True, exist_ok=True)
     archive_path = upload_dir / f"upload{ext}"
 

@@ -25,6 +25,22 @@ class FakeProc:
 
 
 class GenerateReports(unittest.IsolatedAsyncioTestCase):
+    async def test_review_error_results_are_not_rendered_as_final_pdfs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp) / "task"
+            task_dir.mkdir()
+
+            with self.assertRaisesRegex(ValueError, "Refusing to generate final review PDF"):
+                await report.generate_reports(
+                    [{
+                        "doi": "10.1/x",
+                        "result": "高风险",
+                        "trigger": "review_error",
+                        "reason": "Reviewer 1 exhausted retries",
+                    }],
+                    task_dir,
+                )
+
     async def test_stale_existing_pdf_is_not_counted(self):
         with tempfile.TemporaryDirectory() as tmp:
             review_dir = Path(tmp) / "review"

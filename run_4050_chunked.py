@@ -41,9 +41,16 @@ def main():
     ap.add_argument("--chunk", type=int, default=150, help="papers per fresh process (memory ceiling)")
     ap.add_argument("--workers", type=int, default=4, help="workers per chunk (lower = less peak RAM)")
     ap.add_argument("--max-chunks", type=int, default=100, help="safety cap on chunk count")
+    ap.add_argument("--include-dirs-file", default="", help="Pass an allowlist of input directory names to screen_4050.py")
+    ap.add_argument("--exclude-dirs-file", default="", help="Pass a blocklist of input directory names to screen_4050.py")
     args = ap.parse_args()
 
-    print(f"[runner] starting chunked run: chunk={args.chunk} workers={args.workers}", flush=True)
+    print(
+        "[runner] starting chunked run: "
+        f"chunk={args.chunk} workers={args.workers} "
+        f"include={args.include_dirs_file or '-'} exclude={args.exclude_dirs_file or '-'}",
+        flush=True,
+    )
     last_done = -1
     for i in range(args.max_chunks):
         done = _done_count()
@@ -56,6 +63,10 @@ def main():
         cmd = [sys.executable, str(BASE / "screen_4050.py"),
                "--prefer-pdf", "--skip-done",
                "--limit", str(args.chunk), "--workers", str(args.workers)]
+        if args.include_dirs_file:
+            cmd.extend(["--include-dirs-file", args.include_dirs_file])
+        if args.exclude_dirs_file:
+            cmd.extend(["--exclude-dirs-file", args.exclude_dirs_file])
         t0 = time.time()
         rc = subprocess.run(cmd, cwd=str(BASE)).returncode
         print(f"[runner] chunk {i+1} rc={rc} in {time.time()-t0:.0f}s", flush=True)

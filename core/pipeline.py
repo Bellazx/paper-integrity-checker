@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.pdf_utils import extract_images, extract_text
 from modules.image_checker import check_image_duplicates
 from modules.splice_checker import check_splicing
-from modules.data_checker import check_data_anomalies
+from modules.data_checker import check_data_anomalies, is_metadata_data_file
 from modules.reference_checker import check_references
 from modules.chinese_report_generator import generate_chinese_pdf
 
@@ -64,7 +64,7 @@ def find_data_dir(paper_dir: str) -> str | None:
     data_extensions = {".xlsx", ".xls", ".csv", ".docx", ".fcs", ".sav"}
     data_files = []
     for ext in data_extensions:
-        data_files.extend(d.rglob(f"*{ext}"))
+        data_files.extend(p for p in d.rglob(f"*{ext}") if not is_metadata_data_file(p))
 
     if not data_files:
         return None
@@ -242,6 +242,19 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
     from utils.pdf_utils import extract_standalone_images
     standalone = extract_standalone_images(paper_dir, output_dir)
     if standalone:
+        if images:
+            figures_dir = (Path(paper_dir) / "figures").resolve()
+            before = len(standalone)
+            standalone = [
+                img for img in standalone
+                if not Path(img.filepath).resolve().is_relative_to(figures_dir)
+            ]
+            skipped = before - len(standalone)
+            if skipped:
+                log.info(
+                    "Skipped %d standalone article figure images already represented in PDF",
+                    skipped,
+                )
         log.info("Found %d standalone images (TIF/JPEG/PNG)", len(standalone))
         images = images + standalone
 

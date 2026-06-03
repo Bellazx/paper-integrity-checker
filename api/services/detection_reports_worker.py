@@ -33,18 +33,26 @@ REPORT_NAMESPACE = "detection_reports"
 _semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
 
 
-def _chushen_report_url(findings: dict) -> str:
+def _is_review_error(review: dict) -> bool:
+    return review.get("trigger") == "review_error"
+
+
+def _task_report_namespace(task_id: str) -> str:
+    return f"{REPORT_NAMESPACE}/{task_id}"
+
+
+def _chushen_report_url(findings: dict, namespace: str = REPORT_NAMESPACE) -> str:
     """First-pass detection PDF URL — matches the filename main.py writes via
     modules.chinese_report_generator._make_filename(doi, title)."""
     from modules.chinese_report_generator import _make_filename
     paper = findings.get("paper", {})
     filename = _make_filename(paper.get("doi", "unknown"), paper.get("title", "unknown"))
-    return f"{CHUSHEN_BASE_URL}/{REPORT_NAMESPACE}/{filename}"
+    return f"{CHUSHEN_BASE_URL}/{namespace}/{filename}"
 
 
-def _review_report_url(doi: str) -> str:
+def _review_report_url(doi: str, namespace: str = REPORT_NAMESPACE) -> str:
     from modules.chinese_report_generator import doi_to_slug
-    return f"{REVIEW_BASE_URL}/{REPORT_NAMESPACE}/review_{doi_to_slug(doi)}.pdf"
+    return f"{REVIEW_BASE_URL}/{namespace}/review_{doi_to_slug(doi)}.pdf"
 
 
 async def run_detection_reports_pipeline(
@@ -69,6 +77,7 @@ async def _run_inner(
 ):
     author_type = config.get("author_type", "")
     max_workers = min(max(1, int(config.get("max_workers", 4) or 4)), MAX_REVIEW_WORKERS)
+    report_namespace = _task_report_namespace(task_id)
 
     # ── Stage 1: detection (no yujing write) + 初审 row ──────────────────
     tm.update_task(
@@ -90,7 +99,7 @@ async def _run_inner(
                 table_name="yujing_quanliang",  # unused: write_db=False forces --no-db
                 write_db=False,
                 doi=paper.doi,
-                report_namespace=REPORT_NAMESPACE,
+                report_namespace=report_namespace,
             )
 
             # main.py ran with --no-db, so its pdf_generated guard never fired here.
@@ -109,7 +118,7 @@ async def _run_inner(
             if "summary" in findings:
                 chushen_result = _compute_overall_risk(findings).get("level", "低风险")
 
-            chushen_url = _chushen_report_url(findings)
+            chushen_url = _chushen_report_url(findings, report_namespace)
 
             upsert_chushen(
                 submission_no=paper.submission_no,
@@ -142,6 +151,8 @@ async def _run_inner(
     # ── Stage 2: AI review (high-risk only) ──────────────────────────────
     # review_results[i] corresponds to high_risk_papers[i] (appended in order).
     review_results: list[dict] = []
+    review_by_key: dict[tuple[str, str], dict] = {}
+    review_failures: dict[tuple[str, str], dict] = {}
     if high_risk_papers:
         tm.update_task(
             task_id,
@@ -152,7 +163,6 @@ async def _run_inner(
 
         review_sem = asyncio.Semaphore(max_workers)
         review_done = 0
-        review_by_key: dict[tuple[str, str], dict] = {}
 
         async def _review_one(paper: PaperInfo):
             nonlocal review_done
@@ -165,6 +175,8 @@ async def _run_inner(
                         output_dir=paper.output_dir,
                     )
                     review.setdefault("trigger", "auto_detection")
+                    review["_input_dir"] = paper.input_dir
+                    review["_report_json"] = paper.report_json
                 except Exception as e:
                     log.error("Review failed for %s: %s", paper.doi, e)
                     review = {
@@ -177,11 +189,20 @@ async def _run_inner(
                         "verdict": "建议高风险",
                         "reason": str(e),
                     }
-                review_by_key[(paper.submission_no, paper.fold_name)] = review
+                key = (paper.submission_no, paper.fold_name)
+                if _is_review_error(review):
+                    reason = review.get("reason") or "AI review process failed"
+                    paper.status = "review_error"
+                    paper.error = reason
+                    review_failures[key] = review
+                    log.error("Review did not produce a substantive result for %s: %s", paper.doi, reason)
+                else:
+                    review_by_key[key] = review
                 review_done += 1
                 tm.update_task(
                     task_id,
                     progress={"current": review_done, "total": len(high_risk_papers), "stage": "review"},
+                    papers=papers,
                 )
 
         await asyncio.gather(*(_review_one(paper) for paper in high_risk_papers))
@@ -208,7 +229,7 @@ async def _run_inner(
                 task_dir,
                 table_name=REPORT_NAMESPACE,
                 write_db=False,
-                report_namespace=REPORT_NAMESPACE,
+                report_namespace=report_namespace,
             )
         except Exception as e:
             log.error("Report generation failed: %s", e)
@@ -217,9 +238,12 @@ async def _run_inner(
 
         # Write 复审 result per high-risk paper (status -> 2).
         generated_paths = set(report_paths)
-        for paper, review in zip(high_risk_papers, review_results):
+        for paper in high_risk_papers:
+            review = review_by_key.get((paper.submission_no, paper.fold_name))
+            if not review:
+                continue
             review_result = review.get("result", "高风险")
-            expected_path = str(REVIEW_DIR / REPORT_NAMESPACE / f"review_{doi_to_slug(paper.doi or '')}.pdf")
+            expected_path = str(REVIEW_DIR / report_namespace / f"review_{doi_to_slug(paper.doi or '')}.pdf")
             if expected_path not in generated_paths:
                 log.error("Skipping detection_reports 复审 write for %s: review PDF was not generated", paper.doi)
                 continue
@@ -228,16 +252,16 @@ async def _run_inner(
                     submission_no=paper.submission_no,
                     fold_name=paper.fold_name,
                     review_result=review_result,
-                    review_report_url=_review_report_url(paper.doi),
+                    review_report_url=_review_report_url(paper.doi, report_namespace),
                 )
             except Exception as e:
                 log.error("detection_reports 复审 write failed for %s: %s", paper.doi, e)
 
     # ── Done: build summary + per-paper detection_reports records ─────────
     review_by_sub = {
-        (p.submission_no, p.fold_name): r
-        for p, r in zip(high_risk_papers, review_results)
-        if str(REVIEW_DIR / REPORT_NAMESPACE / f"review_{doi_to_slug(p.doi or '')}.pdf") in generated_paths
+        key: r
+        for key, r in review_by_key.items()
+        if str(REVIEW_DIR / report_namespace / f"review_{doi_to_slug(r.get('doi') or '')}.pdf") in generated_paths
     }
     high_keys = {(p.submission_no, p.fold_name) for p in high_risk_papers}
 
@@ -246,18 +270,21 @@ async def _run_inner(
         key = (p.submission_no, p.fold_name)
         review = review_by_sub.get(key)
         is_chushen_high = key in high_keys
+        review_failure = review_failures.get(key) if is_chushen_high else None
         records.append({
             "submission_no": p.submission_no,
             "fold_name": p.fold_name or None,
             "doi": p.doi,
             "chushen_result": "高风险" if is_chushen_high else "低风险",
-            "chushen_report_url": _chushen_report_url_from_paper(p),
+            "chushen_report_url": _chushen_report_url_from_paper(p, report_namespace),
             "review_result": review.get("result") if review else None,
-            "review_report_url": _review_report_url(p.doi) if review else None,
+            "review_report_url": _review_report_url(p.doi, report_namespace) if review else None,
             "status": 2 if review else 0,
+            "review_error": review_failure.get("reason") if review_failure else None,
         })
 
     persisted_reviews = list(review_by_sub.values())
+    review_failed = len(review_failures)
     confirmed_high = sum(1 for r in persisted_reviews if r.get("result") == "高风险")
     downgraded = sum(1 for r in persisted_reviews if r.get("result") == "低风险")
 
@@ -267,17 +294,24 @@ async def _run_inner(
         "detected_fail": len(detected_fail),
         "high_risk_detected": len(high_risk_papers),
         "reviewed": len(persisted_reviews),
+        "review_failed": review_failed,
         "confirmed_high": confirmed_high,
         "downgraded": downgraded,
         "reports_generated": len(generated_paths) if review_results else 0,
         "detection_reports": records,
     }
 
+    status = TaskStatus.FAILED if review_failed else TaskStatus.COMPLETED
+    error = None
+    if review_failed:
+        error = f"AI review failed for {review_failed} high-risk paper(s); no final review PDF was generated for failed reviews"
+
     tm.update_task(
         task_id,
-        status=TaskStatus.COMPLETED,
-        stage="done",
+        status=status,
+        stage="done" if not review_failed else "review_failed",
         result=result,
+        error=error,
         papers=papers,
     )
 
@@ -287,14 +321,14 @@ async def _run_inner(
     )
 
 
-def _chushen_report_url_from_paper(paper: PaperInfo) -> str:
+def _chushen_report_url_from_paper(paper: PaperInfo, namespace: str = REPORT_NAMESPACE) -> str:
     """Rebuild the 初审 PDF URL from the paper's persisted report.json (for the summary).
     Falls back to a doi-slug name if report.json is unavailable."""
     import json
     if paper.report_json:
         try:
             with open(paper.report_json) as f:
-                return _chushen_report_url(json.load(f))
+                return _chushen_report_url(json.load(f), namespace)
         except Exception:
             pass
-    return f"{CHUSHEN_BASE_URL}/{REPORT_NAMESPACE}/{doi_to_slug(paper.doi) or 'unknown'}.pdf"
+    return f"{CHUSHEN_BASE_URL}/{namespace}/{doi_to_slug(paper.doi) or 'unknown'}.pdf"

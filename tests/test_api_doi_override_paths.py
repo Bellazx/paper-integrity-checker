@@ -33,6 +33,22 @@ class ApiDoiOverridePaths(unittest.TestCase):
             self.assertEqual(paper.doi_slug, "10.1234_example.doi")
             self.assertEqual(Path(paper.output_dir), OUTPUT_DIR / "10.1234_example.doi")
 
+    def test_override_preserves_task_scoped_output_parent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "input" / "20260603-task" / "task1" / "task_abc"
+            src.mkdir(parents=True)
+            output_parent = Path(tmp) / "output" / "tasks" / "task1"
+            paper = PaperInfo(
+                doi_slug="task_abc",
+                input_dir=str(src),
+                output_dir=str(output_parent / "task_abc"),
+            )
+
+            apply_doi_override(paper, "10.1234/example.doi")
+
+            self.assertEqual(Path(paper.input_dir), src.parent / "10.1234_example.doi")
+            self.assertEqual(Path(paper.output_dir), output_parent / "10.1234_example.doi")
+
 
 if __name__ == "__main__":
     unittest.main()

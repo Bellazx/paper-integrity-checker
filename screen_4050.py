@@ -44,7 +44,7 @@ sys.path.insert(0, str(BASE))
 from core.pipeline import analyze_paper
 from core.nature_adapter import is_nature_crawl, analyze_nature_paper
 from modules.chinese_report_generator import (
-    _compute_overall_risk, _compute_dimension_risk, _apply_data_caps, _make_filename,
+    _compute_overall_risk, _compute_dimension_risk, _compute_image_risk, _apply_data_caps, _make_filename,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
@@ -86,6 +86,20 @@ def _has_pdf(d: Path) -> bool:
     return bool(list(d.glob("*.pdf")) + list(d.glob("*.PDF")))
 
 
+def _load_dir_names(path_text: str) -> set[str]:
+    if not path_text:
+        return set()
+    path = Path(path_text)
+    if not path.exists():
+        raise FileNotFoundError(f"dir list not found: {path}")
+    names = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        item = line.strip()
+        if item and not item.startswith("#"):
+            names.add(Path(item).name)
+    return names
+
+
 def _analyze(paper_dir: str, out_dir: str, prefer_pdf: bool = False) -> dict:
     """Route HTML (Nature crawl) vs PDF dirs, mirroring main.py._analyze_one.
     Always runs reference verification (no skip_refs — needed for the ref gate).
@@ -107,7 +121,7 @@ def _upsert(findings: dict) -> str:
     paper = findings.get("paper", {})
     summary = findings.get("summary", {})
 
-    image_risk = _compute_dimension_risk(findings.get("image_duplicates", []))
+    image_risk = _compute_image_risk(findings)
     capped_data = _apply_data_caps(findings.get("data_anomalies", []))
     data_risk = _compute_dimension_risk(capped_data)
     ref_risk = _compute_dimension_risk(findings.get("reference_issues", []))
@@ -225,12 +239,26 @@ def main():
     ap.add_argument("--skip-done", action="store_true",
                     help="Resume: skip dirs whose DOI is already a row in yujing_4050 "
                          "(safe restart after a crash; upsert makes this idempotent anyway).")
+    ap.add_argument("--include-dirs-file", default="",
+                    help="Optional newline-delimited directory-name allowlist.")
+    ap.add_argument("--exclude-dirs-file", default="",
+                    help="Optional newline-delimited directory-name blocklist.")
     args = ap.parse_args()
 
     OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
     CN_DIR.mkdir(parents=True, exist_ok=True)
 
     all_dirs = sorted([d for d in INPUT_BASE.iterdir() if d.is_dir()])
+    include_dirs = _load_dir_names(args.include_dirs_file)
+    exclude_dirs = _load_dir_names(args.exclude_dirs_file)
+    if include_dirs:
+        before = len(all_dirs)
+        all_dirs = [d for d in all_dirs if d.name in include_dirs]
+        log.info("--include-dirs-file: %d of %d dirs selected", len(all_dirs), before)
+    if exclude_dirs:
+        before = len(all_dirs)
+        all_dirs = [d for d in all_dirs if d.name not in exclude_dirs]
+        log.info("--exclude-dirs-file: %d excluded, %d dirs remaining", before - len(all_dirs), len(all_dirs))
     ready = [d for d in all_dirs if _is_ready(d)]
     skipped = [d for d in all_dirs if not _is_ready(d)]
     log.info("4050-matched: %d dirs total | %d ready | %d not-ready (skipped)",

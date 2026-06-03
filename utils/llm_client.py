@@ -2,6 +2,7 @@ import re
 import time
 import logging
 import threading
+import os
 
 from openai import OpenAI
 
@@ -17,7 +18,7 @@ log = logging.getLogger(__name__)
 _client = None
 _client_lock = threading.Lock()
 
-LLM_TIMEOUT = 600
+LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "180"))
 
 
 def get_client() -> OpenAI:

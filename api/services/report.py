@@ -13,6 +13,10 @@ from api.config import (
 log = logging.getLogger(__name__)
 
 
+def _is_review_error(result: dict) -> bool:
+    return result.get("trigger") == "review_error"
+
+
 async def generate_reports(
     review_results: list[dict],
     task_dir: Path,
@@ -20,6 +24,15 @@ async def generate_reports(
     write_db: bool = True,
     report_namespace: str | None = None,
 ) -> list[str]:
+    errored = [
+        (r.get("doi") or "<unknown>", r.get("reason") or "review process failed")
+        for r in review_results
+        if _is_review_error(r)
+    ]
+    if errored:
+        sample = "; ".join(f"{doi}: {reason}" for doi, reason in errored[:3])
+        raise ValueError(f"Refusing to generate final review PDF for failed reviews: {sample}")
+
     results_path = task_dir / "review_results.json"
     results_path.write_text(json.dumps(review_results, ensure_ascii=False, indent=2))
 

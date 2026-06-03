@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from pathlib import Path
 
 BASE_DIR = Path("/opt/paper-integrity-checker")
@@ -72,6 +73,51 @@ def validate_table_name(name: str) -> str:
 
 
 def sanitize_report_namespace(name: str) -> str:
-    """Filesystem/URL-safe report namespace, normally a table name."""
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", (name or "").strip()).strip("._-")
-    return cleaned[:80] or "default"
+    """Filesystem/URL-safe report namespace, normally a table name.
+
+    Slash-separated namespaces are allowed for task isolation, e.g.
+    ``detection_reports/20260603-abcd``. Each segment is sanitized separately
+    so callers cannot escape the report root.
+    """
+    parts = []
+    for part in (name or "").strip().split("/"):
+        cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", part).strip("._-")
+        if cleaned:
+            parts.append(cleaned[:80])
+    return "/".join(parts) or "default"
+
+
+def _day_from_id(value: str) -> str:
+    value = value or ""
+    return value[:8] if re.match(r"^\d{8}", value) else datetime.now().strftime("%Y%m%d")
+
+
+def date_task_dir_name(value: str = "") -> str:
+    return f"{_day_from_id(value)}-task"
+
+
+def upload_dir_for_file_id(file_id: str) -> Path:
+    return UPLOADS_DIR / date_task_dir_name(file_id) / file_id
+
+
+def resolve_upload_dir(file_id: str) -> Path:
+    preferred = upload_dir_for_file_id(file_id)
+    if preferred.exists():
+        return preferred
+
+    legacy = UPLOADS_DIR / file_id
+    if legacy.exists():
+        return legacy
+
+    for candidate in UPLOADS_DIR.glob(f"*-task/{file_id}"):
+        if candidate.exists():
+            return candidate
+    return preferred
+
+
+def input_task_root(task_id: str) -> Path:
+    return INPUT_DIR / date_task_dir_name(task_id) / task_id
+
+
+def output_task_root(task_id: str) -> Path:
+    return OUTPUT_DIR / "tasks" / task_id

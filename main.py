@@ -37,13 +37,17 @@ log = logging.getLogger("paper-checker")
 
 
 def _safe_report_namespace(namespace: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", (namespace or "").strip()).strip("._-")
-    return cleaned[:80]
+    parts = []
+    for part in (namespace or "").strip().split("/"):
+        cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", part).strip("._-")
+        if cleaned:
+            parts.append(cleaned[:80])
+    return "/".join(parts)
 
 
 def _chinese_reports_dir(output_root: str, report_namespace: str = "") -> str:
-    base = Path(output_root) / "chinese_reports"
     namespace = _safe_report_namespace(report_namespace)
+    base = OUTPUT_DIR / "chinese_reports" if namespace else Path(output_root) / "chinese_reports"
     return str(base / namespace) if namespace else str(base)
 
 

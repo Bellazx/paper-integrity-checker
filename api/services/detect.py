@@ -27,10 +27,12 @@ async def run_detection_single(
     # insert below. write_db=False (detection_reports flow) forces no_db regardless of
     # table_name, so the yujing tables are never touched.
     no_db = (not write_db) or (table_name != DEFAULT_TABLE)
+    output_dir_path = Path(output_dir)
+    output_root = output_dir_path.parent
     cmd = [
         str(PYTHON), str(MAIN_PY),
         "--input", input_dir,
-        "--output", str(OUTPUT_DIR),
+        "--output", str(output_root),
     ]
     if skip_refs:
         cmd.append("--skip-refs")

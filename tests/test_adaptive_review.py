@@ -77,6 +77,28 @@ class AdaptiveReviewTests(unittest.IsolatedAsyncioTestCase):
     def _patch_state_dir(self):
         return mock.patch.object(review, "REVIEW_STATE_DIR", self.state_dir)
 
+    def test_extract_json_tolerates_unescaped_quotes_in_review_text(self):
+        text = '''prefix
+```json
+{
+  "doi": "10.1/test",
+  "result": "低风险",
+  "trigger": "ok",
+  "image_review": "图像正常",
+  "data_review": "论文正文写到"secondary supply ratio remains stable"，这是模型性质。",
+  "ref_review": "参考文献正常",
+  "methodology_review": "",
+  "verdict": "建议低风险",
+  "reason": "可解释"
+}
+```
+'''
+        parsed = review._extract_json_from_text(text)
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["result"], "低风险")
+        self.assertIn("secondary supply ratio", parsed["data_review"])
+
     async def test_high_risk_first_reviewer_returns_without_escalation(self):
         self._write_evidence({"total_must_address": 4})
         run_with_retry = mock.AsyncMock(return_value=_review_result("高风险"))
@@ -283,6 +305,38 @@ class AdaptiveReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["result"], "低风险")
         self.assertIn("流程错误", result.get("_review_warning", ""))
         ensure_evidence.assert_not_called()
+
+    async def test_cached_review_error_without_substantive_result_is_rerun(self):
+        self._write_evidence({"total_must_address": 2})
+        failed = _review_result("高风险", trigger="review_error", reason="Reviewer exhausted retries")
+        rerun_result = _review_result("高风险", reason="重新复核后的实质高风险")
+
+        with self._patch_state_dir():
+            state_path = review._review_state_path(
+                "10.1/test", str(self.report), str(self.input_dir)
+            )
+            state = review._new_review_state("10.1/test", str(self.report), str(self.input_dir))
+            state["stages"]["evidence_path"] = str(self.evidence_path)
+            state["stages"]["reviewer1"] = failed
+            state["stages"]["reviewer1_validated"] = failed
+            state["stages"]["reviewer2"] = failed
+            state["stages"]["reviewer2_validated"] = failed
+            state["stages"]["judge"] = failed
+            state["stages"]["final"] = failed
+            review._save_review_state(state_path, state)
+
+            run_with_retry = mock.AsyncMock(return_value=rerun_result)
+            with mock.patch.object(review, "_ensure_evidence_bundle", return_value=str(self.evidence_path)), \
+                 mock.patch.object(review, "_validate_review_result", side_effect=lambda *args: args[3]), \
+                 mock.patch.object(review, "_run_with_retry", run_with_retry), \
+                 mock.patch.object(review, "_run_judge", mock.AsyncMock()) as judge:
+                result = await review.run_review_single(
+                    "10.1/test", str(self.report), str(self.input_dir), str(self.output_dir)
+                )
+
+        self.assertEqual(result["reason"], "重新复核后的实质高风险")
+        self.assertEqual(run_with_retry.await_count, 1)
+        judge.assert_not_awaited()
 
 
 if __name__ == "__main__":

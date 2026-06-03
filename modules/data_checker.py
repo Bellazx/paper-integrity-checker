@@ -1,4 +1,5 @@
 import logging
+import hashlib
 import re
 import time
 from pathlib import Path
@@ -25,6 +26,17 @@ from utils.stats import (
 log = logging.getLogger(__name__)
 
 MAX_LOAD_RETRIES = 3
+
+# Crawler-generated metadata files (resource manifests / figure download logs) that live
+# alongside the paper but are NOT experimental data. Analyzing them produces meaningless
+# anomalies (e.g. decimal_uniformity on a 'figure_no' column) and masks real source-data
+# absence, so they must be skipped during data-anomaly detection.
+_METADATA_FILENAMES = {"resources.csv", "figures.csv", "manifest.csv", "resources.tsv"}
+
+
+def is_metadata_data_file(path: str | Path) -> bool:
+    """Return True for crawler metadata files that are not experimental source data."""
+    return Path(path).name.lower() in _METADATA_FILENAMES
 
 _IV_KEYWORDS = {
     'day', 'days', 'time', 'hour', 'hours', 'minute', 'minutes', 'min',
@@ -56,13 +68,44 @@ _STAT_COL_KEYWORDS = {
     'log2fc', 'log2foldchange', 'logfc',
     'stat', 'statistic', 'zscore', 'z_score',
     'average', 'avg', 'mean',
+    'score', 'rank', 'ratio', 'percent', 'percentage',
+    'count', 'counts', 'frequency', 'freq',
+    'estimate', 'coefficient', 'coef',
+    'auc', 'or', 'hr', 'ci',
 }
+
+_STAT_COL_PATTERNS = [
+    r'\bp[\s_.-]*(?:adj|adjusted|value|val)\b',
+    r'\b(?:fdr|q[\s_.-]*(?:value|val)|e[\s_.-]*(?:value|val))\b',
+    r'\b(?:log2?[\s_.-]*fc|fold[\s_.-]*change|z[\s_.-]*score)\b',
+    r'\b(?:score|rank|ratio|percent(?:age)?|frequency|freq|count|counts)\b',
+    r'\b(?:estimate|coefficient|coef|odds|hazard|auc|ci|r2|correlation|corr)\b',
+]
+
+_NON_MEASUREMENT_COL_PATTERNS = [
+    r'\b(?:latitude|longitude|longtitude|lat|lon)\b',
+    r'\b(?:chr|chrom|chromosome|genome|genomic|locus|coordinate|bp|orf|snp)\b',
+    r'\b(?:start|end|position|pos|index|idx|number|no|id)\b',
+    r'\b(?:taxonomy|taxon|phylum|class|order|family|genus|species)\b',
+    r'\b(?:gene|protein|transcript|motif|domain|annotation|pathway|kegg|go)\b',
+    r'\b(?:cluster|module|node|edge|tree|phylogeny|isolate|accession)\b',
+    r'\b(?:length|size|year|date)\b',
+]
+
+_NON_MEASUREMENT_CONTEXT_PATTERNS = [
+    r'\b(?:snp|snps|tree|phylogeny|phylogenetic|isolate|isolates)\b',
+    r'\b(?:taxonomy|taxon|phylum|class|order|family|genus|species)\b',
+    r'\b(?:annotation|pathway|kegg|go|orthogroup|cluster|module)\b',
+]
 
 
 def _is_stat_column(col_name: str) -> bool:
     name = str(col_name).lower().strip()
     name_clean = re.sub(r'[()（）\s\-]', '_', name).strip('_')
-    return name_clean in _STAT_COL_KEYWORDS
+    if name_clean in _STAT_COL_KEYWORDS:
+        return True
+    name_words = re.sub(r'[()（）_\-./]+', ' ', name).strip()
+    return any(re.search(pattern, name_words) for pattern in _STAT_COL_PATTERNS)
 
 
 def _is_unnamed_column(col_name: str) -> bool:
@@ -79,6 +122,26 @@ _SD_COL_PATTERN = re.compile(
 def _is_sd_column(col_name: str) -> bool:
     """Check if a column name suggests it holds standard deviations / standard errors."""
     return bool(_SD_COL_PATTERN.search(str(col_name)))
+
+
+def _is_non_measurement_name(col_name: str) -> bool:
+    name = str(col_name).lower().strip()
+    name_words = re.sub(r'[()（）_\-./]+', ' ', name).strip()
+    return any(re.search(pattern, name_words) for pattern in _NON_MEASUREMENT_COL_PATTERNS)
+
+
+def _is_numeric_column_name(col_name: str) -> bool:
+    try:
+        float(str(col_name).strip())
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _is_non_measurement_context(*parts: str) -> bool:
+    text = " ".join(str(p).lower() for p in parts)
+    text_words = re.sub(r'[()（）_\-./]+', ' ', text).strip()
+    return any(re.search(pattern, text_words) for pattern in _NON_MEASUREMENT_CONTEXT_PATTERNS)
 
 
 def _is_independent_variable(col_name: str) -> bool:
@@ -98,6 +161,33 @@ def _is_independent_variable(col_name: str) -> bool:
     if name.endswith('rank') or name.endswith('score'):
         return True
     return False
+
+
+def _row_numeric_ratio(row) -> float:
+    """Fraction of a row's non-empty cells that parse as numbers."""
+    vals = [v for v in row if pd.notna(v) and str(v).strip() != ""]
+    if not vals:
+        return 0.0
+    num = sum(1 for v in vals if pd.notna(pd.to_numeric(v, errors="coerce")))
+    return num / len(vals)
+
+
+def _find_header_row(df: pd.DataFrame, start_row: int, end_row: int) -> int:
+    """Locate the REAL header row of a sub-table.
+
+    Sub-tables can have a multi-row header: <label> / blank / group-labels / real-header / data.
+    The real header is the last mostly-text row immediately above the first numeric data row.
+    Falls back to start_row+1 if no numeric data is found.
+    """
+    first_data = None
+    for r in range(start_row + 1, end_row):
+        if _row_numeric_ratio(df.iloc[r]) >= 0.5:   # this row is mostly numbers => data
+            first_data = r
+            break
+    if first_data is None or first_data == start_row + 1:
+        return start_row + 1
+    # the text row directly above the first data row is the header
+    return first_data - 1
 
 
 def _split_sub_tables(df: pd.DataFrame, filename: str, sheet_name: str) -> dict[str, pd.DataFrame]:
@@ -135,8 +225,8 @@ def _split_sub_tables(df: pd.DataFrame, filename: str, sheet_name: str) -> dict[
     tables = {}
     for idx, (start_row, label) in enumerate(label_rows):
         end_row = label_rows[idx + 1][0] if idx + 1 < len(label_rows) else len(df)
-        header_row = start_row + 1
-        data_start = start_row + 2
+        header_row = _find_header_row(df, start_row, end_row)
+        data_start = header_row + 1
         if data_start >= end_row:
             continue
 
@@ -182,8 +272,22 @@ def _load_data_files(data_dir: str) -> tuple[dict[str, dict[str, pd.DataFrame]],
     data_dir = Path(data_dir)
     result = {}
     failed_files = []
+    seen_fingerprints: set[tuple[int, str]] = set()
 
     for f in sorted(data_dir.rglob("*")):
+        if is_metadata_data_file(f):
+            continue  # crawler metadata, not experimental data
+        if f.is_file() and f.suffix.lower() in (".xlsx", ".xls", ".csv", ".docx", ".fcs", ".sav"):
+            try:
+                fp = (f.stat().st_size, hashlib.sha256(f.read_bytes()).hexdigest())
+            except OSError as e:
+                log.warning("Failed to fingerprint %s: %s", f.name, e)
+                failed_files.append(f.name)
+                continue
+            if fp in seen_fingerprints:
+                log.info("Skipping duplicate source data file by content: %s", f.name)
+                continue
+            seen_fingerprints.add(fp)
         if f.suffix.lower() in (".xlsx", ".xls"):
             loaded = False
             engine = "xlrd" if f.suffix.lower() == ".xls" else "openpyxl"
@@ -264,6 +368,8 @@ def _load_data_files(data_dir: str) -> tuple[dict[str, dict[str, pd.DataFrame]],
                     rf = rarfile.RarFile(str(f))
                     rf.extractall(tmp_dir)
                     for extracted in sorted(Path(tmp_dir).rglob("*")):
+                        if is_metadata_data_file(extracted):
+                            continue  # crawler metadata, not experimental data
                         if extracted.suffix.lower() in (".xlsx", ".xls"):
                             engine = "xlrd" if extracted.suffix.lower() == ".xls" else "openpyxl"
                             try:
@@ -306,10 +412,88 @@ def _looks_like_row_index(values: np.ndarray) -> bool:
     return False
 
 
+def _is_arithmetic_axis(values: np.ndarray) -> bool:
+    """Column-name-independent independent-variable test: a strictly monotonic, near-perfect
+    arithmetic sequence (constant step) is an axis / swept parameter (time, displacement,
+    concentration, wavelength, coordinate...), NOT measurement data — even when the column name
+    was lost to a parsing artifact (col_N). Such columns must not be flagged as fraud.
+
+    Requires >=5 points, a non-zero constant step, and tiny deviation from perfect spacing.
+    """
+    try:
+        v = np.asarray(values, dtype=float)
+    except (ValueError, TypeError):
+        return False
+    v = v[np.isfinite(v)]
+    if len(v) < 4:
+        return False
+    diffs = np.diff(v)
+    if not np.all(diffs > 0) and not np.all(diffs < 0):
+        return False                      # must be strictly monotonic
+    step = np.median(diffs)
+    if step == 0:
+        return False
+    span = abs(v[-1] - v[0])
+    if span == 0:
+        return False
+    # max deviation from a perfect arithmetic progression, relative to total span
+    arith_ok = np.max(np.abs(diffs - step)) / (abs(step)) <= 0.02 if step != 0 else False
+    geo_ok = False
+    if np.all(v > 0):
+        ld = np.diff(np.log(v))
+        lstep = np.median(ld)
+        geo_ok = np.max(np.abs(ld - lstep)) / (abs(lstep)) <= 0.02 if lstep != 0 else False
+    if not (arith_ok or geo_ok):
+        return False
+    return True
+
+
+def _looks_like_categorical_code(values: np.ndarray) -> bool:
+    """Integer-coded categories/count flags should not drive fabrication statistics."""
+    if values.ndim != 1 or len(values) < 10:
+        return False
+    try:
+        v = np.asarray(values, dtype=float)
+    except (ValueError, TypeError):
+        return False
+    v = v[np.isfinite(v)]
+    if len(v) < 10:
+        return False
+    if not np.all(np.isclose(v, np.round(v))):
+        return False
+    unique_count = len(np.unique(v))
+    if unique_count <= min(20, max(3, int(len(v) * 0.05))):
+        return True
+    return False
+
+
+def _is_measurement_column(col_name: str, values: np.ndarray | None = None, *, allow_unnamed: bool = False) -> bool:
+    """Return True only for columns suitable for statistical fabrication checks."""
+    name = str(col_name)
+    if (_is_unnamed_column(name) or _is_numeric_column_name(name)) and not allow_unnamed:
+        return False
+    if (
+        _is_independent_variable(name)
+        or _is_stat_column(name)
+        or _is_whitelist_column(name)
+        or _is_non_measurement_name(name)
+    ):
+        return False
+    if values is not None:
+        arr = np.asarray(values)
+        if (
+            _looks_like_row_index(arr)
+            or _is_arithmetic_axis(arr)
+            or _looks_like_categorical_code(arr)
+        ):
+            return False
+    return True
+
+
 def _analyze_column_group(values: np.ndarray, location: str, col_name: str = "") -> list[dict]:
     """Run all statistical tests on a single data group."""
     anomalies = []
-    is_iv = _is_independent_variable(col_name) or _looks_like_row_index(values)
+    is_iv = not _is_measurement_column(col_name, values)
 
     if not is_iv:
         unique_vals = set(values)
@@ -379,10 +563,15 @@ def _analyze_column_group(values: np.ndarray, location: str, col_name: str = "")
     if not is_iv and len(values) >= VALUE_RECYCLING_MIN_SAMPLES:
         recycle_result = check_value_recycling(values, min_samples=VALUE_RECYCLING_MIN_SAMPLES)
         if recycle_result.get("flagged"):
+            severity = recycle_result["severity"]
+            # Dense curve/grid source-data often repeats rounded values many times.
+            # Treat this as review context, not as stand-alone high-risk evidence.
+            if severity == "high" and len(values) >= 500 and recycle_result.get("unique_count", 0) >= 20:
+                severity = "medium"
             anomalies.append({
                 "test": "value_recycling",
                 "location": location,
-                "severity": recycle_result["severity"],
+                "severity": severity,
                 "details": recycle_result,
                 "description": f"Only {recycle_result['unique_count']} unique values fill "
                                f"{recycle_result['total_count']} data points "
@@ -422,6 +611,9 @@ def _analyze_sheet(df: pd.DataFrame, file_name: str, sheet_name: str) -> list[di
     MAX_COLS_FOR_PAIRWISE = 200
     anomalies = []
 
+    if _is_non_measurement_context(file_name, sheet_name):
+        return anomalies
+
     if df.columns.duplicated().any():
         df = df.copy()
         new_cols = []
@@ -437,37 +629,41 @@ def _analyze_sheet(df: pd.DataFrame, file_name: str, sheet_name: str) -> list[di
         df.columns = new_cols
 
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    measurement_cols = [
+        c for c in numeric_cols
+        if _is_measurement_column(str(c), df[c].dropna().values)
+    ]
 
-    if not numeric_cols:
+    if not measurement_cols:
         return anomalies
 
-    for col in numeric_cols:
+    for col in measurement_cols:
         values = df[col].dropna().values
         if len(values) < 3:
             continue
         location = f"{file_name} / {sheet_name} / column '{col}'"
         anomalies.extend(_analyze_column_group(values, location, col_name=str(col)))
 
-    benford_all = np.concatenate([df[c].dropna().values for c in numeric_cols])
-    benford_result = benfords_law_test(benford_all, BENFORD_MIN_SAMPLES)
-    if benford_result.get("testable") and benford_result.get("flagged"):
-        anomalies.append({
-            "test": "benfords_law",
-            "location": f"{file_name} / {sheet_name} (all numeric data)",
-            "severity": "medium",
-            "details": benford_result,
-            "description": f"First-digit distribution deviates from Benford's law "
-                           f"(chi2={benford_result['chi2']:.2f}, p={benford_result['p_value']:.4f}, "
-                           f"n={benford_result['n']})",
-        })
+    benford_values = [df[c].dropna().values for c in measurement_cols if len(df[c].dropna().values) > 0]
+    if benford_values:
+        benford_all = np.concatenate(benford_values)
+        benford_result = benfords_law_test(benford_all, BENFORD_MIN_SAMPLES)
+        if benford_result.get("testable") and benford_result.get("flagged"):
+            anomalies.append({
+                "test": "benfords_law",
+                "location": f"{file_name} / {sheet_name} (measurement numeric data)",
+                "severity": "medium",
+                "details": benford_result,
+                "description": f"First-digit distribution deviates from Benford's law "
+                               f"(chi2={benford_result['chi2']:.2f}, p={benford_result['p_value']:.4f}, "
+                               f"n={benford_result['n']})",
+            })
 
-    if len(numeric_cols) >= 2 and len(numeric_cols) <= MAX_COLS_FOR_PAIRWISE:
+    if len(measurement_cols) >= 2 and len(measurement_cols) <= MAX_COLS_FOR_PAIRWISE:
         groups = {}
-        for col in numeric_cols:
+        for col in measurement_cols:
             vals = df[col].dropna().values
             if len(vals) < 3:
-                continue
-            if _is_independent_variable(str(col)) or _looks_like_row_index(vals):
                 continue
             groups[str(col)] = vals
 
@@ -483,7 +679,7 @@ def _analyze_sheet(df: pd.DataFrame, file_name: str, sheet_name: str) -> list[di
                                    f"{dup['overlap_ratio']*100:.0f}% of values",
                 })
 
-    y_cols = [c for c in numeric_cols if not _is_independent_variable(str(c)) and not _is_stat_column(str(c)) and not _is_unnamed_column(str(c))]
+    y_cols = measurement_cols
     if len(y_cols) > MAX_COLS_FOR_PAIRWISE:
         log.info("Skipping linear dependency check: %d y-columns exceeds limit %d (%s / %s)",
                  len(y_cols), MAX_COLS_FOR_PAIRWISE, file_name, sheet_name)
@@ -547,10 +743,7 @@ def _get_measurement_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Extract numeric measurement columns, excluding IVs, stats, and whitelist columns."""
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     keep = [c for c in numeric_cols
-            if not _is_independent_variable(str(c))
-            and not _is_stat_column(str(c))
-            and not _is_whitelist_column(str(c))
-            and not _looks_like_row_index(df[c].dropna().values)]
+            if _is_measurement_column(str(c), df[c].dropna().values)]
     if not keep:
         return pd.DataFrame()
     return df[keep]
@@ -596,9 +789,13 @@ def _find_matching_columns(df_a: pd.DataFrame, df_b: pd.DataFrame) -> list[dict]
         vals_a = df_a[col_a].dropna().values
         if vals_a.ndim != 1 or len(vals_a) < 3:
             continue
+        if not _is_measurement_column(str(col_a), vals_a):
+            continue                      # shared X-axis/time across sheets is normal
         for col_b in df_b.columns:
             vals_b = df_b[col_b].dropna().values
             if vals_b.ndim != 1 or len(vals_b) < 3:
+                continue
+            if not _is_measurement_column(str(col_b), vals_b):
                 continue
             n = min(len(vals_a), len(vals_b))
             if n < 3:
@@ -642,6 +839,9 @@ def _analyze_cross_sheet(sheets: dict[str, pd.DataFrame], file_name: str) -> lis
                 break
             name_a, name_b = sheet_names[i], sheet_names[j]
             df_a, df_b = sheets[name_a], sheets[name_b]
+
+            if _is_non_measurement_context(file_name, name_a, name_b):
+                continue
 
             if len(df_a) > MAX_ROWS_FOR_CROSS or len(df_b) > MAX_ROWS_FOR_CROSS:
                 continue

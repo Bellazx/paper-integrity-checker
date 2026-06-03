@@ -139,7 +139,7 @@ curl -X POST "http://10.119.9.99/paper-api/api/upload" \
 
 ```json
 {
-  "file_id": "20260602103015_frontend_user",
+  "file_id": "20260602103015_frontend_user_a1b2c3d4",
   "message": "上传成功，识别到 1 篇论文",
   "file_info": {
     "filename": "upload.zip",
@@ -155,6 +155,8 @@ curl -X POST "http://10.119.9.99/paper-api/api/upload" \
   }
 }
 ```
+
+上传包会保存到 `data/uploads/YYYYMMDD-task/{file_id}/`。`file_id` 带随机后缀，即使同一用户在同一秒上传同名文件，也会生成不同任务输入。
 
 失败响应格式：
 
@@ -254,9 +256,12 @@ curl -X POST "http://10.119.9.99/paper-api/api/detection/submit" \
 - `submission_no` 固定等于 `file_id`
 - 单篇提交：`fold_name` 写入 `NULL`
 - 批量提交：同一个 `submission_no` 下，每篇论文用源目录名作为 `fold_name`
+- submit 解压后的论文保存到 `data/input/YYYYMMDD-task/{task_id}/{paper_slug}/`；同 DOI/同文件名的不同任务不会共用输入目录
+- 前端流程的初审/复审报告 namespace 为 `detection_reports/{task_id}`，避免同 DOI 报告 PDF 相互覆盖
 - 初审完成后写入 `chushen_result`、`chushen_report_url`，`status=0`
 - 只有初审高风险论文会进入 AI 复核
 - AI 复核 PDF 生成并写库后，写入 `review_result`、`review_report_url`，`status=2`
+- 如果 AI 复核进程超时、解析失败或重试耗尽，不会生成最终复核 PDF，也不会把流程错误写成 `review_result=高风险`；该记录保留 `status=0`、复审字段为空，任务返回 `status=failed`
 - 同一个 `file_id + fold_name` 重复提交时会更新原记录，并重置旧复审字段
 
 ## 3. 开发者提交任务
@@ -374,7 +379,8 @@ curl "http://10.119.9.99/paper-api/api/task/20260602-a1b2c3d4"
         "chushen_report_url": "http://10.119.9.99/chinese_reports/detection_reports/10.3389_fcimb.2021.649067_xxx.pdf",
         "review_result": "低风险",
         "review_report_url": "http://10.119.9.99/review_reports/detection_reports/review_10.3389_fcimb.2021.649067.pdf",
-        "status": 2
+        "status": 2,
+        "review_error": null
       }
     ]
   },
@@ -611,7 +617,7 @@ http://10.119.9.99/review_reports/{namespace}/review_{doi_slug}.pdf
 
 `namespace` 用于隔离不同业务表/流程产生的同 DOI 报告，避免 PDF 互相覆盖：
 
-- 前端 `/api/detection/submit` 固定使用 `detection_reports`
+- 前端 `/api/detection/submit` 使用 `detection_reports/{task_id}`
 - 开发者 `/api/task/submit` 使用传入的 `table_name`，例如 `yujing_quanliang`
 
 ## 11. 前端推荐实现
@@ -624,7 +630,7 @@ http://10.119.9.99/review_reports/{namespace}/review_{doi_slug}.pdf
    - `result.detection_reports[].review_report_url`
    - `result.detection_reports[].chushen_result`
    - `result.detection_reports[].review_result`
-5. `status=failed` 时展示 `error`。
+5. `status=failed` 时展示 `error`。如果 `result.detection_reports[].review_error` 有值，表示初审已完成但 AI 复核进程失败，前端应展示为“复核失败/待重试”，不要展示为复核高风险。
 
 前端不要根据任务是否有 `review_report_url` 判断初审是否成功。低风险论文不会进入 AI 复核，因此可能只有 `chushen_report_url`，没有 `review_report_url`。
 

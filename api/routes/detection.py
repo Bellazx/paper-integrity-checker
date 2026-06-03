@@ -17,7 +17,7 @@ import shutil
 
 from fastapi import APIRouter, HTTPException
 
-from api.config import MAX_BATCH_PAPERS, TASKS_DIR, UPLOADS_DIR
+from api.config import MAX_BATCH_PAPERS, TASKS_DIR, resolve_upload_dir
 from api.models import (
     DetectionSubmitRequest, TaskConfig, TaskCreatedResponse, TaskMode, TaskStatus,
 )
@@ -32,7 +32,7 @@ router = APIRouter()
 @router.post("/submit", response_model=TaskCreatedResponse)
 async def submit_detection(req: DetectionSubmitRequest):
     # Locate the uploaded archive for this file_id
-    upload_dir = UPLOADS_DIR / req.file_id
+    upload_dir = resolve_upload_dir(req.file_id)
     archive_path = None
     for ext in (".zip", ".rar"):
         candidate = upload_dir / f"upload{ext}"

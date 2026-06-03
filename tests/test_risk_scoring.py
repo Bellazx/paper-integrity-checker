@@ -115,11 +115,68 @@ class ExistingTriggersUnaffected(unittest.TestCase):
     def test_data_high_still_triggers_without_splice(self):
         data = [
             {"test": "coefficient_of_variation", "severity": "high", "details": {}}
-            for _ in range(5)
+            for _ in range(7)
         ]
         r = _compute_overall_risk(_findings(n_splice=0, data=data))
         self.assertEqual(r["level"], "高风险")
         self.assertIn("data", r["high_dimensions"])
+
+    def test_low_label_data_score_does_not_force_overall_high(self):
+        data = [
+            {"test": "benfords_law", "severity": "medium", "details": {}}
+            for _ in range(6)
+        ] + [
+            {"test": "decimal_uniformity", "severity": "low", "details": {}}
+            for _ in range(20)
+        ]
+        r = _compute_overall_risk(_findings(n_splice=0, data=data))
+        self.assertLessEqual(r["score"], 60)
+        self.assertEqual(r["level"], "低风险")
+        self.assertNotIn("data", r["high_dimensions"])
+
+    def test_image_score_alone_does_not_force_overall_high(self):
+        image = [
+            {"match_type": "partial_duplicate", "severity": "high", "page_a": i + 1, "page_b": i + 2}
+            for i in range(7)
+        ]
+        r = _compute_overall_risk(_findings(n_splice=0, image=image))
+        self.assertGreaterEqual(r["score"], 60)
+        self.assertEqual(r["level"], "低风险")
+        self.assertNotIn("image", r["high_dimensions"])
+
+    def test_same_page_image_duplicates_do_not_count_as_image_risk(self):
+        image = [
+            {
+                "match_type": "full_duplicate",
+                "severity": "high",
+                "page_a": 12,
+                "page_b": 12,
+                "image_a": f"page_012_img_{i:03d}.png",
+                "image_b": f"page_012_img_{i + 1:03d}.png",
+            }
+            for i in range(8)
+        ]
+        img_dim = _compute_image_risk(_findings(n_splice=0, image=image))
+        r = _compute_overall_risk(_findings(n_splice=0, image=image))
+
+        self.assertEqual(img_dim["score"], 0)
+        self.assertEqual(r["level"], "低风险")
+        self.assertNotIn("image", r["high_dimensions"])
+
+    def test_reference_score_alone_does_not_force_overall_high(self):
+        ref = [
+            {
+                "issue_type": "doi_not_found",
+                "severity": "high",
+                "ref_text": f"Author {i}. Plausible missing reference title. Journal Name. 2024;1:1-2.",
+                "details": {},
+            }
+            for i in range(7)
+        ]
+        r = _compute_overall_risk(_findings(n_splice=0, ref=ref, paper={"total_references": 100}))
+        self.assertGreaterEqual(r["score"], 60)
+        self.assertEqual(r["level"], "低风险")
+        self.assertNotIn("reference", r["high_dimensions"])
 
 
 if __name__ == "__main__":
