@@ -254,28 +254,41 @@ def _is_truncated_doi(doi: str) -> bool:
 
 
 def _verify_by_text(ref_text: str) -> dict:
-    """Verify a reference by bibliographic text search in CrossRef."""
-    try:
-        query = ref_text[:300]
-        resp = requests.get(
-            f"{CROSSREF_API_BASE}/works",
-            params={"query.bibliographic": query, "rows": 1},
-            headers=HEADERS,
-            timeout=15,
-        )
-        if resp.status_code == 200:
-            items = resp.json()["message"]["items"]
-            if items:
-                best = items[0]
-                return {
-                    "found": True,
-                    "matched_doi": best.get("DOI"),
-                    "crossref_title": (best.get("title") or [None])[0],
-                    "crossref_score": best.get("score", 0),
-                }
-    except Exception as e:
-        log.warning("CrossRef text search failed: %s", e)
-    return {"found": False, "error": "no_match"}
+    """Verify a reference by bibliographic text search in CrossRef.
+
+    Retries transient failures (429 / 5xx / timeout) up to 3 times with
+    exponential backoff, mirroring _verify_by_doi().
+    """
+    query = ref_text[:300]
+    last_status = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(
+                f"{CROSSREF_API_BASE}/works",
+                params={"query.bibliographic": query, "rows": 1},
+                headers=HEADERS,
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                items = resp.json()["message"]["items"]
+                if items:
+                    best = items[0]
+                    return {
+                        "found": True,
+                        "matched_doi": best.get("DOI"),
+                        "crossref_title": (best.get("title") or [None])[0],
+                        "crossref_score": best.get("score", 0),
+                    }
+                return {"found": False, "error": "no_match"}
+            if resp.status_code == 404:
+                return {"found": False, "error": "no_match"}
+            last_status = resp.status_code
+        except Exception as e:
+            log.warning("CrossRef text search error (attempt %d): %s", attempt + 1, e)
+            last_status = "exception"
+        time.sleep(1.5 * (attempt + 1))
+    log.warning("CrossRef text search exhausted retries (last status: %s)", last_status)
+    return {"found": False, "error": "lookup_failed"}
 
 
 def _normalize_for_match(s: str) -> str:

@@ -325,6 +325,11 @@ def _generate_analysis_html(findings: dict, first_pages_text: str) -> tuple[dict
 
     analysis_html = re.sub(r'<table[^>]*>.*?</table>', '', analysis_html, flags=re.DOTALL)
     analysis_html = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', analysis_html)
+    # Strip any leftover section markers that the LLM may have echoed from the
+    # prompt template (===METADATA_JSON===, ===ANALYSIS_HTML===, and any other
+    # custom ===SOMETHING=== delimiters). Without this, those tokens leak into
+    # the rendered PDF as visible literal text.
+    analysis_html = re.sub(r'={3,}\s*[A-Z_][A-Z0-9_]*\s*={3,}', '', analysis_html)
     log.info("Combined response parsed (analysis: %d chars)", len(analysis_html))
     return metadata, analysis_html
 
@@ -522,11 +527,42 @@ def _count_fraud_indicators(findings: dict) -> int:
                 has_volume, has_benford])
 
 
+def _has_data_integrity_burden(capped_data: list[dict], reference_issues: list[dict]) -> bool:
+    """Escalate broad, corroborated data-integrity burdens that lack one dominant HIGH hit.
+
+    Some papers evade the single-dimension >60 gate because the evidence is spread across
+    repeated medium-strength data reuse/distribution anomalies plus multiple reference
+    verification failures. This trigger requires several independent signals so that
+    proteomics-scale decimal/noise artefacts alone do not become high risk.
+    """
+    from collections import Counter
+
+    data_severity = Counter(_reclassify_severity(x) for x in capped_data)
+    tests = Counter(
+        x.get("test")
+        for x in capped_data
+        if _reclassify_severity(x) in ("high", "medium")
+    )
+    ref_med_or_high = sum(
+        1 for x in reference_issues
+        if _reclassify_severity(x) in ("high", "medium")
+    )
+
+    return (
+        len(capped_data) >= 15
+        and data_severity["high"] + data_severity["medium"] >= 7
+        and tests["value_recycling"] >= 3
+        and tests["benfords_law"] >= 2
+        and ref_med_or_high >= 4
+    )
+
+
 def _compute_overall_risk(findings: dict) -> dict:
     image_risk = _compute_image_risk(findings)
     capped_data = _apply_data_caps(findings.get("data_anomalies", []))
     data_risk = _compute_dimension_risk(capped_data)
-    ref_risk = _compute_dimension_risk(findings.get("reference_issues", []))
+    ref_issues = findings.get("reference_issues", [])
+    ref_risk = _compute_dimension_risk(ref_issues)
 
     max_dim = max(image_risk["score"], data_risk["score"], ref_risk["score"])
     weighted_avg = (
@@ -606,7 +642,6 @@ def _compute_overall_risk(findings: dict) -> dict:
     if cross_page_imgs >= 10 and score < 56:
         score = 56
 
-    ref_issues = findings.get("reference_issues", [])
     ref_high_genuine = 0
     ref_high_filtered = 0
     for r in ref_issues:
@@ -690,8 +725,12 @@ def _compute_overall_risk(findings: dict) -> dict:
         score = 56
 
     data_high_trigger = data_risk["score"] > 60
+    data_integrity_burden_trigger = _has_data_integrity_burden(capped_data, ref_issues)
+    if data_integrity_burden_trigger and score < 61:
+        score = 61
     is_high = (
         data_high_trigger
+        or data_integrity_burden_trigger
         or cross_page_imgs >= 10
         or full_dup_trigger
         or ref_fabrication_trigger
@@ -703,8 +742,10 @@ def _compute_overall_risk(findings: dict) -> dict:
 
     high_dims = set()
     if is_high:
-        if data_high_trigger:
+        if data_high_trigger or data_integrity_burden_trigger:
             high_dims.add("data")
+        if data_integrity_burden_trigger:
+            high_dims.add("reference")
         if cross_page_imgs >= 10:
             high_dims.add("image")
         if full_dup_trigger:
@@ -919,8 +960,60 @@ def _soften_risk_wording(html: str) -> str:
     return re.sub(r"(?<!疑似)(?:建议)?高风险", "疑似高风险", html)
 
 
+def _sanitize_internal_references(html: str) -> str:
+    """Remove internal file/field names that should never appear in user-facing reports."""
+    html = re.sub(r"report\.json", "初检报告", html)
+    replacements = (
+        ("image_duplicates", "图像重复"),
+        ("image_splicing", "图像拼接"),
+        ("data_anomalies", "数据异常"),
+        ("reference_issues", "参考文献问题"),
+        ("cross_sheet_row_duplicate", "跨表整行重复"),
+        ("cross_sheet_column_duplicate", "跨表整列重复"),
+        ("cross_sheet_reuse", "跨表数据复用"),
+        ("cross_group_duplicate", "跨组重复"),
+        ("duplicate_column_pairs", "重复数据列"),
+        ("decimal_uniformity", "小数位一致性"),
+        ("benfords_law", "首位数字分布"),
+        ("value_recycling", "数值重复使用"),
+        ("terminal_digit", "末位数字分布"),
+        ("sd_regularity", "标准差规律性"),
+        ("arithmetic_sequence", "等差数列"),
+        ("geometric_sequence", "等比数列"),
+        ("coefficient_of_variation", "变异系数"),
+        ("not_found", "未收录"),
+        ("doi_mismatch", "DOI不匹配"),
+        ("PHash", "感知哈希"),
+    )
+    for old, new in replacements:
+        html = html.replace(old, new)
+    # "Benford定律" → "首位数字分布定律"; avoid double prefix like "首位数首位数字分布定律"
+    html = re.sub(r"首位数字?Benford定律", "首位数字分布定律", html)
+    html = re.sub(r"Benford定律", "首位数字分布定律", html)
+    html = html.replace("Benford", "首位数字分布")
+    # Internal file names and script paths
+    html = re.sub(r"review_evidence\.json", "复核证据包", html)
+    html = re.sub(r"scan_columns\.py", "列对扫描工具", html)
+    html = re.sub(r"forensic_checks\.py", "统计核查工具", html)
+    html = re.sub(r"coverage_validator", "覆盖率校验", html)
+    # English severity labels that agents sometimes leave in text
+    html = re.sub(r"\bHIGH级别", "高风险级别", html)
+    html = re.sub(r"\bMEDIUM级别", "中等级别", html)
+    html = re.sub(r"\bLOW级别", "低级别", html)
+    html = re.sub(r"\bseverity\s*=\s*high\b", "严重程度=高", html)
+    html = re.sub(r"\bseverity\s*=\s*medium\b", "严重程度=中", html)
+    html = re.sub(r"\bseverity\s*=\s*low\b", "严重程度=低", html)
+    html = re.sub(r"\blow_match_score\b", "标题匹配度偏低", html)
+    html = re.sub(r"\bdoi_truncated\b", "DOI截断", html)
+    html = re.sub(r"\bdoi_unverified\b", "DOI未验证", html)
+    html = re.sub(r"\btitle_mismatch\b", "标题不匹配", html)
+    html = re.sub(r"\blinear_dependency\b", "线性依赖", html)
+    return html
+
+
 def _render_pdf(html: str, output_path: str):
     html = _soften_risk_wording(html)
+    html = _sanitize_internal_references(html)
     story = fitz.Story(html)
     writer = fitz.DocumentWriter(output_path)
     mediabox = fitz.paper_rect("a4")

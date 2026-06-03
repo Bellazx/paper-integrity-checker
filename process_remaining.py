@@ -23,6 +23,9 @@ MAX_WORKERS = 16
 
 
 def _analyze_one(input_dir, output_dir, chinese_reports_dir):
+    from pathlib import Path as _P
+    if any(_P(input_dir).glob("*.pdf")) or any(_P(input_dir).glob("*.PDF")):
+        return analyze_paper(input_dir, output_dir, chinese_reports_dir=chinese_reports_dir)
     if is_nature_crawl(input_dir):
         return analyze_nature_paper(input_dir, output_dir, chinese_reports_dir=chinese_reports_dir)
     return analyze_paper(input_dir, output_dir, chinese_reports_dir=chinese_reports_dir)

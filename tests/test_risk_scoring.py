@@ -178,6 +178,59 @@ class ExistingTriggersUnaffected(unittest.TestCase):
         self.assertEqual(r["level"], "低风险")
         self.assertNotIn("reference", r["high_dimensions"])
 
+    def test_data_reference_burden_triggers_high_risk(self):
+        data = [
+            {"test": "value_recycling", "severity": "medium", "details": {}}
+            for _ in range(4)
+        ] + [
+            {"test": "benfords_law", "severity": "medium", "details": {"p_value": 0.02}}
+            for _ in range(2)
+        ] + [
+            {"test": "terminal_digit", "severity": "medium", "details": {}}
+        ] + [
+            {"test": "decimal_uniformity", "severity": "low", "details": {}}
+            for _ in range(8)
+        ]
+        ref = [
+            {
+                "issue_type": "not_found",
+                "severity": "medium",
+                "ref_text": f"Author {i}. Missing but plausible article. Journal. 2024;1:1-2.",
+                "details": {},
+            }
+            for i in range(4)
+        ]
+
+        r = _compute_overall_risk(_findings(data=data, ref=ref, paper={"total_references": 50}))
+
+        self.assertEqual(r["score"], 61)
+        self.assertEqual(r["level"], "高风险")
+        self.assertIn("data", r["high_dimensions"])
+        self.assertIn("reference", r["high_dimensions"])
+
+    def test_decimal_uniformity_volume_without_corroboration_stays_low(self):
+        data = [
+            {"test": "decimal_uniformity", "severity": "low", "details": {}}
+            for _ in range(40)
+        ] + [
+            {"test": "benfords_law", "severity": "medium", "details": {"p_value": 0.02}}
+            for _ in range(2)
+        ]
+        ref = [
+            {
+                "issue_type": "not_found",
+                "severity": "medium",
+                "ref_text": f"Author {i}. Missing but plausible article. Journal. 2024;1:1-2.",
+                "details": {},
+            }
+            for i in range(4)
+        ]
+
+        r = _compute_overall_risk(_findings(data=data, ref=ref, paper={"total_references": 50}))
+
+        self.assertEqual(r["level"], "低风险")
+        self.assertNotIn("data", r["high_dimensions"])
+
 
 if __name__ == "__main__":
     unittest.main()

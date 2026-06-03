@@ -52,10 +52,12 @@ def _chinese_reports_dir(output_root: str, report_namespace: str = "") -> str:
 
 
 def _analyze_one(input_dir: str, output_dir: str, skip_refs: bool = False, chinese_reports_dir: str = None, author_type: str = "", doi_override: str = "") -> dict:
+    from pathlib import Path as _P
+    if any(_P(input_dir).glob("*.pdf")) or any(_P(input_dir).glob("*.PDF")):
+        return analyze_paper(input_dir, output_dir, skip_refs=skip_refs, chinese_reports_dir=chinese_reports_dir, author_type=author_type, doi_override=doi_override)
     if is_nature_crawl(input_dir):
         return analyze_nature_paper(input_dir, output_dir, skip_refs=skip_refs, chinese_reports_dir=chinese_reports_dir, author_type=author_type, doi_override=doi_override)
-    else:
-        return analyze_paper(input_dir, output_dir, skip_refs=skip_refs, chinese_reports_dir=chinese_reports_dir, author_type=author_type, doi_override=doi_override)
+    return analyze_paper(input_dir, output_dir, skip_refs=skip_refs, chinese_reports_dir=chinese_reports_dir, author_type=author_type, doi_override=doi_override)
 
 
 def _dir_doi(paper_dir: Path) -> str:

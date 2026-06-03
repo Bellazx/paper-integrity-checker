@@ -100,17 +100,17 @@ def _load_dir_names(path_text: str) -> set[str]:
     return names
 
 
-def _analyze(paper_dir: str, out_dir: str, prefer_pdf: bool = False) -> dict:
+def _analyze(paper_dir: str, out_dir: str, prefer_pdf: bool = True) -> dict:
     """Route HTML (Nature crawl) vs PDF dirs, mirroring main.py._analyze_one.
     Always runs reference verification (no skip_refs — needed for the ref gate).
 
-    prefer_pdf: when the dir contains a downloaded main PDF, force the standard
-    analyze_paper (PDF) pipeline instead of the HTML adapter — the HTML adapter ignores
-    a main PDF (it only scans extended_data/), so this is required to actually use the
-    fetched PDF (main-text figures + full-text refs). find_data_dir uses rglob, so the
-    PDF path still picks up extended_data/ / source_data/ supplements.
+    prefer_pdf (default True): when the dir contains a main PDF, use the standard
+    analyze_paper (PDF) pipeline — the HTML adapter only scans extended_data/ and
+    ignores the main PDF, causing severe under-detection of image duplicates and
+    data anomalies. The PDF pipeline still picks up extended_data/ / source_data/
+    supplements via find_data_dir rglob.
     """
-    if prefer_pdf and _has_pdf(Path(paper_dir)):
+    if _has_pdf(Path(paper_dir)) and prefer_pdf:
         return analyze_paper(paper_dir, out_dir, skip_refs=False, chinese_reports_dir=str(CN_DIR))
     if is_nature_crawl(paper_dir):
         return analyze_nature_paper(paper_dir, out_dir, skip_refs=False, chinese_reports_dir=str(CN_DIR))
@@ -193,13 +193,13 @@ def _upsert(findings: dict) -> str:
     return overall["level"]
 
 
-def process_one(paper_dir: Path, dry_run: bool, prefer_pdf: bool = False) -> dict:
+def process_one(paper_dir: Path, dry_run: bool, prefer_pdf: bool = True) -> dict:
     t0 = time.time()
     dirname = paper_dir.name
     result = {"dir": dirname, "doi": _doi_from_dir(paper_dir), "status": "error"}
     if dry_run:
         result["status"] = "would-process"
-        result["route"] = "pdf" if (prefer_pdf and _has_pdf(paper_dir)) else (
+        result["route"] = "pdf" if (_has_pdf(paper_dir) and prefer_pdf) else (
             "html" if is_nature_crawl(str(paper_dir)) else "pdf")
         return result
     try:
@@ -230,9 +230,9 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="List ready/skipped, write nothing")
     ap.add_argument("--limit", type=int, default=0, help="Process only first N ready papers")
     ap.add_argument("--workers", type=int, default=8)
-    ap.add_argument("--prefer-pdf", action="store_true",
-                    help="If a dir has a downloaded main PDF, analyze via the PDF pipeline "
-                         "(main-text figures + full-text refs) instead of the HTML adapter.")
+    ap.add_argument("--no-prefer-pdf", action="store_true",
+                    help="Force the HTML adapter even when a main PDF exists. "
+                         "Default is PDF-first (main-text figures + full-text refs).")
     ap.add_argument("--only-pdf-dirs", action="store_true",
                     help="With --prefer-pdf: process ONLY dirs that contain a PDF (re-analysis pass "
                          "over freshly-downloaded PDFs; skips HTML-only papers).")
@@ -293,7 +293,8 @@ def main():
     results, high_risk = [], []
     t_start = time.time()
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
-        futs = {ex.submit(process_one, d, args.dry_run, args.prefer_pdf): d for d in ready}
+        prefer_pdf = not args.no_prefer_pdf
+        futs = {ex.submit(process_one, d, args.dry_run, prefer_pdf): d for d in ready}
         for i, fut in enumerate(as_completed(futs), 1):
             r = fut.result()
             results.append(r)
