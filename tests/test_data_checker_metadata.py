@@ -8,6 +8,25 @@ from core.pipeline import find_data_dir
 from modules.data_checker import _analyze_sheet, _load_data_files, check_data_anomalies
 
 
+VALID_PDB = """\
+ATOM      1  N   GLY A   1      11.104  13.207   2.333  1.00 20.00           N
+ATOM      2  CA  GLY A   1      12.233  13.991   2.701  1.00 21.00           C
+ATOM      3  C   GLY A   1      13.104  13.207   3.555  1.00 22.00           C
+ATOM      4  O   GLY A   1      14.204  13.607   3.755  1.00 23.00           O
+END
+"""
+
+BAD_PDB = """\
+ATOM      1  N   GLY A   1      11.104  13.207   2.333  1.00 20.00           N
+ATOM      2  N   GLY A   1      11.104  13.207   2.333  1.00 20.00           N
+ATOM      3  CA  GLY A   1      11.104  13.207   2.333  1.50 21.00           C
+ATOM      4  C   GLY A   1       0.000   0.000   0.000  1.00 22.00           C
+ATOM      5  O   GLY A   1       0.000   0.000   0.000  1.00 -3.00           O
+ATOM      6  H   GLY A   1       0.000   0.000   0.000  1.00 22.00           H
+END
+"""
+
+
 class DataCheckerMetadataTests(unittest.TestCase):
     def test_skips_crawler_metadata_csv_files(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -41,6 +60,37 @@ class DataCheckerMetadataTests(unittest.TestCase):
             self.assertEqual(set(loaded), {"source_data.xlsx"})
             self.assertEqual(failed, [])
             self.assertEqual(find_data_dir(str(root)), str(root))
+
+    def test_pdb_file_marks_directory_as_data_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "supplement materials").mkdir()
+            (root / "supplement materials" / "structure.pdb").write_text(VALID_PDB, encoding="utf-8")
+
+            self.assertEqual(find_data_dir(str(root)), str(root))
+
+    def test_valid_pdb_does_not_emit_integrity_anomaly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "structure.pdb").write_text(VALID_PDB, encoding="utf-8")
+
+            anomalies = check_data_anomalies(str(root))
+
+            self.assertEqual(anomalies, [])
+
+    def test_pdb_integrity_anomalies_are_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "extended data").mkdir()
+            (root / "extended data" / "bad_structure.pdb").write_text(BAD_PDB, encoding="utf-8")
+
+            anomalies = check_data_anomalies(str(root))
+            tests = {a.get("test") for a in anomalies}
+
+            self.assertIn("pdb_duplicate_atom_identity", tests)
+            self.assertIn("pdb_duplicate_coordinates", tests)
+            self.assertIn("pdb_invalid_occupancy", tests)
+            self.assertIn("pdb_zero_coordinates", tests)
 
     def test_skips_duplicate_source_data_files_by_content(self):
         with tempfile.TemporaryDirectory() as tmp:

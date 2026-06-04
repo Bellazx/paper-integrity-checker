@@ -54,7 +54,7 @@ DB_CONFIG = {
 ALLOWED_EXTENSIONS = {
     ".pdf", ".xlsx", ".xls", ".csv", ".docx",
     ".tif", ".tiff", ".png", ".jpg", ".jpeg",
-    ".fcs", ".sav",
+    ".fcs", ".sav", ".pdb",
     ".txt", ".html", ".json",
 }
 

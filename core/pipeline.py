@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.pdf_utils import extract_images, extract_text
 from modules.image_checker import check_image_duplicates
 from modules.splice_checker import check_splicing
-from modules.data_checker import check_data_anomalies, is_metadata_data_file
+from modules.data_checker import DATA_FILE_EXTENSIONS, check_data_anomalies, is_metadata_data_file
 from modules.reference_checker import check_references
 from modules.chinese_report_generator import generate_chinese_pdf
 
@@ -115,9 +115,8 @@ def find_data_dir(paper_dir: str) -> str | None:
     """Find source data directory or files in the paper directory."""
     d = Path(paper_dir)
 
-    data_extensions = {".xlsx", ".xls", ".csv", ".docx", ".fcs", ".sav"}
     data_files = []
-    for ext in data_extensions:
+    for ext in DATA_FILE_EXTENSIONS:
         data_files.extend(p for p in d.rglob(f"*{ext}") if not is_metadata_data_file(p))
 
     if not data_files:

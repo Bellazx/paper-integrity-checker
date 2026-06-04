@@ -40,7 +40,7 @@ integrity assessment report.
 Please generate a structured report with the following sections:
 1. **Executive Summary** — Overall risk assessment (High/Medium/Low) with key findings in 2-3 sentences
 2. **Image Analysis** — Detail each suspicious image pair, what type of duplication was found, and its significance
-3. **Data Integrity** — Detail each statistical anomaly, explain why it's suspicious, and assess likelihood of fabrication
+3. **Data Integrity** — Detail each tabular statistical anomaly or PDB structure-file anomaly, explain why it's suspicious, and assess likelihood of fabrication
 4. **Reference Verification** — Summarize reference issues, distinguish between serious (DOI not found) and minor (low match) issues
 5. **Overall Assessment** — Synthesize all findings into a final integrity risk rating with justification
 6. **Recommendations** — Specific next steps for further investigation

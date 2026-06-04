@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.pdf_utils import extract_images
 from modules.image_checker import check_image_duplicates
 from modules.splice_checker import check_splicing
-from modules.data_checker import check_data_anomalies, check_data_with_validation
+from modules.data_checker import DATA_FILE_EXTENSIONS, check_data_anomalies, check_data_with_validation
 from modules.reference_checker import (
     _verify_by_doi, _verify_by_text, _compare_titles,
     CROSSREF_RATE_LIMIT_DELAY, REF_TITLE_SIMILARITY_THRESHOLD,
@@ -318,13 +318,11 @@ def find_image_pdfs(paper_dir: str) -> list[str]:
 def _find_data_dirs(paper_dir: str) -> list[str]:
     d = Path(paper_dir)
     dirs = []
-    data_extensions = {".xlsx", ".xls", ".csv"}
-
     for subdir_name in ("source_data", "extended_data"):
         subdir = d / subdir_name
         if not subdir.exists():
             continue
-        has_data = any(subdir.rglob(f"*{ext}") for ext in data_extensions)
+        has_data = any(subdir.rglob(f"*{ext}") for ext in DATA_FILE_EXTENSIONS)
         if has_data:
             dirs.append(str(subdir))
 

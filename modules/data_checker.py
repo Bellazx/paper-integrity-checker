@@ -2,6 +2,7 @@ import logging
 import hashlib
 import re
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +27,9 @@ from utils.stats import (
 log = logging.getLogger(__name__)
 
 MAX_LOAD_RETRIES = 3
+TABLE_DATA_EXTENSIONS = {".xlsx", ".xls", ".csv", ".docx", ".fcs", ".sav"}
+STRUCTURE_DATA_EXTENSIONS = {".pdb"}
+DATA_FILE_EXTENSIONS = TABLE_DATA_EXTENSIONS | STRUCTURE_DATA_EXTENSIONS
 
 # Crawler-generated metadata files (resource manifests / figure download logs) that live
 # alongside the paper but are NOT experimental data. Analyzing them produces meaningless
@@ -277,7 +281,7 @@ def _load_data_files(data_dir: str) -> tuple[dict[str, dict[str, pd.DataFrame]],
     for f in sorted(data_dir.rglob("*")):
         if is_metadata_data_file(f):
             continue  # crawler metadata, not experimental data
-        if f.is_file() and f.suffix.lower() in (".xlsx", ".xls", ".csv", ".docx", ".fcs", ".sav"):
+        if f.is_file() and f.suffix.lower() in TABLE_DATA_EXTENSIONS:
             try:
                 fp = (f.stat().st_size, hashlib.sha256(f.read_bytes()).hexdigest())
             except OSError as e:
@@ -394,6 +398,300 @@ def _load_data_files(data_dir: str) -> tuple[dict[str, dict[str, pd.DataFrame]],
                 failed_files.append(f.name)
 
     return result, failed_files
+
+
+def _parse_pdb_atom_line(line: str, line_no: int, model_id: str) -> dict:
+    """Parse one PDB ATOM/HETATM record using fixed-width fields with a loose fallback."""
+    record = line[0:6].strip()
+    try:
+        return {
+            "record": record,
+            "serial": line[6:11].strip(),
+            "atom_name": line[12:16].strip(),
+            "altloc": line[16:17].strip(),
+            "resname": line[17:20].strip(),
+            "chain": line[21:22].strip(),
+            "resseq": line[22:26].strip(),
+            "icode": line[26:27].strip(),
+            "x": float(line[30:38]),
+            "y": float(line[38:46]),
+            "z": float(line[46:54]),
+            "occupancy": float(line[54:60]) if line[54:60].strip() else None,
+            "bfactor": float(line[60:66]) if line[60:66].strip() else None,
+            "model_id": model_id,
+            "line_no": line_no,
+        }
+    except (ValueError, IndexError):
+        parts = line.split()
+        if len(parts) < 9:
+            raise ValueError("too few fields")
+        try:
+            # Standard whitespace layout:
+            # ATOM serial atom res chain resseq x y z occ b
+            return {
+                "record": parts[0],
+                "serial": parts[1],
+                "atom_name": parts[2],
+                "altloc": "",
+                "resname": parts[3],
+                "chain": parts[4],
+                "resseq": parts[5],
+                "icode": "",
+                "x": float(parts[6]),
+                "y": float(parts[7]),
+                "z": float(parts[8]),
+                "occupancy": float(parts[9]) if len(parts) > 9 else None,
+                "bfactor": float(parts[10]) if len(parts) > 10 else None,
+                "model_id": model_id,
+                "line_no": line_no,
+            }
+        except (ValueError, IndexError) as e:
+            raise ValueError(str(e))
+
+
+def _analyze_pdb_file(pdb_path: Path, display_name: str) -> tuple[list[dict], bool]:
+    """Run conservative, directly verifiable checks on PDB structure files."""
+    anomalies = []
+    identity_lines: dict[tuple, list[int]] = defaultdict(list)
+    coordinate_lines: dict[tuple, list[tuple[int, tuple]]] = defaultdict(list)
+    serial_lines: dict[tuple, list[int]] = defaultdict(list)
+    malformed_examples = []
+    invalid_occupancy = []
+    invalid_bfactor = []
+    zero_coordinates = []
+
+    atom_record_count = 0
+    parsed_count = 0
+    model_id = "1"
+    seen_model = False
+
+    try:
+        with pdb_path.open("r", encoding="utf-8", errors="replace") as f:
+            for line_no, line in enumerate(f, 1):
+                record = line[0:6].strip()
+                if record == "MODEL":
+                    parts = line.split()
+                    model_id = parts[1] if len(parts) > 1 else str(line_no)
+                    seen_model = True
+                    continue
+                if record == "ENDMDL":
+                    model_id = "1" if not seen_model else model_id
+                    continue
+                if record not in ("ATOM", "HETATM"):
+                    continue
+
+                atom_record_count += 1
+                try:
+                    parsed = _parse_pdb_atom_line(line, line_no, model_id)
+                except ValueError as e:
+                    if len(malformed_examples) < 5:
+                        malformed_examples.append({"line": line_no, "error": str(e)})
+                    continue
+
+                parsed_count += 1
+                identity = (
+                    parsed["model_id"], parsed["record"], parsed["chain"], parsed["resseq"],
+                    parsed["icode"], parsed["resname"], parsed["atom_name"], parsed["altloc"],
+                )
+                identity_lines[identity].append(line_no)
+                serial_lines[(parsed["model_id"], parsed["serial"])].append(line_no)
+
+                coord_key = (
+                    parsed["model_id"],
+                    round(parsed["x"], 3),
+                    round(parsed["y"], 3),
+                    round(parsed["z"], 3),
+                )
+                coordinate_lines[coord_key].append((line_no, identity))
+
+                occ = parsed["occupancy"]
+                if occ is not None and (occ < 0 or occ > 1):
+                    invalid_occupancy.append({"line": line_no, "occupancy": occ})
+                bfactor = parsed["bfactor"]
+                if bfactor is not None and bfactor < 0:
+                    invalid_bfactor.append({"line": line_no, "bfactor": bfactor})
+                if abs(parsed["x"]) < 0.0005 and abs(parsed["y"]) < 0.0005 and abs(parsed["z"]) < 0.0005:
+                    zero_coordinates.append(line_no)
+    except OSError as e:
+        return ([{
+            "test": "pdb_read_error",
+            "location": display_name,
+            "severity": "medium",
+            "details": {"error": str(e)},
+            "description": f"PDB file could not be read: {e}",
+        }], False)
+
+    if atom_record_count == 0:
+        anomalies.append({
+            "test": "pdb_no_atom_records",
+            "location": display_name,
+            "severity": "medium",
+            "details": {"atom_records": 0},
+            "description": "PDB file contains no ATOM/HETATM coordinate records.",
+        })
+        return anomalies, True
+
+    malformed_count = atom_record_count - parsed_count
+    if malformed_count:
+        ratio = malformed_count / max(atom_record_count, 1)
+        severity = "medium" if malformed_count >= 5 or ratio >= 0.05 else "low"
+        anomalies.append({
+            "test": "pdb_malformed_atom_records",
+            "location": display_name,
+            "severity": severity,
+            "details": {
+                "malformed_records": malformed_count,
+                "atom_records": atom_record_count,
+                "ratio": round(ratio, 4),
+                "examples": malformed_examples,
+            },
+            "description": f"{malformed_count} ATOM/HETATM records could not be parsed.",
+        })
+
+    duplicate_identity = {k: v for k, v in identity_lines.items() if len(v) > 1}
+    if duplicate_identity:
+        duplicate_records = sum(len(v) - 1 for v in duplicate_identity.values())
+        severity = "high" if duplicate_records >= 10 or len(duplicate_identity) >= 5 else "medium"
+        examples = [
+            {"identity": "|".join(str(x) for x in key), "lines": lines[:5]}
+            for key, lines in list(duplicate_identity.items())[:5]
+        ]
+        anomalies.append({
+            "test": "pdb_duplicate_atom_identity",
+            "location": display_name,
+            "severity": severity,
+            "details": {
+                "duplicate_identity_groups": len(duplicate_identity),
+                "duplicate_records": duplicate_records,
+                "examples": examples,
+            },
+            "description": f"{len(duplicate_identity)} atom identities are repeated within the same model.",
+        })
+
+    duplicate_serials = {k: v for k, v in serial_lines.items() if k[1] and len(v) > 1}
+    if duplicate_serials:
+        duplicate_records = sum(len(v) - 1 for v in duplicate_serials.values())
+        severity = "medium" if duplicate_records >= 10 else "low"
+        examples = [
+            {"model_serial": f"{key[0]}:{key[1]}", "lines": lines[:5]}
+            for key, lines in list(duplicate_serials.items())[:5]
+        ]
+        anomalies.append({
+            "test": "pdb_duplicate_atom_serial",
+            "location": display_name,
+            "severity": severity,
+            "details": {
+                "duplicate_serial_groups": len(duplicate_serials),
+                "duplicate_records": duplicate_records,
+                "examples": examples,
+            },
+            "description": f"{len(duplicate_serials)} atom serial numbers are reused within the same model.",
+        })
+
+    duplicate_coordinate_groups = []
+    for coord_key, entries in coordinate_lines.items():
+        distinct_identities = {entry[1] for entry in entries}
+        if len(distinct_identities) >= 2:
+            duplicate_coordinate_groups.append((coord_key, entries, distinct_identities))
+    if duplicate_coordinate_groups:
+        duplicate_records = sum(len(g[1]) - 1 for g in duplicate_coordinate_groups)
+        severity = "high" if duplicate_records >= 20 or len(duplicate_coordinate_groups) >= 10 else "medium"
+        examples = [
+            {
+                "model_xyz": f"{coord[0]}:{coord[1]:.3f},{coord[2]:.3f},{coord[3]:.3f}",
+                "lines": [line_no for line_no, _identity in entries[:6]],
+                "distinct_atoms": len(identities),
+            }
+            for coord, entries, identities in duplicate_coordinate_groups[:5]
+        ]
+        anomalies.append({
+            "test": "pdb_duplicate_coordinates",
+            "location": display_name,
+            "severity": severity,
+            "details": {
+                "duplicate_coordinate_groups": len(duplicate_coordinate_groups),
+                "duplicate_records": duplicate_records,
+                "examples": examples,
+            },
+            "description": f"{len(duplicate_coordinate_groups)} exact coordinate positions are shared by distinct atoms.",
+        })
+
+    if invalid_occupancy:
+        severity = "high" if len(invalid_occupancy) >= 20 else "medium"
+        anomalies.append({
+            "test": "pdb_invalid_occupancy",
+            "location": display_name,
+            "severity": severity,
+            "details": {
+                "invalid_records": len(invalid_occupancy),
+                "examples": invalid_occupancy[:5],
+            },
+            "description": f"{len(invalid_occupancy)} atom records have occupancy outside the expected 0-1 range.",
+        })
+
+    if invalid_bfactor:
+        severity = "medium" if len(invalid_bfactor) >= 10 else "low"
+        anomalies.append({
+            "test": "pdb_negative_bfactor",
+            "location": display_name,
+            "severity": severity,
+            "details": {
+                "invalid_records": len(invalid_bfactor),
+                "examples": invalid_bfactor[:5],
+            },
+            "description": f"{len(invalid_bfactor)} atom records have negative B-factor values.",
+        })
+
+    if len(zero_coordinates) >= 3:
+        ratio = len(zero_coordinates) / max(parsed_count, 1)
+        severity = "high" if len(zero_coordinates) >= 10 or ratio >= 0.01 else "medium"
+        anomalies.append({
+            "test": "pdb_zero_coordinates",
+            "location": display_name,
+            "severity": severity,
+            "details": {
+                "zero_coordinate_records": len(zero_coordinates),
+                "parsed_atom_records": parsed_count,
+                "ratio": round(ratio, 4),
+                "example_lines": zero_coordinates[:10],
+            },
+            "description": f"{len(zero_coordinates)} atom records have exactly zero XYZ coordinates.",
+        })
+
+    return anomalies, True
+
+
+def _check_pdb_files(data_dir: str) -> tuple[list[dict], list[str], int]:
+    """Check PDB files separately from table-like source data."""
+    data_dir_path = Path(data_dir)
+    anomalies = []
+    failed_files = []
+    inspected = 0
+    seen_fingerprints: set[tuple[int, str]] = set()
+
+    for f in sorted(data_dir_path.rglob("*")):
+        if not f.is_file() or f.suffix.lower() not in STRUCTURE_DATA_EXTENSIONS:
+            continue
+        try:
+            fp = (f.stat().st_size, hashlib.sha256(f.read_bytes()).hexdigest())
+        except OSError as e:
+            log.warning("Failed to fingerprint %s: %s", f.name, e)
+            failed_files.append(f.name)
+            continue
+        if fp in seen_fingerprints:
+            log.info("Skipping duplicate PDB file by content: %s", f.name)
+            continue
+        seen_fingerprints.add(fp)
+
+        inspected += 1
+        file_anomalies, ok = _analyze_pdb_file(f, f.name)
+        anomalies.extend(file_anomalies)
+        if not ok:
+            failed_files.append(f.name)
+        else:
+            log.info("Checked PDB %s", f.name)
+
+    return anomalies, failed_files, inspected
 
 
 def _looks_like_row_index(values: np.ndarray) -> bool:
@@ -906,12 +1204,13 @@ def check_data_anomalies(data_dir: str) -> list[dict]:
         log.info("No source data directory found: %s", data_dir)
         return []
 
+    pdb_anomalies, _pdb_failed, pdb_count = _check_pdb_files(str(data_dir))
     all_files, _failed = _load_data_files(str(data_dir))
-    if not all_files:
+    if not all_files and not pdb_count:
         log.info("No data files found in %s", data_dir)
         return []
 
-    all_anomalies = []
+    all_anomalies = list(pdb_anomalies)
     for fname, sheets in all_files.items():
         for sheet_name, df in sheets.items():
             sheet_anomalies = _analyze_sheet(df, fname, sheet_name)
@@ -937,11 +1236,13 @@ def check_data_with_validation(data_dir: str) -> tuple[list[dict], list[str]]:
     if not data_dir.exists():
         return [], []
 
+    pdb_anomalies, pdb_failed, pdb_count = _check_pdb_files(str(data_dir))
     all_files, failed_files = _load_data_files(str(data_dir))
-    if not all_files and not failed_files:
+    failed_files = failed_files + pdb_failed
+    if not all_files and not failed_files and not pdb_count:
         return [], []
 
-    all_anomalies = []
+    all_anomalies = list(pdb_anomalies)
     for fname, sheets in all_files.items():
         for sheet_name, df in sheets.items():
             all_anomalies.extend(_analyze_sheet(df, fname, sheet_name))

@@ -28,13 +28,14 @@ METHODS_HTML = """
 <p style="font-size:9.5pt; color:#333; margin-bottom:8pt;"><b>第三步"精确验证"：</b>对第二步标记的可疑区域，在多种缩放比例下进行逐像素比对确认，最终判定是否存在真实的图像重复。</p>
 
 <p style="font-size:10pt; font-weight:bold; color:#1a1a1a; margin-top:10pt; margin-bottom:4pt;">2. 数据异常检测</p>
-<p style="font-size:9.5pt; color:#333; margin-bottom:3pt;">本系统对论文附带的源数据文件（Excel/CSV）进行以下统计检验：</p>
+<p style="font-size:9.5pt; color:#333; margin-bottom:3pt;">本系统对论文附带的源数据文件（Excel/CSV/DOCX/FCS/SAV/PDB）进行检查；其中表格类数据进行统计异常检验，PDB结构文件进行坐标记录完整性核查：</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>变异系数检验：</b>计算每组数据的离散程度。真实的实验测量数据天然存在波动，若一组重复测量值完全相同（变异系数为0）或极度接近，则高度可疑。</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>等差/等比数列检验：</b>检查数据值是否排列成完美的数学数列。真实实验数据不可能呈现完美的等差或等比规律，出现此类模式提示数据可能非自然生成。</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>本福特定律检验：</b>自然产生的数值数据中，首位数字"1"出现的频率远高于"9"。人为构造的数据往往不符合这一规律，通过统计检验可以识别出偏离自然分布的数据集。</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>跨组重复检验：</b>比较不同实验组之间的数值重叠比例。若两组本应独立的实验数据中有超过50%的数值完全相同，则提示数据可能被复制或重复使用。</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>跨列线性依赖检验：</b>对同一数据表中的各组数据列进行两两线性回归分析，检测是否存在近乎完美的线性关系（y = a×x + b, R²≥0.9999）。若两条本应独立采集的实验曲线之间R²接近1.0，尤其当斜率恰好为整数倍（如2、5、10）时，强烈提示其中一条曲线可能是通过对另一条曲线进行数学缩放/平移生成的，而非真实独立测量所得。</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:8pt;"><b>数值合理性检验：</b>对测量数据的末位数字分布、标准差列的取值规律等进行核查。真实测量数据的末位数字通常较为均匀，标准差也极少全为整数或完全相同的精度；若出现明显偏离，提示相关数值可能并非自然测量所得。</p>
+<p style="font-size:9.5pt; color:#333; margin-bottom:8pt;"><b>PDB结构文件核查：</b>解析ATOM/HETATM坐标记录，检查重复原子身份、重复坐标、异常occupancy/B-factor、零坐标和格式无法解析等可直接核实的问题。</p>
 
 <p style="font-size:10pt; font-weight:bold; color:#1a1a1a; margin-top:10pt; margin-bottom:4pt;">3. 参考文献核验</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:8pt;">通过DOI（数字对象标识符）向CrossRef国际学术数据库查询每条参考文献的真实性，验证其是否真实存在、标题与作者是否匹配。</p>
