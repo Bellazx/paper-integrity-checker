@@ -132,6 +132,55 @@ class DataCheckerMetadataTests(unittest.TestCase):
 
         self.assertTrue(any(a.get("test") == "value_recycling" for a in anomalies), anomalies)
 
+    def test_unnamed_short_curve_duplicates_are_checked(self):
+        df = pd.DataFrame({
+            "Time": [0, 1, 3, 5, 7, 10],
+            "col_1": [22.36, 28.03, 78.85, 90.62, 100.79, 113.26],
+            "col_2": [18.10, 25.25, 51.22, 66.40, 80.10, 95.35],
+            "col_3": [22.36, 28.03, 78.85, 90.62, 100.79, 113.26],
+        })
+
+        anomalies = _analyze_sheet(df, "source.xlsx", "Fig. 2c")
+
+        self.assertTrue(
+            any(a.get("test") == "short_curve_duplicate" and a.get("severity") == "high" for a in anomalies),
+            anomalies,
+        )
+
+    def test_rowwise_value_reuse_across_treatment_columns_is_checked(self):
+        df = pd.DataFrame({
+            "Time": [0.5, 1, 3, 6, 12],
+            "CM-Ms_1": [10.15, 18.2, 25.89, 31.0, 58.84],
+            "CM-Ms_2": [10.15, 18.8, 25.89, 31.0, 58.84],
+            "C-Ms_1": [10.15, 19.1, 25.89, 31.0, 58.84],
+            "M-Ms_1": [12.4, 20.5, 33.2, 40.1, 61.2],
+        })
+
+        anomalies = _analyze_sheet(df, "source.xlsx", "Fig. 1")
+
+        self.assertTrue(
+            any(a.get("test") == "rowwise_value_reuse" and a.get("severity") == "high" for a in anomalies),
+            anomalies,
+        )
+
+    def test_named_treatment_arithmetic_series_bypass_axis_filter(self):
+        df = pd.DataFrame({
+            "Time": [0, 1, 2, 3, 4],
+            "Fig.1g": [0, 1, 2, 3, 4],
+            "Free-DiR": [94.755, 101.977, 109.200, 116.423, 123.645],
+            "MMs@DiR": [178.856, 187.078, 195.300, 203.522, 211.744],
+        })
+
+        anomalies = _analyze_sheet(df, "source.xlsx", "Fig.3 / Fig.3c")
+
+        recovered = [
+            a for a in anomalies
+            if a.get("test") == "arithmetic_sequence"
+            and a.get("details", {}).get("recovered_from_axis_filter")
+        ]
+        self.assertEqual(len(recovered), 2, anomalies)
+        self.assertFalse(any("Fig.1g" in a.get("location", "") for a in recovered), anomalies)
+
     def test_snp_tree_matrix_is_not_treated_as_measurement_data(self):
         df = pd.DataFrame({
             "Sample number": list(range(1, 118)),

@@ -788,6 +788,303 @@ def _is_measurement_column(col_name: str, values: np.ndarray | None = None, *, a
     return True
 
 
+_FIGURE_LABEL_COL_PATTERN = re.compile(
+    r'^\s*(?:fig(?:ure)?[\s._-]*s?|sfig|supp(?:lementary)?\s*fig(?:ure)?|extended\s*data\s*fig(?:ure)?)'
+    r'[\s._-]*\d+[a-z]?\s*$',
+    re.IGNORECASE,
+)
+
+
+def _clean_numeric_values(values: np.ndarray) -> np.ndarray:
+    try:
+        arr = np.asarray(values, dtype=float)
+    except (ValueError, TypeError):
+        return np.array([], dtype=float)
+    return arr[np.isfinite(arr)]
+
+
+def _is_figure_label_column(col_name: str) -> bool:
+    return bool(_FIGURE_LABEL_COL_PATTERN.match(str(col_name).strip()))
+
+
+def _has_small_integer_code_shape(values: np.ndarray) -> bool:
+    vals = _clean_numeric_values(values)
+    if len(vals) < 3:
+        return False
+    if not np.all(np.isclose(vals, np.round(vals), atol=1e-10)):
+        return False
+    unique_count = len(np.unique(np.round(vals)))
+    max_abs = float(np.max(np.abs(vals))) if len(vals) else 0.0
+    return max_abs <= 20 and unique_count <= min(8, max(3, len(vals) // 2))
+
+
+def _looks_like_serial_dilution_axis(values: np.ndarray) -> bool:
+    vals = _clean_numeric_values(values)
+    if len(vals) < 4:
+        return False
+    nonzero = vals[np.abs(vals) > 1e-12]
+    if len(nonzero) < 4 or not np.all(nonzero > 0):
+        return False
+    diffs = np.diff(nonzero)
+    if not (np.all(diffs > 0) or np.all(diffs < 0)):
+        return False
+    ratios = nonzero[1:] / nonzero[:-1]
+    ratio = float(np.median(ratios))
+    if ratio <= 0 or abs(ratio - 1.0) < 1e-6:
+        return False
+    return bool(np.max(np.abs(ratios - ratio)) / abs(ratio) <= 0.02)
+
+
+def _looks_like_repeated_axis_cycle(values: np.ndarray) -> bool:
+    vals = _clean_numeric_values(values)
+    n = len(vals)
+    if n < 8:
+        return False
+    for period in range(4, (n // 2) + 1):
+        if n % period != 0:
+            continue
+        first = vals[:period]
+        if not all(np.allclose(vals[start:start + period], first, atol=1e-10, rtol=1e-10)
+                   for start in range(period, n, period)):
+            continue
+        if _is_arithmetic_axis(first) or _looks_like_serial_dilution_axis(first):
+            return True
+    return False
+
+
+def _passes_basic_source_measurement_name_filter(col_name: str) -> bool:
+    name = str(col_name)
+    if _is_numeric_column_name(name):
+        return False
+    if _is_figure_label_column(name):
+        return False
+    return not (
+        _is_independent_variable(name)
+        or _is_stat_column(name)
+        or _is_whitelist_column(name)
+        or _is_non_measurement_name(name)
+    )
+
+
+def _is_short_curve_candidate(col_name: str, values: np.ndarray) -> bool:
+    """Allow short source-data curves through even when Excel headers became col_N."""
+    vals = _clean_numeric_values(values)
+    if len(vals) < 5 or len(vals) > 80:
+        return False
+    if len(np.unique(np.round(vals, 8))) < 3:
+        return False
+    if np.all(np.isclose(vals, 0.0)):
+        return False
+    if not _passes_basic_source_measurement_name_filter(col_name):
+        return False
+    if (
+        _looks_like_row_index(vals)
+        or _is_arithmetic_axis(vals)
+        or _looks_like_repeated_axis_cycle(vals)
+        or _looks_like_categorical_code(vals)
+        or _has_small_integer_code_shape(vals)
+    ):
+        return False
+    return True
+
+
+def _analyze_short_curve_duplicates(df: pd.DataFrame, file_name: str, sheet_name: str) -> list[dict]:
+    """Detect exact duplicated short curves in source/figure tables with lost headers.
+
+    This is intentionally separate from the broad measurement-column filter. Multi-row
+    Excel headers often become col_N, but short tumor/release curves remain directly
+    comparable by aligned row position.
+    """
+    MAX_CURVE_COLS = 120
+    MAX_HITS_PER_SHEET = 12
+    anomalies = []
+
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    if len(numeric_cols) < 2 or len(numeric_cols) > MAX_CURVE_COLS:
+        return anomalies
+
+    candidates: list[tuple[str, np.ndarray]] = []
+    for col in numeric_cols:
+        vals = _clean_numeric_values(df[col].dropna().values)
+        if _is_short_curve_candidate(str(col), vals):
+            candidates.append((str(col), vals))
+
+    for i in range(len(candidates)):
+        if len(anomalies) >= MAX_HITS_PER_SHEET:
+            break
+        col_a, vals_a = candidates[i]
+        for j in range(i + 1, len(candidates)):
+            col_b, vals_b = candidates[j]
+            if len(vals_a) != len(vals_b):
+                continue
+            n = len(vals_a)
+            if n < 5:
+                continue
+            a_cmp = np.round(vals_a, 8)
+            b_cmp = np.round(vals_b, 8)
+            match_ratio = float(np.mean(a_cmp == b_cmp))
+            if match_ratio < 0.95:
+                continue
+            severity = "high" if match_ratio >= 0.98 else "medium"
+            anomalies.append({
+                "test": "short_curve_duplicate",
+                "location": f"{file_name} / {sheet_name} / columns '{col_a}' vs '{col_b}'",
+                "severity": severity,
+                "details": {
+                    "group_a": col_a,
+                    "group_b": col_b,
+                    "match_ratio": match_ratio,
+                    "matched_count": int(np.sum(a_cmp == b_cmp)),
+                    "total_compared": n,
+                    "sample_values": a_cmp[:8].tolist(),
+                },
+                "description": f"Short source-data curves '{col_a}' and '{col_b}' are "
+                               f"{match_ratio*100:.0f}% identical across {n} aligned points",
+            })
+            if len(anomalies) >= MAX_HITS_PER_SHEET:
+                break
+
+    return anomalies
+
+
+def _is_rowwise_reuse_column_candidate(col_name: str, values: np.ndarray) -> bool:
+    vals = _clean_numeric_values(values)
+    if len(vals) < 3:
+        return False
+    if not _passes_basic_source_measurement_name_filter(col_name):
+        return False
+    if (
+        _looks_like_row_index(vals)
+        or _is_arithmetic_axis(vals)
+        or _looks_like_categorical_code(vals)
+    ):
+        return False
+    return True
+
+
+def _analyze_rowwise_value_reuse(df: pd.DataFrame, file_name: str, sheet_name: str) -> list[dict]:
+    """Detect repeated exact values across many treatment columns in compact figure tables."""
+    MAX_ROWS = 250
+    MAX_COLS = 100
+    anomalies = []
+
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    if len(df) > MAX_ROWS or len(numeric_cols) < 4 or len(numeric_cols) > MAX_COLS:
+        return anomalies
+
+    candidate_cols = [
+        c for c in numeric_cols
+        if _is_rowwise_reuse_column_candidate(str(c), df[c].dropna().values)
+    ]
+    if len(candidate_cols) < 4:
+        return anomalies
+
+    repeated_rows = []
+    total_reused_cells = 0
+    max_repeat = 0
+    for row_idx, row in df[candidate_cols].iterrows():
+        counts: dict[float, int] = defaultdict(int)
+        for value in row.values:
+            if pd.isna(value):
+                continue
+            try:
+                value_f = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(value_f):
+                continue
+            if abs(value_f) <= 1.0:
+                continue
+            if abs(value_f - round(value_f)) < 1e-10 and abs(value_f) <= 20:
+                continue
+            counts[round(value_f, 8)] += 1
+
+        reused = [
+            {"value": value, "count": count}
+            for value, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+            if count >= 3
+        ]
+        if not reused:
+            continue
+        repeated_rows.append({
+            "row_index": int(row_idx) if isinstance(row_idx, (int, np.integer)) else str(row_idx),
+            "reused_values": reused[:5],
+        })
+        total_reused_cells += sum(item["count"] for item in reused)
+        max_repeat = max(max_repeat, max(item["count"] for item in reused))
+
+    if len(repeated_rows) < 3 or total_reused_cells < 9:
+        return anomalies
+
+    severity = "high" if len(repeated_rows) >= 4 or total_reused_cells >= 12 else "medium"
+    anomalies.append({
+        "test": "rowwise_value_reuse",
+        "location": f"{file_name} / {sheet_name}",
+        "severity": severity,
+        "details": {
+            "repeated_rows": len(repeated_rows),
+            "total_reused_cells": total_reused_cells,
+            "max_repeat_in_row": max_repeat,
+            "candidate_columns": [str(c) for c in candidate_cols[:30]],
+            "examples": repeated_rows[:8],
+        },
+        "description": f"{len(repeated_rows)} rows contain the same nontrivial numeric value "
+                       f"reused across at least three treatment columns",
+    })
+    return anomalies
+
+
+def _analyze_named_arithmetic_measurements(df: pd.DataFrame, file_name: str, sheet_name: str) -> list[dict]:
+    """Recover suspicious arithmetic sequences in named treatment columns.
+
+    The generic column filter treats perfect monotonic arithmetic series as axes. That
+    is correct for Time/Day/Dose columns, but named treatment readouts can also be
+    short perfect arithmetic sequences and should be reviewed.
+    """
+    MAX_HITS_PER_SHEET = 8
+    anomalies = []
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    if len(numeric_cols) < 3:
+        return anomalies
+
+    for col in numeric_cols:
+        if len(anomalies) >= MAX_HITS_PER_SHEET:
+            break
+        name = str(col)
+        if _is_unnamed_column(name) or not _passes_basic_source_measurement_name_filter(name):
+            continue
+        vals = _clean_numeric_values(df[col].dropna().values)
+        if len(vals) < 5 or len(vals) > 30:
+            continue
+        if len(np.unique(np.round(vals, 8))) < 5:
+            continue
+        if _has_small_integer_code_shape(vals):
+            continue
+        if not _is_arithmetic_axis(vals):
+            continue
+
+        arith_result = check_arithmetic_sequence(vals, ARITHMETIC_SEQ_TOLERANCE)
+        if not arith_result.get("is_arithmetic"):
+            continue
+        dev = arith_result.get("max_relative_deviation", 1.0)
+        if dev is None or dev > 0.001:
+            continue
+        anomalies.append({
+            "test": "arithmetic_sequence",
+            "location": f"{file_name} / {sheet_name} / column '{col}'",
+            "severity": "high",
+            "details": {
+                **arith_result,
+                "recovered_from_axis_filter": True,
+            },
+            "description": f"Named treatment column forms a near-perfect arithmetic sequence "
+                           f"(common difference={arith_result['common_diff']:.6f}, "
+                           f"max deviation={dev:.6f})",
+        })
+
+    return anomalies
+
+
 def _analyze_column_group(values: np.ndarray, location: str, col_name: str = "") -> list[dict]:
     """Run all statistical tests on a single data group."""
     anomalies = []
@@ -931,6 +1228,10 @@ def _analyze_sheet(df: pd.DataFrame, file_name: str, sheet_name: str) -> list[di
         c for c in numeric_cols
         if _is_measurement_column(str(c), df[c].dropna().values)
     ]
+
+    anomalies.extend(_analyze_short_curve_duplicates(df, file_name, sheet_name))
+    anomalies.extend(_analyze_rowwise_value_reuse(df, file_name, sheet_name))
+    anomalies.extend(_analyze_named_arithmetic_measurements(df, file_name, sheet_name))
 
     if not measurement_cols:
         return anomalies

@@ -345,6 +345,8 @@ FRAUD_BONUS_4 = 5
 _DATA_HIGH_CAPS = {
     "arithmetic_sequence": 8,
     "coefficient_of_variation": 6,
+    "short_curve_duplicate": 12,
+    "rowwise_value_reuse": 8,
     # terminal_digit / sd_regularity emit only medium/low (never high), so they are
     # bounded by the medium/low score ceilings (min(25,..)/min(12,..)) in
     # _compute_dimension_risk and cannot, on their own, reach the data high-risk gate.
