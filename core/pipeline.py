@@ -35,7 +35,8 @@ log = logging.getLogger(__name__)
 def find_pdf(paper_dir: str) -> str | None:
     """Find the main PDF file in the paper directory.
 
-    Priority: 1) filename contains 'main'  2) matches dir name  3) last PDF sorted by name.
+    Prefer the manuscript/article PDF when uploads contain peer-review files,
+    author responses, cover letters, or supplemental PDFs.
     """
     d = Path(paper_dir)
     pdfs = list(d.glob("*.pdf")) + list(d.glob("*.PDF"))
@@ -43,18 +44,71 @@ def find_pdf(paper_dir: str) -> str | None:
         return None
     if len(pdfs) == 1:
         return str(pdfs[0])
-    for p in sorted(pdfs):
-        if "main" in p.stem.lower():
-            log.info("Multiple PDFs found, using %s (contains 'main')", p.name)
-            return str(p)
-    dir_name = d.name
-    for p in pdfs:
-        if p.stem == dir_name:
-            log.info("Multiple PDFs found, using %s (matches directory name)", p.name)
-            return str(p)
-    last = sorted(pdfs)[-1]
-    log.info("Multiple PDFs found in %s, using last: %s", paper_dir, last.name)
-    return str(last)
+
+    def norm(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", s.lower())
+
+    dir_key = norm(d.name)
+    positive_terms = (
+        "manuscript", "article", "paper", "main", "fulltext", "full_text",
+        "maintext", "main_text", "ms", "论文", "正文",
+    )
+    negative_terms = (
+        "peer_review", "peer-review", "peerreview", "reviewer", "review",
+        "response", "rebuttal", "reply", "cover_letter", "coverletter",
+        "supplement", "supplementary", "supporting", "appendix", "附录",
+        "补充", "审稿", "回复",
+    )
+
+    def score(p: Path) -> tuple[int, int, str]:
+        stem = p.stem.lower()
+        key = norm(p.stem)
+        value = 0
+        reasons = []
+
+        if key == dir_key:
+            value += 80
+            reasons.append("matches directory name")
+        elif dir_key and (dir_key in key or key in dir_key):
+            value += 35
+            reasons.append("partially matches directory name")
+
+        for term in positive_terms:
+            if term in stem:
+                value += 50
+                reasons.append(f"contains '{term}'")
+                break
+
+        for term in negative_terms:
+            if term in stem:
+                value -= 120
+                reasons.append(f"excludes '{term}'")
+                break
+
+        # Prefer likely article-sized PDFs over tiny covers or huge review packs
+        # only as a weak tie breaker; filename semantics carry the decision.
+        try:
+            size = p.stat().st_size
+        except OSError:
+            size = 0
+        if 200_000 <= size <= 80_000_000:
+            value += 2
+
+        return value, size, "; ".join(reasons) or "best filename score"
+
+    scored = [(score(p), p) for p in pdfs]
+    (chosen_score, _size, reason), chosen = max(
+        scored,
+        key=lambda item: (item[0][0], item[0][1], item[1].name.lower()),
+    )
+    log.info(
+        "Multiple PDFs found in %s, using %s (%s, score=%s)",
+        paper_dir,
+        chosen.name,
+        reason,
+        score(chosen)[0],
+    )
+    return str(chosen)
 
 
 def find_data_dir(paper_dir: str) -> str | None:
