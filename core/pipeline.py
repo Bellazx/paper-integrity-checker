@@ -1,10 +1,16 @@
 import json
 import logging
+import os
 import re
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import fitz
+
+from modules.doi_utils import normalize_doi
 
 
 class NumpyEncoder(json.JSONEncoder):
@@ -18,9 +24,6 @@ class NumpyEncoder(json.JSONEncoder):
         if isinstance(obj, np.ndarray):
             return obj.tolist()
         return super().default(obj)
-
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.pdf_utils import extract_images, extract_text
 from modules.image_checker import check_image_duplicates
@@ -36,10 +39,30 @@ def find_pdf(paper_dir: str) -> str | None:
     """Find the main PDF file in the paper directory.
 
     Prefer the manuscript/article PDF when uploads contain peer-review files,
-    author responses, cover letters, or supplemental PDFs.
+    author responses, cover letters, or supplemental PDFs. Also exclude PDFs
+    that live inside known supplementary/figure sub-directories
+    (extended_data/, supplementary/, figure/, supporting_information/, etc.)
+    so they are not mistakenly treated as the main paper.
     """
     d = Path(paper_dir)
     pdfs = list(d.glob("*.pdf")) + list(d.glob("*.PDF"))
+    if not pdfs:
+        return None
+
+    # Exclude PDFs that live inside a known supplementary/figure sub-directory.
+    try:
+        from core.nature_adapter import SUPPLEMENTARY_DIR_PATTERNS as _SUPSET
+    except Exception:
+        _SUPSET = (
+            "extended_data", "extended data", "extend data", "expended data",
+            "supplementary", "supplement", "supplemental", "supplementary_material",
+            "supporting_information", "supporting info", "supporting", "si",
+            "source_data", "source data", "supp_data", "additional", "appendix",
+            "附录", "补充材料", "附加材料", "figure", "figures", "fig", "figs",
+            "图片", "图表",
+        )
+    supset_lower = {p.lower() for p in _SUPSET}
+    pdfs = [p for p in pdfs if p.parent == d or p.parent.name.lower() not in supset_lower]
     if not pdfs:
         return None
     if len(pdfs) == 1:
@@ -111,17 +134,32 @@ def find_pdf(paper_dir: str) -> str | None:
     return str(chosen)
 
 
-def find_data_dir(paper_dir: str) -> str | None:
-    """Find source data directory or files in the paper directory."""
+def find_data_dir(paper_dir: str, extra_dirs: list[str] | None = None) -> str | None:
+    """Find source data directory or files in the paper directory.
+
+    extra_dirs: optional list of additional directories to include in the
+    scan (e.g. the `<output_dir>/data_tables/` folder holding CSVs extracted
+    from supplementary PDFs). They are scanned as siblings of paper_dir.
+    """
     d = Path(paper_dir)
+    scan_roots = [d] + [Path(x) for x in (extra_dirs or []) if x]
 
     data_files = []
-    for ext in DATA_FILE_EXTENSIONS:
-        data_files.extend(p for p in d.rglob(f"*{ext}") if not is_metadata_data_file(p))
+    for root in scan_roots:
+        if not root.exists():
+            continue
+        for ext in DATA_FILE_EXTENSIONS:
+            data_files.extend(p for p in root.rglob(f"*{ext}") if not is_metadata_data_file(p))
 
     if not data_files:
         return None
 
+    # Return the first existing root (data_checker only needs *a* base to walk);
+    # the data_checker uses rglob anyway so this works as long as paper_dir is
+    # the common ancestor. If paper_dir is missing, fall back to a real root.
+    for root in scan_roots:
+        if root.exists():
+            return str(root)
     return str(d)
 
 
@@ -248,6 +286,33 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
     output_dir = str(Path(output_dir).resolve())
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+    if os.environ.get("PAPER_CLEAN_JUNK", "1") != "0":
+        try:
+            from utils.paper_preprocessor import clean_junk_files
+            _junk_stats = clean_junk_files(paper_dir, dry_run=False, log_fn=log.info)
+            removed = sum(_junk_stats.get("actions", {}).values())
+            if removed:
+                log.info("clean-junk removed %d noise entries in %s", removed, paper_dir)
+            for _w in _junk_stats.get("warnings", []):
+                log.warning("clean-junk: %s", _w)
+        except Exception as _e:
+            log.warning("clean_junk_files failed (continuing without): %s", _e)
+
+    # Optional diagnostics only. Duplicate source files are skipped by the
+    # image/data readers themselves, so screening does not need a full-tree
+    # preprocessing scan or any mutation of uploaded sources.
+    if os.environ.get("PAPER_PREPROCESS", "0") == "1":
+        try:
+            from utils.paper_preprocessor import preprocess_paper_dir
+            _pre_stats = preprocess_paper_dir(paper_dir, dry_run=True, log_fn=log.info)
+            if _pre_stats.get("touched"):
+                log.info("preprocess dry-run would touch %d paths in %s",
+                         len(_pre_stats["touched"]), paper_dir)
+            for _w in _pre_stats.get("warnings", []):
+                log.warning("preprocess: %s", _w)
+        except Exception as _e:
+            log.warning("preprocess_paper_dir failed (continuing without): %s", _e)
+
     pdf_path = find_pdf(paper_dir)
     if not pdf_path:
         raise FileNotFoundError(f"No PDF found in {paper_dir}")
@@ -258,16 +323,17 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
     # A user-supplied DOI is authoritative: apply it before the doi.txt/folder-name
     # fallback, CrossRef enrichment, the reference self-DOI header filter, and DB metadata.
     if doi_override:
-        metadata["doi"] = doi_override
+        metadata["doi"] = normalize_doi(doi_override)
 
     if not metadata.get("doi"):
         doi_file = Path(paper_dir) / "doi.txt"
         if doi_file.exists():
-            metadata["doi"] = doi_file.read_text(encoding="utf-8").strip()
+            metadata["doi"] = normalize_doi(doi_file.read_text(encoding="utf-8"))
         else:
             folder_name = Path(paper_dir).name
             if folder_name.startswith("10."):
-                metadata["doi"] = folder_name.replace("_", "/", 1)
+                from modules.doi_utils import dir_name_to_doi
+                metadata["doi"] = normalize_doi(dir_name_to_doi(folder_name))
 
     from utils.crossref import is_bad_title, enrich_metadata
     if metadata.get("doi") and (is_bad_title(metadata.get("title", "")) or not metadata.get("journal")):
@@ -293,7 +359,20 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
     log.info("Extracted %d images from PDF", len(images))
 
     from utils.pdf_utils import extract_standalone_images
-    standalone = extract_standalone_images(paper_dir, output_dir)
+    # Extract inline images from any .docx files under paper_dir BEFORE
+    # extract_standalone_images walks the tree — that way the dumped images
+    # get included in the standalone image set, deduped by file fingerprint.
+    try:
+        from utils.docx_extractor import extract_docx_images_in_dir
+        docx_imgs = extract_docx_images_in_dir(paper_dir, output_dir)
+        if docx_imgs:
+            log.info("Extracted %d inline image(s) from .docx files", len(docx_imgs))
+    except Exception as _e:
+        log.warning("docx image extraction failed: %s", _e)
+        docx_imgs = []
+
+    standalone = extract_standalone_images(paper_dir, output_dir, max_images=200,
+                                            extra_image_dirs=[str(Path(output_dir) / "images")])
     if standalone:
         if images:
             figures_dir = (Path(paper_dir) / "figures").resolve()
@@ -311,6 +390,87 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
         log.info("Found %d standalone images (TIF/JPEG/PNG)", len(standalone))
         images = images + standalone
 
+    # Mine images from supplementary/figure PDFs (extended_data, supplementary,
+    # figure/, supporting_information, etc.). These were previously dropped on
+    # the main pipeline path because find_pdf excludes them as "supplement".
+    try:
+        from core.nature_adapter import find_image_pdfs as _find_image_pdfs
+        supp_pdfs = _find_image_pdfs(paper_dir)
+    except Exception as _e:
+        log.warning("find_image_pdfs lookup failed: %s", _e)
+        supp_pdfs = []
+    # Deduplicate by content fingerprint (size+SHA256 of the extracted PNG),
+    # NOT by file path — supplementary PDFs and main PDF both produce images
+    # named page_XXX_img_XXX.png inside the same output/images/ folder, so
+    # path-based dedup would drop most of the supplementary figures.
+    try:
+        from utils.pdf_utils import _file_fingerprint as _fp
+    except Exception:
+        _fp = None
+    existing_fps: set = set()
+    for im in images:
+        if _fp is None:
+            continue
+        try:
+            existing_fps.add(_fp(Path(im.filepath)))
+        except Exception:
+            pass
+    supp_main_pdf_resolved = Path(pdf_path).resolve()
+    supp_images_added = 0
+    supp_dups_skipped = 0
+    for spdf in supp_pdfs:
+        spdf_resolved = Path(spdf).resolve()
+        if spdf_resolved == supp_main_pdf_resolved:
+            continue
+        try:
+            supp_imgs = extract_images(spdf, output_dir)
+        except Exception as _e:
+            log.warning("Failed to extract images from supplementary PDF %s: %s", spdf, _e)
+            continue
+        # Drop images whose extracted PNG is content-identical to one already in
+        # the main set. Different paths, same content → truly duplicate.
+        kept = []
+        for im in supp_imgs:
+            if _fp is not None:
+                try:
+                    fpf = _fp(Path(im.filepath))
+                except Exception:
+                    fpf = None
+                if fpf is not None and fpf in existing_fps:
+                    supp_dups_skipped += 1
+                    continue
+                if fpf is not None:
+                    existing_fps.add(fpf)
+            kept.append(im)
+        images.extend(kept)
+        supp_images_added += len(kept)
+    if supp_images_added or supp_dups_skipped:
+        log.info(
+            "Extracted %d additional images from %d supplementary PDF(s) (skipped %d content-duplicates)",
+            supp_images_added, len(supp_pdfs), supp_dups_skipped,
+        )
+
+    # Extract tables from main PDF + supplementary PDFs → CSVs in
+    # `<output_dir>/data_tables/`. data_checker picks them up via the
+    # find_data_dir fallback below.
+    try:
+        from utils.pdf_table_extractor import extract_tables_from_pdf
+        n_tables = 0
+        try:
+            n_tables += len(extract_tables_from_pdf(pdf_path, output_dir))
+        except Exception as _e:
+            log.warning("Table extraction from main PDF failed: %s", _e)
+        for spdf in supp_pdfs:
+            try:
+                n_tables += len(extract_tables_from_pdf(spdf, output_dir))
+            except Exception as _e:
+                log.warning("Table extraction from supplementary PDF %s failed: %s", spdf, _e)
+        if n_tables:
+            log.info("Extracted %d table(s) total from PDFs into %s/data_tables/",
+                     n_tables, output_dir)
+    except ImportError:
+        pass  # pdfplumber not installed
+
     log.info("[2/4] Checking image duplicates...")
     image_results = check_image_duplicates(images, output_dir)
 
@@ -318,8 +478,13 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
     splice_results = check_splicing(images, output_dir)
 
     log.info("[3/4] Checking source data anomalies...")
-    data_dir = find_data_dir(paper_dir)
-    data_results = check_data_anomalies(data_dir) if data_dir else []
+    # Merge paper_dir with <output>/data_tables/ (PDF-extracted CSVs) so
+    # data_checker walks both trees. extra_dirs is a no-op if data_tables/ is
+    # empty or absent.
+    tables_dir = Path(output_dir) / "data_tables"
+    extra = [str(tables_dir)] if tables_dir.exists() and any(tables_dir.glob("*.csv")) else []
+    data_dirs_for_check = [paper_dir] + extra if extra else paper_dir
+    data_results = check_data_anomalies(data_dirs_for_check)
 
     log.info("[4/4] Verifying references...")
     if skip_refs:

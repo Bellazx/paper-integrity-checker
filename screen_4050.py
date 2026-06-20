@@ -46,6 +46,7 @@ from core.nature_adapter import is_nature_crawl, analyze_nature_paper
 from modules.chinese_report_generator import (
     _compute_overall_risk, _compute_dimension_risk, _compute_image_risk, _apply_data_caps, _make_filename,
 )
+from modules.doi_utils import dir_name_to_doi
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("screen-4050")
@@ -65,14 +66,8 @@ DB_CONFIG = {
 
 
 def _doi_from_dir(d: Path) -> str:
-    doi_file = d / "doi.txt"
-    if doi_file.exists():
-        t = doi_file.read_text(encoding="utf-8").strip()
-        if t:
-            return t
-    # fallback: dirname like "1000_10.1038__s41536-023-00341-z"
-    name = d.name.split("_", 1)[1] if "_" in d.name else d.name
-    return name.replace("__", "/")
+    """Centralized DOI parse from dir name (handles all formats: A, B, OUP, IOP)."""
+    return dir_name_to_doi(d)
 
 
 def _is_ready(d: Path) -> bool:
@@ -243,7 +238,16 @@ def main():
                     help="Optional newline-delimited directory-name allowlist.")
     ap.add_argument("--exclude-dirs-file", default="",
                     help="Optional newline-delimited directory-name blocklist.")
+    ap.add_argument("--input-root", default=None,
+                    help="Root directory of paper folders (default: data/input/4050-matched).")
     args = ap.parse_args()
+
+    # Allow overriding the input root per batch (writes still go to yujing_4050).
+    global INPUT_BASE
+    input_root = Path(args.input_root).resolve() if args.input_root else (BASE / "data" / "input" / "4050-matched")
+    if not input_root.is_dir():
+        raise SystemExit(f"--input-root not a directory: {input_root}")
+    INPUT_BASE = input_root
 
     OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
     CN_DIR.mkdir(parents=True, exist_ok=True)

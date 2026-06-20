@@ -121,7 +121,7 @@ def _insert_quanliang(findings: dict):
 def process_one(paper_dir: Path) -> dict:
     t0 = time.time()
     dirname = paper_dir.name
-    out_dir = OUTPUT_BASE / dirname
+    out_dir = OUTPUT_BASE / TABLE / dirname
     cn_dir = str(OUTPUT_BASE / "chinese_reports")
 
     result = {"dir": dirname, "status": "error"}

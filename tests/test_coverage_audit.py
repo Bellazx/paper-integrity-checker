@@ -489,6 +489,62 @@ class CoverageAuditTests(unittest.TestCase):
 
         self.assertEqual(text, "疑似高风险。核心问题明确。")
 
+    def test_image_section_keeps_high_risk_when_mixed_with_false_positive_notes(self):
+        grr = _load_generate_review_report()
+        verdict = grr._section_verdict(
+            "经逐项核查：第29页图S9与第31页图S11实际像素对比显示两图98.6%的像素完全相同，"
+            "表明这两张XRD图本质上是同一张图像被标注为两种不同的催化剂。"
+            "其余约70组SIFT匹配均为典型模板匹配假阳性。",
+            "建议高风险",
+            "image",
+        )
+
+        self.assertEqual(verdict, "建议高风险")
+
+    def test_reason_data_high_risk_updates_data_dimension_verdict(self):
+        grr = _load_generate_review_report()
+        info = {
+            "doi": "10.1/x",
+            "result": "高风险",
+            "verdict": "建议高风险",
+            "image_review": "未发现真实跨实验图像重复。",
+            "data_review": (
+                "本模块复核结论：建议低风险。\n"
+                "核查了数据，多数告警为假阳性。"
+            ),
+            "ref_review": "参考文献未发现异常。",
+            "reason": (
+                "数据维度（核心疑似高风险发现）：Fig.2d 中 JSRP1 与 "
+                "LOC105372240 两个独立基因表达值在34个样本中完全一致，"
+                "支持疑似高风险判定。\n"
+                "图像维度：无真实跨实验重复。"
+            ),
+        }
+
+        data_verdict = grr._dimension_verdict(info, "data")
+        image_verdict = grr._dimension_verdict(info, "image")
+        data_text = grr._prepend_section_verdict_for_dimension(
+            info["data_review"], info["verdict"], "data", data_verdict
+        )
+
+        self.assertEqual(data_verdict, "建议高风险")
+        self.assertEqual(image_verdict, "建议低风险")
+        self.assertTrue(data_text.startswith("本模块复核结论：建议高风险。"))
+
+    def test_figshare_crossref_miss_does_not_make_ref_high_risk(self):
+        grr = _load_generate_review_report()
+        text = (
+            "问题位置：参考文献 #56。发现：唯一一条引用异常为论文作者将自己先前 "
+            "Figshare 预印/数据集（DOI 10.6084/m9.figshare.31315522）作为参考列入"
+            "参考文献表，CrossRef 检索未命中（属 DataCite/Figshare DOI，不在 CrossRef "
+            "索引内）。为什么重要：作者自引数据集在补充材料惯例中可接受，CrossRef "
+            "未命中本身不构成引用实质不一致。核查依据：其他 585 条参考文献未被列出"
+            "存在 DOI/作者/期刊/题名实质不一致的告警。"
+        )
+
+        verdict = grr._section_verdict(text, "建议高风险", "ref")
+        self.assertEqual(verdict, "建议低风险")
+
 
 if __name__ == "__main__":
     unittest.main()

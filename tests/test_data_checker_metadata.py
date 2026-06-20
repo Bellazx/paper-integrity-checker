@@ -106,6 +106,41 @@ class DataCheckerMetadataTests(unittest.TestCase):
             self.assertEqual(len(loaded), 1)
             self.assertEqual(failed, [])
 
+    def test_skips_duplicate_source_data_across_multiple_dirs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_data = root / "source_data"
+            extended_data = root / "extended_data"
+            source_data.mkdir()
+            extended_data.mkdir()
+            df = pd.DataFrame({"group_a": [1.1, 1.2, 1.3], "group_b": [2.1, 2.2, 2.3]})
+            first = source_data / "source.xlsx"
+            second = extended_data / "source.xlsx"
+            df.to_excel(first, index=False)
+            second.write_bytes(first.read_bytes())
+
+            loaded, failed = _load_data_files([source_data, extended_data])
+
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(failed, [])
+            self.assertTrue(first.exists())
+            self.assertTrue(second.exists())
+
+    def test_same_named_different_source_data_across_dirs_are_both_loaded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_data = root / "source_data"
+            extended_data = root / "extended_data"
+            source_data.mkdir()
+            extended_data.mkdir()
+            pd.DataFrame({"a": [1, 2, 3]}).to_excel(source_data / "source.xlsx", index=False)
+            pd.DataFrame({"a": [4, 5, 6]}).to_excel(extended_data / "source.xlsx", index=False)
+
+            loaded, failed = _load_data_files([source_data, extended_data])
+
+            self.assertEqual(set(loaded), {"extended_data/source.xlsx", "source_data/source.xlsx"})
+            self.assertEqual(failed, [])
+
     def test_non_measurement_columns_do_not_drive_high_risk(self):
         df = pd.DataFrame({
             "Sample number": list(range(1, 31)),

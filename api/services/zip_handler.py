@@ -12,6 +12,7 @@ from api.config import (
     input_task_root, output_task_root,
 )
 from api.models import PaperInfo
+from modules.doi_utils import normalize_doi
 
 log = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ def _read_doi_from_pdf(pdf_path: Path) -> str:
             import re
             m = re.search(r'(10\.\d{4,}/\S+)', doi)
             if m:
-                return m.group(1).rstrip(".")
+                return normalize_doi(m.group(1))
     except Exception:
         pass
     return ""
@@ -59,7 +60,7 @@ def _read_doi_from_pdf(pdf_path: Path) -> str:
 def _read_doi_from_file(paper_dir: Path) -> str:
     doi_file = paper_dir / "doi.txt"
     if doi_file.exists():
-        return doi_file.read_text(encoding="utf-8").strip()
+        return normalize_doi(doi_file.read_text(encoding="utf-8"))
     return ""
 
 
@@ -82,7 +83,7 @@ def apply_doi_override(paper: PaperInfo, doi: str) -> PaperInfo:
     lookup later searches by DOI slug. Rename the extracted input directory to the DOI
     slug and write doi.txt so every downstream step agrees on the same identifier.
     """
-    doi = (doi or "").strip()
+    doi = normalize_doi(doi)
     if not doi:
         return paper
 

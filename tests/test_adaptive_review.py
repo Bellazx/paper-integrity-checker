@@ -117,7 +117,67 @@ class AdaptiveReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run_with_retry.await_count, 1)
         self.assertEqual(run_with_retry.await_args.kwargs["agent_id"], 1)
         judge.assert_not_awaited()
-        self.assertTrue(list(self.state_dir.glob("*.json")))
+        artifacts_dir = self.output_dir / "review_artifacts"
+        self.assertTrue(list(artifacts_dir.glob("*_state.json")))
+
+    async def test_run_review_preprocesses_input_dir_before_review(self):
+        self._write_evidence({"total_must_address": 4})
+        run_with_retry = mock.AsyncMock(return_value=_review_result("高风险"))
+
+        with self._patch_state_dir(), \
+             mock.patch.object(review, "_ensure_evidence_bundle", return_value=str(self.evidence_path)), \
+             mock.patch.object(review, "_validate_review_result", side_effect=lambda *args: args[3]), \
+             mock.patch.object(review, "_run_with_retry", run_with_retry), \
+             mock.patch("utils.paper_preprocessor.preprocess_paper_dir", return_value={
+                 "actions": {"duplicates_removed": 2},
+                 "warnings": [],
+             }) as preprocess:
+            result = await review.run_review_single(
+                "10.1/test", str(self.report), str(self.input_dir), str(self.output_dir)
+            )
+
+        self.assertEqual(result["result"], "高风险")
+        preprocess.assert_called_once()
+        self.assertEqual(str(preprocess.call_args.args[0]), str(self.input_dir))
+
+    async def test_run_review_preprocess_can_be_disabled(self):
+        self._write_evidence({"total_must_address": 4})
+        run_with_retry = mock.AsyncMock(return_value=_review_result("高风险"))
+
+        with self._patch_state_dir(), \
+             mock.patch.dict(os.environ, {"PAPER_PREPROCESS": "0"}), \
+             mock.patch.object(review, "_ensure_evidence_bundle", return_value=str(self.evidence_path)), \
+             mock.patch.object(review, "_validate_review_result", side_effect=lambda *args: args[3]), \
+             mock.patch.object(review, "_run_with_retry", run_with_retry), \
+             mock.patch("utils.paper_preprocessor.preprocess_paper_dir") as preprocess:
+            result = await review.run_review_single(
+                "10.1/test", str(self.report), str(self.input_dir), str(self.output_dir)
+            )
+
+        self.assertEqual(result["result"], "高风险")
+        preprocess.assert_not_called()
+
+    async def test_run_review_normalizes_doi_before_state_and_prompt(self):
+        self._write_evidence({"total_must_address": 4})
+        run_with_retry = mock.AsyncMock(return_value=_review_result("高风险"))
+
+        with self._patch_state_dir(), \
+             mock.patch.object(review, "_ensure_evidence_bundle", return_value=str(self.evidence_path)) as ensure_evidence, \
+             mock.patch.object(review, "_validate_review_result", side_effect=lambda *args: args[3]), \
+             mock.patch.object(review, "_run_with_retry", run_with_retry):
+            result = await review.run_review_single(
+                "10.1038s41467-026-71010-0",
+                str(self.report),
+                str(self.input_dir),
+                str(self.output_dir),
+            )
+
+        self.assertEqual(result["result"], "高风险")
+        ensure_evidence.assert_called_once()
+        self.assertEqual(ensure_evidence.call_args.args[0], "10.1038/s41467-026-71010-0")
+        state_files = list((self.output_dir / "review_artifacts").glob("*_state.json"))
+        self.assertEqual(len(state_files), 1)
+        self.assertIn("10.1038_s41467-026-71010-0", state_files[0].name)
 
     async def test_low_risk_requires_second_verifier_but_skips_judge_on_consensus(self):
         self._write_evidence({"main_figures": 1, "total_must_address": 1})
@@ -139,6 +199,11 @@ class AdaptiveReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run_with_retry.await_count, 1)
         verifier.assert_awaited_once()
         judge.assert_not_awaited()
+        state_files = list((self.output_dir / "review_artifacts").glob("*_state.json"))
+        state = json.loads(state_files[0].read_text(encoding="utf-8"))
+        decision = state["stages"]["decision"]
+        self.assertEqual(decision["flow"], "two_review_low_consensus")
+        self.assertNotIn("首个复核", decision["reason"])
 
     async def test_low_risk_disagreement_escalates_to_judge(self):
         self._write_evidence({"high_findings": 5, "total_must_address": 10})
@@ -161,6 +226,11 @@ class AdaptiveReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run_with_retry.await_args.kwargs["agent_id"], 1)
         verifier.assert_awaited_once()
         judge.assert_awaited_once()
+        state_files = list((self.output_dir / "review_artifacts").glob("*_state.json"))
+        state = json.loads(state_files[0].read_text(encoding="utf-8"))
+        decision = state["stages"]["decision"]
+        self.assertEqual(decision["flow"], "synthesis")
+        self.assertNotIn("首个复核", decision["reason"])
 
     async def test_reviewer1_failure_uses_full_reviewer2_and_judge(self):
         self._write_evidence({"total_must_address": 2})
@@ -187,6 +257,42 @@ class AdaptiveReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run_with_retry.await_args_list[1].kwargs["agent_id"], 2)
         verifier.assert_not_awaited()
         judge.assert_awaited_once()
+
+    def test_duplicate_pair_verification_uses_evidence_data_start_row(self):
+        try:
+            import openpyxl
+        except ImportError:
+            self.skipTest("openpyxl is not installed")
+
+        path = self.root / "dup.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Sheet1"
+        ws.append(["group", "A", "B"])
+        ws.append(["header", "value_a", "value_b"])
+        ws.append([999, 111, 222])
+        ws.append([1, 10, 10])
+        ws.append([2, 20, 20])
+        ws.append([3, 30, 30])
+        wb.save(path)
+        wb.close()
+
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        try:
+            result = review._verify_duplicate_pair(wb, {
+                "file": "dup.xlsx",
+                "sheet": "Sheet1",
+                "col_a_idx": 1,
+                "col_b_idx": 2,
+                "data_start_row": 4,
+                "n_points": 3,
+            })
+        finally:
+            wb.close()
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["data_start_row"], 4)
+        self.assertEqual(result["equal_points"], 3)
 
     async def test_coverage_warning_does_not_flip_double_low_to_high(self):
         self._write_evidence({"total_must_address": 3})
@@ -259,7 +365,32 @@ class AdaptiveReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["verdict"], "建议低风险")
         self.assertIn("流程错误", result.get("_review_warning", ""))
 
-    async def test_cached_final_skips_evidence_and_agents(self):
+    async def test_cached_final_is_ignored_by_default(self):
+        self._write_evidence({"total_must_address": 1})
+        stale_final = _review_result("低风险", reason="旧缓存结果")
+        fresh_result = _review_result("高风险", reason="新复核结果")
+
+        with self._patch_state_dir():
+            state_path = review._review_state_path(
+                "10.1/test", str(self.report), str(self.input_dir)
+            )
+            state = review._new_review_state("10.1/test", str(self.report), str(self.input_dir))
+            state["stages"]["final"] = stale_final
+            review._save_review_state(state_path, state)
+
+            run_with_retry = mock.AsyncMock(return_value=fresh_result)
+            with mock.patch.object(review, "_ensure_evidence_bundle", return_value=str(self.evidence_path)) as ensure_evidence, \
+                 mock.patch.object(review, "_validate_review_result", side_effect=lambda *args: args[3]), \
+                 mock.patch.object(review, "_run_with_retry", run_with_retry):
+                result = await review.run_review_single(
+                    "10.1/test", str(self.report), str(self.input_dir), str(self.output_dir)
+                )
+
+        self.assertEqual(result["reason"], "新复核结果")
+        ensure_evidence.assert_called_once()
+        run_with_retry.assert_awaited_once()
+
+    async def test_cached_final_skips_evidence_and_agents_when_resume_enabled(self):
         final = _review_result("低风险", reason="已有最终结果")
 
         with self._patch_state_dir():
@@ -271,7 +402,8 @@ class AdaptiveReviewTests(unittest.IsolatedAsyncioTestCase):
             review._save_review_state(state_path, state)
 
             run_with_retry = mock.AsyncMock()
-            with mock.patch.object(review, "_ensure_evidence_bundle") as ensure_evidence, \
+            with mock.patch.object(review, "REVIEW_RESUME_RESULTS", True), \
+                 mock.patch.object(review, "_ensure_evidence_bundle") as ensure_evidence, \
                  mock.patch.object(review, "_run_with_retry", run_with_retry):
                 result = await review.run_review_single(
                     "10.1/test", str(self.report), str(self.input_dir), str(self.output_dir)
@@ -281,7 +413,7 @@ class AdaptiveReviewTests(unittest.IsolatedAsyncioTestCase):
         ensure_evidence.assert_not_called()
         run_with_retry.assert_not_awaited()
 
-    async def test_cached_review_error_final_is_repaired_from_substantive_review(self):
+    async def test_cached_review_error_final_is_repaired_from_substantive_review_when_resume_enabled(self):
         first = _review_result("低风险", reason="已有实质低风险复核")
         failed_final = _review_result("高风险", trigger="review_error", reason="旧版流程失败上调")
 
@@ -297,7 +429,8 @@ class AdaptiveReviewTests(unittest.IsolatedAsyncioTestCase):
             state["stages"]["final"] = failed_final
             review._save_review_state(state_path, state)
 
-            with mock.patch.object(review, "_ensure_evidence_bundle") as ensure_evidence:
+            with mock.patch.object(review, "REVIEW_RESUME_RESULTS", True), \
+                 mock.patch.object(review, "_ensure_evidence_bundle") as ensure_evidence:
                 result = await review.run_review_single(
                     "10.1/test", str(self.report), str(self.input_dir), str(self.output_dir)
                 )

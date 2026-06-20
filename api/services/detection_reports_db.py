@@ -143,6 +143,43 @@ def upsert_chushen(
         conn.close()
 
 
+def verify_chushen_write(
+    submission_no: str,
+    fold_name: str | None,
+    chushen_report_url: str,
+    expected_status: int = 0,
+) -> tuple[bool, str]:
+    """Read back the first-pass row after upsert and verify URL + status."""
+    fold_name = _norm_fold(fold_name)
+    row = {
+        "submission_no": _trunc(submission_no, _WIDTHS["submission_no"]),
+        "fold_name": fold_name,
+    }
+    expected_url = _trunc(chushen_report_url, _WIDTHS["chushen_report_url"])
+
+    conn = pymssql.connect(**DB_CONFIG)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""SELECT chushen_report_url, status
+                FROM {TABLE}
+                WHERE {_key_clause(fold_name)}""",
+            row,
+        )
+        db_row = cursor.fetchone()
+    finally:
+        conn.close()
+
+    if not db_row:
+        return False, "initial report row was not found after write"
+    actual_url, actual_status = db_row[0], db_row[1]
+    if (actual_url or "") != expected_url:
+        return False, "initial report URL was not persisted as expected"
+    if int(actual_status) != expected_status:
+        return False, f"initial report status is {actual_status}, expected {expected_status}"
+    return True, ""
+
+
 def update_review(
     submission_no: str,
     fold_name: str | None,
@@ -181,3 +218,44 @@ def update_review(
         return matched
     finally:
         conn.close()
+
+
+def verify_review_write(
+    submission_no: str,
+    fold_name: str | None,
+    review_result: str,
+    review_report_url: str,
+    expected_status: int = 2,
+) -> tuple[bool, str]:
+    """Read back the review row after update and verify result + URL + status."""
+    fold_name = _norm_fold(fold_name)
+    row = {
+        "submission_no": _trunc(submission_no, _WIDTHS["submission_no"]),
+        "fold_name": fold_name,
+    }
+    expected_result = _trunc(review_result, _WIDTHS["review_result"])
+    expected_url = _trunc(review_report_url, _WIDTHS["review_report_url"])
+
+    conn = pymssql.connect(**DB_CONFIG)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""SELECT review_result, review_report_url, status
+                FROM {TABLE}
+                WHERE {_key_clause(fold_name)}""",
+            row,
+        )
+        db_row = cursor.fetchone()
+    finally:
+        conn.close()
+
+    if not db_row:
+        return False, "review row was not found after write"
+    actual_result, actual_url, actual_status = db_row[0], db_row[1], db_row[2]
+    if (actual_result or "") != expected_result:
+        return False, "review result was not persisted as expected"
+    if (actual_url or "") != expected_url:
+        return False, "review report URL was not persisted as expected"
+    if int(actual_status) != expected_status:
+        return False, f"review status is {actual_status}, expected {expected_status}"
+    return True, ""

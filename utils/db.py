@@ -9,6 +9,7 @@ import pymssql
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from modules.doi_utils import normalize_doi
 
 log = logging.getLogger(__name__)
 
@@ -164,7 +165,7 @@ def build_paper_metadata(findings: dict, html_path: str = None) -> dict:
         "author_all": ", ".join(authors_full) if authors_full else (paper.get("author") or ""),
         "department_all": "; ".join(affiliations) if affiliations else "",
         "journal": paper.get("journal") or "",
-        "doi": paper.get("doi") or "",
+        "doi": normalize_doi(paper.get("doi") or "") or (paper.get("doi") or ""),
     }
 
 

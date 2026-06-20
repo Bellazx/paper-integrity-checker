@@ -29,6 +29,8 @@ from pathlib import Path
 import pymssql
 
 BASE = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE))
+from modules.doi_utils import dir_name_to_doi
 TABLE = "yujing_4050"
 INPUT_BASE = BASE / "data" / "input" / "4050-matched"
 OUTPUT_BASE = BASE / "data" / "output" / TABLE
@@ -65,6 +67,18 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _optional_timeout(env_name: str, default_seconds: int) -> int | None:
+    value = os.environ.get(env_name, str(default_seconds)).strip().lower()
+    if value in {"0", "-1", "none", "no", "false", "unlimited"}:
+        return None
+    try:
+        parsed = int(value)
+        return parsed if parsed > 0 else None
+    except ValueError:
+        log.warning("Invalid %s=%r; using default %d", env_name, value, default_seconds)
+        return default_seconds
+
+
 def _load_state() -> dict:
     if not STATE_FILE.exists():
         return {"version": 1, "groups": {}, "in_progress": {}, "completed": {}, "failed": {}}
@@ -93,13 +107,8 @@ def _save_state(state: dict) -> None:
 
 
 def _doi_from_dir(d: Path) -> str:
-    doi_file = d / "doi.txt"
-    if doi_file.exists():
-        text = doi_file.read_text(encoding="utf-8", errors="ignore").strip()
-        if text:
-            return text
-    name = d.name.split("_", 1)[1] if "_" in d.name else d.name
-    return name.replace("__", "/")
+    """Centralized DOI parse from dir name (handles all formats: A, B, OUP, IOP)."""
+    return dir_name_to_doi(d)
 
 
 def _find_input_dir(doi: str) -> Path | None:
@@ -519,7 +528,27 @@ async def _review_one(doi: str) -> dict:
 
 
 def _is_review_error(result: dict) -> bool:
-    return result.get("trigger") == "review_error"
+    if result.get("trigger") == "review_error":
+        return True
+    text = "\n".join(str(result.get(key, "")) for key in (
+        "trigger",
+        "image_review",
+        "data_review",
+        "ref_review",
+        "reason",
+    ))
+    error_markers = (
+        "复核过程中出现错误",
+        "复核流程执行失败",
+        "未获得可解析的复核结果",
+        "Review pass 1 exhausted retries",
+        "Review pass 2 exhausted retries",
+        "could not parse output",
+        "timed out",
+        "claude CLI not found",
+        "Bun has crashed",
+    )
+    return any(marker in text for marker in error_markers)
 
 
 async def run_worker(group_id: str, dois: list[str]) -> int:
@@ -586,7 +615,7 @@ async def run_worker(group_id: str, dois: list[str]) -> int:
         cwd=str(BASE),
         capture_output=True,
         text=True,
-        timeout=int(os.environ.get("WATCH_4050_REPORT_TIMEOUT_SECONDS", "900")),
+        timeout=_optional_timeout("WATCH_4050_REPORT_TIMEOUT_SECONDS", 900),
     )
     if proc.stdout:
         log.info("Report stdout:\n%s", proc.stdout[-3000:])

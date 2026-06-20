@@ -1,9 +1,7 @@
 """Report-URL construction matches the actual PDF filename.
 
-Finding #6: the custom-table insert built "{doi_slug}.pdf", but the file written by
-generate_chinese_pdf is _make_filename(doi, title) = "{doi}_{title30}.pdf". This locks
-the URL to the same scheme via the shared utils.db._make_report_url helper, so a DB row
-never points at a nonexistent report.
+The DB URL and generate_chinese_pdf must share _make_filename(), including its
+length limits and sanitization, so a DB row never points at a nonexistent report.
 
 Run:  python3 -m unittest tests.test_report_url
 """
@@ -35,11 +33,43 @@ class ReportUrlScheme(unittest.TestCase):
         self.assertNotIn("/", fn)              # DOI slashes flattened to _
         self.assertTrue(fn.endswith(".pdf"))
         self.assertIn("10.1186_s12951-024-02315-9", fn)
+        self.assertLessEqual(len(fn.encode("utf-8")), 180)
 
     def test_unknown_doi_does_not_crash(self):
         url = _make_report_url({"paper": {}})
         self.assertTrue(url.startswith(REPORT_BASE_URL))
         self.assertTrue(url.endswith(".pdf"))
+
+    def test_oup_polluted_title_is_sanitized_and_bounded(self):
+        title = (
+            "American Journal of Epidemiology, 193, 3, 15 11 2023. Abstract "
+            "Maternal poor sleep quality may increase blood pressure during pregnancy, but "
+            "this title field is actually polluted with a very long abstract " * 8
+        )
+        fn = _make_filename("10.1093/aje/kwad223", title)
+        self.assertTrue(fn.startswith("10.1093_aje_kwad223_"))
+        self.assertTrue(fn.endswith(".pdf"))
+        self.assertLessEqual(len(fn.encode("utf-8")), 180)
+        for ch in ',;，；<>:"/\\|?*\n\r\t':
+            self.assertNotIn(ch, fn)
+
+    def test_html_entities_tags_and_abstract_tail_are_removed(self):
+        title = (
+            "&lt;p&gt;Genome&#x02010;wide meta&#x02010;analysis&lt;/p&gt; "
+            "Abstract This long abstract should not enter the filename " * 8
+        )
+        fn = _make_filename("10.1002/hep.32417", title)
+        self.assertTrue(fn.startswith("10.1002_hep.32417_Genome-wide_meta-analysis_"))
+        self.assertRegex(fn, r"_[0-9a-f]{8}\.pdf$")
+        for bad in ("&lt;", "&#x02010;", "Abstract", "This_long_abstract", "<", ">"):
+            self.assertNotIn(bad, fn)
+        self.assertLessEqual(len(fn.encode("utf-8")), 180)
+
+    def test_hash_is_preserved_when_title_is_truncated(self):
+        title = "A" * 1000
+        fn = _make_filename("10.1093/verylongdoi/" + "x" * 100, title)
+        self.assertRegex(fn, r"_[0-9a-f]{8}\.pdf$")
+        self.assertLessEqual(len(fn.encode("utf-8")), 180)
 
 
 class DoiSlugConsistency(unittest.TestCase):
@@ -58,6 +88,18 @@ class DoiSlugConsistency(unittest.TestCase):
         slug = doi_to_slug("10.1002/abc:def?x")
         for ch in ':?<>"\\|*':
             self.assertNotIn(ch, slug)
+        self.assertIn("10.1002_abcdefx", slug)
+
+    def test_polluted_doi_field_is_truncated_to_doi_token(self):
+        polluted = (
+            "10.1210/clinem/dgac577; The Journal of Clinical Endocrinology & Metabolism, "
+            "108, 2, 2022-10-5.; Abstract Context Thyroid hormones are essential"
+        )
+        self.assertEqual(doi_to_slug(polluted), "10.1210_clinem_dgac577")
+        fn = _make_filename(polluted, "A normal title")
+        self.assertTrue(fn.startswith("10.1210_clinem_dgac577_"))
+        self.assertNotIn("Journal", fn)
+        self.assertLessEqual(len(fn.encode("utf-8")), 180)
 
     def test_doi_org_prefix_stripped(self):
         self.assertEqual(doi_to_slug("https://doi.org/10.1/x"), doi_to_slug("10.1/x"))

@@ -2,16 +2,23 @@
 """Merge 4050-matched-supplemented/ into 4050-matched/ and purge crawler pollution.
 
 Rules:
-  - supplemented subdir 'NNN_<doi>' -> same-named 4050-matched subdir.
+  - supplemented subdir 'NNN_<doi>' -> same DOI 4050-matched subdir.
+    Prefer an exact same-name match when present, otherwise resolve by normalized DOI.
   - Pollution files NOT carried over, and also deleted from 4050-matched itself:
     manifest.json, resources.csv, figures.csv, AppleDouble ._*, .DS_Store.
   - Non-pollution file in both: keep the LARGER one.
   - Top-level crawler logs (_log_*.jsonl, _summary.csv, _leftover.csv) ignored.
 """
 import os, shutil, json
+import sys
+from collections import defaultdict
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE))
+
+from modules.doi_utils import dir_name_to_doi, normalize_doi
+
 S = BASE / "data" / "input" / "4050-matched-supplemented"
 B = BASE / "data" / "input" / "4050-matched"
 LOG = BASE / "data" / "output" / "merge_supplemented_log.json"
@@ -24,16 +31,48 @@ def is_pollution(fname):
     return n in POLLUTION_NAMES or n.startswith("._")
 
 
+def doi_key(path_or_name):
+    return normalize_doi(dir_name_to_doi(path_or_name)).lower()
+
+
+def build_target_index(target_root):
+    index = defaultdict(list)
+    for child in target_root.iterdir():
+        if not child.is_dir():
+            continue
+        key = doi_key(child)
+        if key:
+            index[key].append(child)
+    return index
+
+
+def resolve_target(source_dir, target_root, target_index):
+    exact = target_root / source_dir.name
+    key = doi_key(source_dir)
+    if exact.is_dir():
+        return exact, key, None
+    if not key:
+        return None, key, "bad_source_doi"
+
+    matches = target_index.get(key, [])
+    if len(matches) == 1:
+        return matches[0], key, None
+    if not matches:
+        return None, key, "no_target"
+    return None, key, "ambiguous_target"
+
+
 def main():
     copied = bigger = kept = skipped = 0
     errors = []
+    target_index = build_target_index(B)
     for d in sorted(os.listdir(S)):
         sp = S / d
         if not sp.is_dir():
             continue
-        tgt = B / d
-        if not tgt.is_dir():
-            errors.append({"dir": d, "status": "no_target"})
+        tgt, key, status = resolve_target(sp, B, target_index)
+        if status:
+            errors.append({"dir": d, "doi": key, "status": status})
             continue
         for r, dirs, fs in os.walk(sp):
             rel = os.path.relpath(r, sp)

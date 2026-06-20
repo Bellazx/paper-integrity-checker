@@ -259,6 +259,122 @@ def check_decimal_uniformity(values: np.ndarray) -> dict:
     }
 
 
+def check_trailing_digit_uniformity(
+    values: np.ndarray,
+    n_digits: int = 4,
+    ratio_threshold: float = 0.8,
+    min_samples: int = 10,
+) -> dict:
+    """Detect synthetic-data '末位填充' (trailing-digit padding) pattern.
+
+    A genuine measurement column has approximately uniformly random trailing
+    digits. If >= ratio_threshold of the values share the same last N decimal
+    digits (e.g. all 30 values end in "1246"), the column is almost certainly
+    fabricated — probability ~10^-(n_digits * ratio * n) for genuine data.
+
+    Distinct from `check_decimal_uniformity`, which only checks the *count* of
+    decimal places, not the digit *content* of the trailing portion.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        Numeric column to check.
+    n_digits : int
+        How many trailing decimal digits to consider. 4 by default; values
+        with fewer significant decimals are counted with their actual length.
+    ratio_threshold : float
+        Minimum fraction of values that must share the most-common suffix
+        to flag as high. Default 0.8.
+    min_samples : int
+        Minimum non-NaN samples required to test. Default 10.
+
+    Returns
+    -------
+    dict
+        ``flagged``, ``severity`` ("high" or "medium"), ``most_common_suffix``,
+        ``match_ratio``, ``match_count``, ``total``, ``n``.
+    """
+    clean = values[~np.isnan(values)]
+    if len(clean) < min_samples:
+        return {"testable": False, "reason": "insufficient_data", "n": int(len(clean))}
+
+    # Integer columns are covered by terminal_digit_test (which is unbiased for ints).
+    if np.all(clean == np.floor(clean)):
+        return {"testable": False, "reason": "integer_data_use_terminal_digit", "n": int(len(clean))}
+
+    suffixes: list[str] = []
+    for v in clean:
+        s = f"{abs(float(v)):.15f}"
+        if "." in s:
+            decimal_part = s.split(".", 1)[1].rstrip("0")
+            if len(decimal_part) >= n_digits:
+                suffixes.append(decimal_part[-n_digits:])
+            elif decimal_part:
+                # Shorter than requested but has content — record actual digits
+                # (handles padding-style cases where trailing zeros were stripped
+                # by float parsing).
+                suffixes.append(decimal_part)
+            else:
+                suffixes.append("__int__")  # value has no decimal portion
+        else:
+            suffixes.append("__int__")
+    if not suffixes:
+        return {"testable": False, "reason": "no_decimals", "n": int(len(clean))}
+
+    from collections import Counter
+    counter = Counter(suffixes)
+    most_common_suffix, most_common_count = counter.most_common(1)[0]
+    match_ratio = most_common_count / len(suffixes)
+
+    # Skip the "all values are integer-like" case — that's a decimal_uniformity
+    # concern, not a synthetic-padding marker. We want patterns like "1246" or
+    # "47", not "".
+    if most_common_suffix == "__int__":
+        return {
+            "testable": True,
+            "flagged": False,
+            "match_ratio": float(match_ratio),
+            "most_common_suffix": "",
+            "n": int(len(clean)),
+        }
+
+    # Severity ladder:
+    #   high   — last-4 suffix uniform at >= 60%  OR  last-3 at >= 80%
+    #            (very strong synthetic marker; 4-digit pattern at 60% match over
+    #             15 values has chance probability ~10^-32 — essentially impossible
+    #             by chance)
+    #   medium — last-4 suffix uniform at >= 50%  OR  last-3 at >= 60%
+    #            (still very rare by chance; ~10^-12 over 15 values for 4-digit at 50%)
+    if n_digits >= 4 and match_ratio >= 0.6:
+        severity = "high"
+    elif n_digits >= 3 and match_ratio >= 0.8:
+        severity = "high"
+    elif n_digits >= 4 and match_ratio >= 0.5:
+        severity = "medium"
+    elif n_digits >= 3 and match_ratio >= max(0.6, ratio_threshold - 0.2):
+        severity = "medium"
+    else:
+        return {
+            "testable": True,
+            "flagged": False,
+            "match_ratio": float(match_ratio),
+            "most_common_suffix": most_common_suffix,
+            "n": int(len(clean)),
+        }
+
+    return {
+        "testable": True,
+        "flagged": True,
+        "severity": severity,
+        "n_digits": n_digits,
+        "most_common_suffix": most_common_suffix,
+        "match_ratio": float(match_ratio),
+        "match_count": int(most_common_count),
+        "total": int(len(suffixes)),
+        "n": int(len(clean)),
+    }
+
+
 def check_value_recycling(values: np.ndarray, min_samples: int = 10) -> dict:
     """Detect value recycling: few unique values filling many data points."""
     clean = values[~np.isnan(values)]
@@ -445,3 +561,99 @@ def recompute_p(stat_type: str, stat_value: float, df1: float,
     except (ValueError, ZeroDivisionError, TypeError):
         return {"testable": False, "reason": "compute_error"}
     return {"testable": True, "recomputed_p": float(min(p, 1.0))}
+
+
+def check_passage_offset_pattern(
+    df,
+    min_pairs: int = 2,
+    n_first_cols: int | None = None,
+) -> list[dict]:
+    """Detect 'synthetic pseudo-replicate' pattern across rows in a sub-table.
+
+    Pattern: in a passage / timepoint × replicate layout, two rows R_i and R_j
+    share *byte-equal* values in the first K columns (replicate 1..K) and differ
+    in the last column by either an exact match (0.0) or an integer / half-step
+    offset (e.g. +1.5, +2.0, +0.5). Real biological replicates have stochastic
+    variability across all replicates; matching N columns exactly + integer
+    offset on the (N+1)th is a hallmark of human-edited fabricated data
+    (e.g. scitranslmed.aba3571 Fig.S11 Section B Passage 8↔14 / Passage 10↔11).
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Numeric DataFrame (one row per passage/timepoint, one column per replicate).
+    min_pairs : int
+        Minimum number of matching row-pairs to flag a sub-table. Default 2.
+    n_first_cols : int | None
+        Number of leading columns to require exact-match. None = use
+        df.shape[1] - 1 (i.e. last column is the offset-bearing one).
+
+    Returns
+    -------
+    list[dict]
+        Each result has ``flagged``, ``severity``, ``n_pairs``,
+        ``n_exact_matches``, ``n_integer_offsets``, ``n_first_cols``, ``last_col``,
+        ``pairs`` (truncated to first 10 row-pairs).
+    """
+    import pandas as pd  # local import — keeps this module importable without pandas
+
+    results: list[dict] = []
+    if not isinstance(df, pd.DataFrame) or df.shape[0] < 3 or df.shape[1] < 2:
+        return results
+    num_df = df.select_dtypes(include=[np.number])
+    if num_df.shape[1] < 2:
+        return results
+    K = n_first_cols if n_first_cols is not None else num_df.shape[1] - 1
+    K = min(K, num_df.shape[1] - 1)
+    if K < 1:
+        return results
+
+    last_col_idx = num_df.shape[1] - 1
+    last_col_name = str(num_df.columns[last_col_idx])
+    rows = num_df.to_numpy()
+    pairs: list[tuple[int, int, float]] = []
+
+    for i in range(len(rows)):
+        for j in range(i + 1, len(rows)):
+            a, b = rows[i], rows[j]
+            first_a, first_b = a[:K], b[:K]
+            if (np.any(~np.isfinite(first_a)) or np.any(~np.isfinite(first_b))
+                    or not np.isfinite(a[last_col_idx]) or not np.isfinite(b[last_col_idx])):
+                continue
+            if not np.allclose(first_a, first_b, atol=1e-12, rtol=0):
+                continue
+            offset = float(b[last_col_idx] - a[last_col_idx])
+            offset_abs = abs(offset)
+            if offset_abs < 1e-12:
+                pairs.append((i, j, 0.0))  # exact match — Passage 5↔17 style
+            elif offset_abs >= 0.5 and abs(offset - round(offset, 1)) < 1e-9:
+                # half-step (0.5/1.0/1.5/2.0/...) — human-edited offset
+                pairs.append((i, j, offset))
+
+    if len(pairs) < min_pairs:
+        return results
+
+    offsets = [p[2] for p in pairs]
+    exact_matches = [o for o in offsets if abs(o) < 1e-12]
+    integer_offsets = [o for o in offsets if abs(o) > 0 and abs(o - round(o, 1)) < 1e-9]
+    # "Strong" means >= 2 exact copies OR >= 2 integer-offset copies OR one of each.
+    if len(exact_matches) >= 2 or len(integer_offsets) >= 2 or (exact_matches and integer_offsets):
+        severity = "high"
+    else:
+        severity = "medium"
+
+    pair_records = [{"row_a": int(p[0]), "row_b": int(p[1]), "offset": float(p[2])}
+                    for p in pairs[:10]]
+    results.append({
+        "testable": True,
+        "flagged": True,
+        "severity": severity,
+        "n_pairs": int(len(pairs)),
+        "n_exact_matches": int(len(exact_matches)),
+        "n_integer_offsets": int(len(integer_offsets)),
+        "n_first_cols": int(K),
+        "last_col": last_col_name,
+        "pairs": pair_records,
+        "pairs_truncated": len(pairs) > 10,
+    })
+    return results

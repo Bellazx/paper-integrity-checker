@@ -61,13 +61,8 @@ def _host_gate(url: str):
 
 
 def _doi_of(d: Path) -> str:
-    f = d / "doi.txt"
-    if f.exists():
-        t = f.read_text(encoding="utf-8").strip()
-        if t:
-            return t
-    name = d.name.split("_", 1)[1] if "_" in d.name else d.name
-    return name.replace("__", "/")
+    from modules.doi_utils import dir_name_to_doi
+    return dir_name_to_doi(d)
 
 
 def _existing_pdf(d: Path):

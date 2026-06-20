@@ -23,6 +23,7 @@ from api.services.detect import run_detection_single
 from api.services.review import run_review_single
 from api.services.report import generate_reports
 from api.services.zip_handler import apply_doi_override, extract_single, extract_batch
+from modules.doi_utils import choose_authoritative_doi, normalize_doi
 
 log = logging.getLogger(__name__)
 
@@ -225,8 +226,19 @@ async def _run_stream(
                 report_json = Path(paper.output_dir) / "report.json"
                 paper.report_json = str(report_json) if report_json.exists() else ""
 
-                if not paper.doi and "paper" in findings:
-                    paper.doi = findings["paper"].get("doi", "")
+                paper_doi, changed, conflict = choose_authoritative_doi(
+                    paper.doi,
+                    (findings.get("paper") or {}).get("doi", ""),
+                )
+                if changed:
+                    paper.doi = paper_doi
+                if conflict:
+                    log.info(
+                        "Keeping supplied DOI for streamed run paper %s: supplied=%s detected=%s",
+                        getattr(paper, "submission_no", ""),
+                        paper.doi,
+                        normalize_doi((findings.get("paper") or {}).get("doi", "")),
+                    )
 
                 risk_level = "低风险"
                 if "summary" in findings:

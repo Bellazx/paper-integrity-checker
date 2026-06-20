@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import re
+import hashlib
+import html as html_lib
 from datetime import date
 from pathlib import Path
 
@@ -9,6 +11,7 @@ import fitz
 
 import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+from modules.doi_utils import normalize_doi
 from utils.llm_client import chat
 
 log = logging.getLogger(__name__)
@@ -63,8 +66,9 @@ CN_SYSTEM_PROMPT = """你是学术论文风险检测领域的专家。
 2. 引用具体数据和位置（页码、列名、数值）
 3. 严格按照指定的格式输出
 4. 使用"提示""可能""有待进一步调查"等客观措辞，避免直接下结论
-5. 作者姓名和机构名称必须保持论文原文语言和拼写，不要翻译、意译或中英混写
-6. 不要使用emoji表情符号"""
+5. ⚠️ 严格禁止使用"造假""篡改""伪造"等指控性词汇，无论肯定或否定语境均不得出现。应使用"数据异常""图像完整性问题""规范性不足""统计特征偏离预期"等中性表述替代
+6. 作者姓名和机构名称必须保持论文原文语言和拼写，不要翻译、意译或中英混写
+7. 不要使用emoji表情符号"""
 
 CN_REPORT_PROMPT = """请完成以下两项任务。
 
@@ -739,8 +743,14 @@ def _compute_overall_risk(findings: dict) -> dict:
         or ref_fabrication_trigger
         or (fraud_count >= 4 and 0 < image_risk["score"] < 80)
         or (score >= 60 and data_risk["score"] >= 60)
-        or (image_risk["score"] >= 40 and data_risk["score"] >= 10)
+        or (image_risk["score"] >= 30 and data_risk["score"] >= 5)
         or splice_trigger
+        # 2026-06-07: 漏判修复 — 18篇确认高风险论文因单一维度高分但组合条件
+        # 不满足而被判低风险。新增独立触发条件：
+        or image_risk["score"] >= 80     # 图像维度极高（如 sciimmunol.adh1306 pic=100）
+        or data_risk["score"] >= 20      # 数据维度中高（如 41467-025-62951-z data=37）
+        or (ref_risk["score"] >= 40 and data_risk["score"] >= 15)  # 引用+数据组合
+        or score >= 56                   # 总分接近阈值（如 41587-020-00781-8 total=56）
     )
 
     high_dims = set()
@@ -759,10 +769,28 @@ def _compute_overall_risk(findings: dict) -> dict:
             high_dims.add("data")
         if score >= 60 and data_risk["score"] >= 60:
             high_dims.add("data")
-        if image_risk["score"] >= 40 and data_risk["score"] >= 10:
+        if image_risk["score"] >= 30 and data_risk["score"] >= 5:
             high_dims.add("image")
         if splice_trigger:
             high_dims.add("image")
+        # 2026-06-07 新增触发条件的维度追踪
+        if image_risk["score"] >= 80:
+            high_dims.add("image")
+        if data_risk["score"] >= 20:
+            high_dims.add("data")
+        if ref_risk["score"] >= 40 and data_risk["score"] >= 15:
+            high_dims.add("reference")
+            high_dims.add("data")
+        if score >= 56:
+            # 总分触发时，标记贡献最大的维度
+            best = max(
+                ("image", image_risk["score"]),
+                ("data", data_risk["score"]),
+                ("ref", ref_risk["score"]),
+                key=lambda x: x[1],
+            )
+            if best[1] > 0:
+                high_dims.add({"image": "image", "data": "data", "ref": "reference"}[best[0]])
 
     if findings.get("_force_risk_level"):
         level = findings["_force_risk_level"]
@@ -1034,11 +1062,47 @@ def _render_pdf(html: str, output_path: str):
     log.info("Chinese PDF saved to %s", output_path)
 
 
+def _sanitize_filename_part(value: str, max_chars: int = 80) -> str:
+    """Return a compact filename-safe component for report PDFs.
+
+    Some publisher metadata puts journal, issue, date, and abstract text into
+    the title field. Keep a short normalized fragment and strip punctuation that
+    has caused brittle cleanup behavior in batch runs.
+    """
+    value = html_lib.unescape(str(value or ""))
+    value = re.sub(r"[\u2010-\u2015\u2212]", "-", value)
+    value = re.sub(r"<[^>]{0,200}>", " ", value)
+    value = re.split(r"\b(?:Graphical\s+Abstract|Abstract|BACKGROUND|CONTEXT)\b", value, maxsplit=1, flags=re.I)[0]
+    value = re.sub(r"\s+", " ", value).strip()
+    value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", value)
+    value = re.sub(r"[,;，；]+", " ", value)
+    value = re.sub(r"[^\w.\-\u4e00-\u9fff ]+", "", value, flags=re.UNICODE)
+    value = re.sub(r"\s+", "_", value).strip("._-")
+    return value[:max_chars]
+
+
+def _limit_text_bytes(value: str, max_bytes: int) -> str:
+    """Trim text to a UTF-8 byte limit without splitting multibyte characters."""
+    value = str(value or "")
+    while len(value.encode("utf-8")) > max_bytes and value:
+        value = value[:-1]
+    return value
+
+
 def _make_filename(doi: str, title: str) -> str:
-    doi_clean = doi.replace("https://doi.org/", "").replace("/", "_")
-    title_30 = title[:30].strip()
-    safe_chars = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', f"{doi_clean}_{title_30}")
-    return safe_chars + ".pdf"
+    max_bytes = 180
+    suffix = ".pdf"
+    doi_part = _limit_text_bytes(doi_to_slug(doi) or "unknown", 120)
+    digest_src = f"{doi or ''}\n{title or ''}".encode("utf-8", errors="ignore")
+    digest = hashlib.sha1(digest_src).hexdigest()[:8]
+    title_part = _sanitize_filename_part(title, max_chars=72)
+    fixed_bytes = len(f"{doi_part}_{digest}{suffix}".encode("utf-8"))
+    if title_part:
+        title_budget = max(0, max_bytes - fixed_bytes - 1)
+        title_part = _limit_text_bytes(title_part, title_budget).strip("._-")
+    if title_part:
+        return f"{doi_part}_{title_part}_{digest}{suffix}"
+    return f"{doi_part}_{digest}{suffix}"
 
 
 def doi_to_slug(doi: str) -> str:
@@ -1046,8 +1110,12 @@ def doi_to_slug(doi: str) -> str:
     stored URL always matches the file actually written. Strips the doi.org prefix,
     maps '/' to '_', and removes the same unsafe characters as _make_filename (a plain
     doi.replace('/','_') diverged for DOIs containing < > : " \\ | ? *)."""
-    doi_clean = (doi or "").replace("https://doi.org/", "").replace("/", "_")
-    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', doi_clean)
+    raw = str(doi or "").strip()
+    raw = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", raw, flags=re.I).strip()
+    doi_clean = normalize_doi(raw) or re.split(r"[\s,;，；]+", raw, maxsplit=1)[0]
+    doi_clean = doi_clean.rstrip(".")
+    doi_clean = doi_clean.replace("/", "_")
+    return _sanitize_filename_part(doi_clean, max_chars=120)
 
 
 def _coalesce_metadata(existing: dict, extracted: dict) -> dict:

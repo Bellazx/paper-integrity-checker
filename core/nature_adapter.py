@@ -1,5 +1,6 @@
 import json
 import logging
+import hashlib
 import re
 import time
 from pathlib import Path
@@ -28,6 +29,14 @@ SKIP_TYPES = {"Correspondence", "Comment", "Erratum"}
 
 MAX_RETRIES = 3
 MAX_CONSECUTIVE_API_FAILURES = 10
+
+
+def _file_fingerprint(path: Path) -> tuple[int, str] | None:
+    try:
+        return path.stat().st_size, hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as e:
+        log.warning("Failed to fingerprint %s: %s", path, e)
+        return None
 
 
 def _retry(fn, max_retries=MAX_RETRIES, delay=2, label="operation"):
@@ -299,18 +308,60 @@ def check_references_from_html(html_path: str) -> list[dict]:
     return issues
 
 
+# Directories whose PDFs are likely supplementary figures/data — not the main paper.
+# Match is case-insensitive against the first path segment of each PDF under paper_dir.
+SUPPLEMENTARY_DIR_PATTERNS = (
+    "extended_data", "extended data", "extend data", "expended data",
+    "supplementary", "supplement", "supplemental", "supplemental_material",
+    "supplementary_material", "supplementary_materials", "supplementary info",
+    "supplementary_info", "supplemental_information", "supporting_information",
+    "supporting info", "supporting", "supporting data", "supporting_data",
+    "si", "s1", "sm", "s/m",
+    "source_data", "source data", "supplementary_data", "supp_data",
+    "additional", "appendix", "附录", "补充材料", "附加材料",
+    "figure", "figures", "fig", "figs", "图片", "图表",
+)
+
+
 def find_image_pdfs(paper_dir: str) -> list[str]:
+    """Find supplementary/figure PDFs that should be image-mined for duplication.
+
+    Matches the common variants: extended_data / extended data / extend data,
+    supplementary / supplement / supporting_information / figure / figures.
+    """
     d = Path(paper_dir)
-    ext_dir = d / "extended_data"
-    if not ext_dir.exists():
+    if not d.exists():
         return []
 
-    pdfs = []
-    for f in sorted(ext_dir.glob("*.pdf")):
-        name_lower = f.name.lower()
-        if "reporting" in name_lower:
+    supset = {p.lower() for p in SUPPLEMENTARY_DIR_PATTERNS}
+    pdfs: list[str] = []
+    seen_fingerprints: set[tuple[int, str]] = set()
+
+    # Search top-level matching subdirs + any nested 'figure/figures' (one level deep)
+    candidate_dirs: set[Path] = set()
+    for entry in sorted(d.iterdir()):
+        if not entry.is_dir():
             continue
-        pdfs.append(str(f))
+        if entry.name.lower() in supset:
+            candidate_dirs.add(entry)
+    # nested figure/figures
+    for sub in ("figure", "figures", "fig", "figs", "图片", "图表"):
+        for nested in d.glob(f"*/{sub}"):
+            if nested.is_dir():
+                candidate_dirs.add(nested)
+
+    for cdir in sorted(candidate_dirs):
+        for f in sorted(cdir.glob("*.pdf")):
+            name_lower = f.name.lower()
+            if "reporting" in name_lower:
+                continue
+            fp = _file_fingerprint(f)
+            if fp is not None:
+                if fp in seen_fingerprints:
+                    log.info("Skipping duplicate supplementary PDF by content: %s", f.name)
+                    continue
+                seen_fingerprints.add(fp)
+            pdfs.append(str(f))
 
     return pdfs
 
@@ -340,6 +391,18 @@ def analyze_nature_paper(
     paper_dir = str(Path(paper_dir).resolve())
     output_dir = str(Path(output_dir).resolve())
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    if os.environ.get("PAPER_CLEAN_JUNK", "1") != "0":
+        try:
+            from utils.paper_preprocessor import clean_junk_files
+            junk_stats = clean_junk_files(paper_dir, dry_run=False, log_fn=log.info)
+            removed = sum(junk_stats.get("actions", {}).values())
+            if removed:
+                log.info("clean-junk removed %d noise entries in %s", removed, paper_dir)
+            for warning in junk_stats.get("warnings", []):
+                log.warning("clean-junk: %s", warning)
+        except Exception as e:
+            log.warning("clean_junk_files failed (continuing without): %s", e)
 
     metadata = extract_metadata_from_manifest(paper_dir)
 
@@ -387,12 +450,7 @@ def analyze_nature_paper(
 
     log.info("[2/4] Checking source data anomalies...")
     data_dirs = _find_data_dirs(paper_dir)
-    all_data_results = []
-    all_failed_files = []
-    for dd in data_dirs:
-        results, failed = check_data_with_validation(dd)
-        all_data_results.extend(results)
-        all_failed_files.extend(failed)
+    all_data_results, all_failed_files = check_data_with_validation(data_dirs)
 
     if all_failed_files:
         log.warning("Some data files failed to load (analysis continues): %s", ", ".join(all_failed_files))

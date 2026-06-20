@@ -1,20 +1,60 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import os
+import signal
 from pathlib import Path
 
 from api.config import (
     PYTHON, REVIEW_REPORT_SCRIPT, REVIEW_DIR,
     DEFAULT_TABLE, REPORT_TIMEOUT_SECONDS, sanitize_report_namespace,
 )
+from modules.chinese_report_generator import doi_to_slug
 
 log = logging.getLogger(__name__)
 
 
 def _is_review_error(result: dict) -> bool:
     return result.get("trigger") == "review_error"
+
+
+def _review_report_slug(result: dict) -> str:
+    """Filename slug for a review PDF.
+
+    Prefer the real DOI when present. User-facing uploads can include Chinese or
+    no-DOI papers, so callers may provide ``_report_slug`` as a task-local stable
+    fallback (for example the extracted folder/key). This affects only the PDF
+    filename/URL; the report body still displays ``doi``.
+    """
+    return doi_to_slug(result.get("doi") or "") or doi_to_slug(result.get("_report_slug") or "") or "unknown"
+
+
+async def _kill_process_group(proc) -> None:
+    """Terminate the report script and any child worker it spawned.
+
+    generate_review_report.py runs coverage validation in a child process. Killing
+    only the parent can leave that child alive, while ProcessLookupError from a
+    just-exited parent would otherwise surface as an empty API error.
+    """
+    pid = getattr(proc, "pid", None)
+    try:
+        if pid:
+            os.killpg(pid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        pass
+    except Exception:
+        with contextlib.suppress(Exception):
+            proc.kill()
+
+    wait = getattr(proc, "wait", None)
+    if wait is not None:
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(wait(), timeout=10)
 
 
 async def generate_reports(
@@ -39,10 +79,9 @@ async def generate_reports(
     namespace = sanitize_report_namespace(report_namespace or table_name)
     output_dir = REVIEW_DIR / namespace
     output_dir.mkdir(parents=True, exist_ok=True)
-    from modules.chinese_report_generator import doi_to_slug
     expected = {}
     for r in review_results:
-        slug = doi_to_slug(r.get("doi") or "")
+        slug = _review_report_slug(r)
         if not slug:
             continue
         p = output_dir / f"review_{slug}.pdf"
@@ -66,6 +105,7 @@ async def generate_reports(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd="/opt/paper-integrity-checker",
+        start_new_session=True,
     )
 
     try:
@@ -73,7 +113,7 @@ async def generate_reports(
             proc.communicate(), timeout=REPORT_TIMEOUT_SECONDS
         )
     except asyncio.TimeoutError:
-        proc.kill()
+        await _kill_process_group(proc)
         raise TimeoutError(f"Report generation timed out after {REPORT_TIMEOUT_SECONDS}s")
 
     out_text = stdout.decode(errors="replace")

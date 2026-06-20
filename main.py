@@ -61,11 +61,9 @@ def _analyze_one(input_dir: str, output_dir: str, skip_refs: bool = False, chine
 
 
 def _dir_doi(paper_dir: Path) -> str:
-    """Extract DOI from a paper directory (Nature format)."""
-    doi_file = paper_dir / "doi.txt"
-    if doi_file.exists():
-        return doi_file.read_text(encoding="utf-8").strip()
-    return paper_dir.name.replace("__", "/")
+    """Extract DOI from a paper directory (handles all formats: A, B, OUP, IOP)."""
+    from modules.doi_utils import dir_name_to_doi
+    return dir_name_to_doi(paper_dir)
 
 
 def run_single(input_dir: str, output_dir: str, skip_refs: bool = False, author_type: str = "", no_db: bool = False, doi: str = "", report_namespace: str = ""):

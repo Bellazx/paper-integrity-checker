@@ -18,11 +18,17 @@ from pathlib import Path
 from api.config import MAX_CONCURRENT_TASKS, MAX_REVIEW_WORKERS, REVIEW_DIR, TASKS_DIR
 from api.models import PaperInfo, TaskStatus
 from modules.chinese_report_generator import doi_to_slug
+from modules.doi_utils import choose_authoritative_doi, normalize_doi
 from api.services.task_manager import TaskManager
 from api.services.detect import run_detection_single
 from api.services.review import run_review_single
 from api.services.report import generate_reports
-from api.services.detection_reports_db import upsert_chushen, update_review
+from api.services.detection_reports_db import (
+    upsert_chushen,
+    update_review,
+    verify_chushen_write,
+    verify_review_write,
+)
 
 log = logging.getLogger(__name__)
 
@@ -50,9 +56,38 @@ def _chushen_report_url(findings: dict, namespace: str = REPORT_NAMESPACE) -> st
     return f"{CHUSHEN_BASE_URL}/{namespace}/{filename}"
 
 
-def _review_report_url(doi: str, namespace: str = REPORT_NAMESPACE) -> str:
-    from modules.chinese_report_generator import doi_to_slug
-    return f"{REVIEW_BASE_URL}/{namespace}/review_{doi_to_slug(doi)}.pdf"
+def _safe_report_slug(value: str) -> str:
+    slug = doi_to_slug(value or "")
+    if not slug:
+        raise ValueError("Cannot generate review report slug from empty value")
+    return slug
+
+
+def _review_report_slug(paper: PaperInfo, review: dict | None = None) -> str:
+    """Task-local review PDF key.
+
+    DOI is still preferred when valid. For Chinese/no-DOI papers, fall back to
+    the extracted paper key (`doi_slug`), which is already unique inside a task.
+    This avoids multiple no-DOI high-risk reviews colliding as review_.pdf.
+    """
+    doi = _review_doi(paper, review)
+    fallback = paper.doi_slug or paper.fold_name or paper.submission_no
+    return _safe_report_slug(doi or fallback)
+
+
+def _review_report_url_for_paper(paper: PaperInfo, review: dict | None, namespace: str = REPORT_NAMESPACE) -> str:
+    return f"{REVIEW_BASE_URL}/{namespace}/review_{_review_report_slug(paper, review)}.pdf"
+
+
+def _review_doi(paper: PaperInfo, review: dict | None = None) -> str:
+    doi = normalize_doi(paper.doi)
+    if doi:
+        return doi
+    if review:
+        doi = normalize_doi(review.get("doi", ""))
+        if doi:
+            return doi
+    return ""
 
 
 async def run_detection_reports_pipeline(
@@ -110,8 +145,19 @@ async def _run_inner(
             report_json = Path(paper.output_dir) / "report.json"
             paper.report_json = str(report_json) if report_json.exists() else ""
 
-            if not paper.doi and "paper" in findings:
-                paper.doi = findings["paper"].get("doi", "")
+            paper_doi, changed, conflict = choose_authoritative_doi(
+                paper.doi,
+                (findings.get("paper") or {}).get("doi", ""),
+            )
+            if changed:
+                paper.doi = paper_doi
+            if conflict:
+                log.info(
+                    "Keeping supplied DOI for submission %s: supplied=%s detected=%s",
+                    paper.submission_no,
+                    paper.doi,
+                    normalize_doi((findings.get("paper") or {}).get("doi", "")),
+                )
 
             from modules.chinese_report_generator import _compute_overall_risk
             chushen_result = "低风险"
@@ -129,6 +175,13 @@ async def _run_inner(
                 chushen_report_url=chushen_url,
                 author_type_override=author_type,
             )
+            verified, verify_reason = verify_chushen_write(
+                submission_no=paper.submission_no,
+                fold_name=paper.fold_name,
+                chushen_report_url=chushen_url,
+            )
+            if not verified:
+                raise RuntimeError(f"Initial report DB verification failed: {verify_reason}")
 
             paper.status = "detected"
             if chushen_result == "高风险":
@@ -153,6 +206,8 @@ async def _run_inner(
     review_results: list[dict] = []
     review_by_key: dict[tuple[str, str], dict] = {}
     review_failures: dict[tuple[str, str], dict] = {}
+    review_persisted_keys: set[tuple[str, str]] = set()
+    persistence_failures: dict[tuple[str, str], str] = {}
     if high_risk_papers:
         tm.update_task(
             task_id,
@@ -175,6 +230,8 @@ async def _run_inner(
                         output_dir=paper.output_dir,
                     )
                     review.setdefault("trigger", "auto_detection")
+                    review["doi"] = _review_doi(paper, review)
+                    review["_report_slug"] = _review_report_slug(paper, review)
                     review["_input_dir"] = paper.input_dir
                     review["_report_json"] = paper.report_json
                 except Exception as e:
@@ -236,32 +293,66 @@ async def _run_inner(
             tm.update_task(task_id, status=TaskStatus.FAILED, error=f"Report generation failed: {e}")
             return
 
-        # Write 复审 result per high-risk paper (status -> 2).
+        # Write 复审 result per high-risk paper (status -> 2). A task is only
+        # allowed to become completed after this DB write is confirmed; otherwise
+        # the frontend could stop polling while review_report_url is still empty.
         generated_paths = set(report_paths)
         for paper in high_risk_papers:
-            review = review_by_key.get((paper.submission_no, paper.fold_name))
+            key = (paper.submission_no, paper.fold_name)
+            review = review_by_key.get(key)
             if not review:
                 continue
             review_result = review.get("result", "高风险")
-            expected_path = str(REVIEW_DIR / report_namespace / f"review_{doi_to_slug(paper.doi or '')}.pdf")
+            doi_for_review = _review_doi(paper, review)
+            expected_path = str(REVIEW_DIR / report_namespace / f"review_{_review_report_slug(paper, review)}.pdf")
             if expected_path not in generated_paths:
-                log.error("Skipping detection_reports 复审 write for %s: review PDF was not generated", paper.doi)
+                reason = f"review PDF was not generated: {expected_path}"
+                paper.status = "persist_error"
+                paper.error = reason
+                persistence_failures[key] = reason
+                log.error("Skipping detection_reports 复审 write for %s: %s", doi_for_review, reason)
                 continue
             try:
-                update_review(
+                review_url = _review_report_url_for_paper(paper, review, report_namespace)
+                matched = update_review(
                     submission_no=paper.submission_no,
                     fold_name=paper.fold_name,
                     review_result=review_result,
-                    review_report_url=_review_report_url(paper.doi, report_namespace),
+                    review_report_url=review_url,
                 )
+                if not matched:
+                    reason = "review DB row was not found; review_report_url was not persisted"
+                    paper.status = "persist_error"
+                    paper.error = reason
+                    persistence_failures[key] = reason
+                    log.error("detection_reports 复审 write did not match a row for %s", doi_for_review)
+                    continue
+                verified, verify_reason = verify_review_write(
+                    submission_no=paper.submission_no,
+                    fold_name=paper.fold_name,
+                    review_result=review_result,
+                    review_report_url=review_url,
+                )
+                if not verified:
+                    reason = f"review DB verification failed: {verify_reason}"
+                    paper.status = "persist_error"
+                    paper.error = reason
+                    persistence_failures[key] = reason
+                    log.error("detection_reports 复审 verification failed for %s: %s", doi_for_review, verify_reason)
+                    continue
+                review_persisted_keys.add(key)
             except Exception as e:
-                log.error("detection_reports 复审 write failed for %s: %s", paper.doi, e)
+                reason = f"review DB write failed: {e}"
+                paper.status = "persist_error"
+                paper.error = reason
+                persistence_failures[key] = reason
+                log.error("detection_reports 复审 write failed for %s: %s", doi_for_review, e)
 
     # ── Done: build summary + per-paper detection_reports records ─────────
     review_by_sub = {
         key: r
         for key, r in review_by_key.items()
-        if str(REVIEW_DIR / report_namespace / f"review_{doi_to_slug(r.get('doi') or '')}.pdf") in generated_paths
+        if key in review_persisted_keys
     }
     high_keys = {(p.submission_no, p.fold_name) for p in high_risk_papers}
 
@@ -269,18 +360,22 @@ async def _run_inner(
     for p in detected_ok:
         key = (p.submission_no, p.fold_name)
         review = review_by_sub.get(key)
+        raw_review = review or review_by_key.get(key)
         is_chushen_high = key in high_keys
         review_failure = review_failures.get(key) if is_chushen_high else None
+        persist_failure = persistence_failures.get(key) if is_chushen_high else None
         records.append({
             "submission_no": p.submission_no,
             "fold_name": p.fold_name or None,
             "doi": p.doi,
             "chushen_result": "高风险" if is_chushen_high else "低风险",
             "chushen_report_url": _chushen_report_url_from_paper(p, report_namespace),
-            "review_result": review.get("result") if review else None,
-            "review_report_url": _review_report_url(p.doi, report_namespace) if review else None,
+            "review_result": raw_review.get("result") if raw_review else None,
+            "review_report_url": _review_report_url_for_paper(p, review, report_namespace) if review else None,
             "status": 2 if review else 0,
-            "review_error": review_failure.get("reason") if review_failure else None,
+            "review_error": (
+                review_failure.get("reason") if review_failure else persist_failure
+            ),
         })
 
     persisted_reviews = list(review_by_sub.values())
@@ -295,16 +390,26 @@ async def _run_inner(
         "high_risk_detected": len(high_risk_papers),
         "reviewed": len(persisted_reviews),
         "review_failed": review_failed,
+        "persistence_failed": len(persistence_failures),
         "confirmed_high": confirmed_high,
         "downgraded": downgraded,
         "reports_generated": len(generated_paths) if review_results else 0,
         "detection_reports": records,
     }
 
-    status = TaskStatus.FAILED if review_failed else TaskStatus.COMPLETED
+    status = TaskStatus.FAILED if (detected_fail or review_failed or persistence_failures) else TaskStatus.COMPLETED
     error = None
+    if detected_fail:
+        error = f"Detection/initial report persistence failed for {len(detected_fail)} paper(s)"
     if review_failed:
-        error = f"AI review failed for {review_failed} high-risk paper(s); no final review PDF was generated for failed reviews"
+        review_error = f"AI review failed for {review_failed} high-risk paper(s); no final review PDF was generated for failed reviews"
+        error = f"{error}; {review_error}" if error else review_error
+    if persistence_failures:
+        persist_error = (
+            f"Report DB persistence failed for {len(persistence_failures)} high-risk paper(s); "
+            "task is not complete until review_report_url is written"
+        )
+        error = f"{error}; {persist_error}" if error else persist_error
 
     tm.update_task(
         task_id,
@@ -331,4 +436,5 @@ def _chushen_report_url_from_paper(paper: PaperInfo, namespace: str = REPORT_NAM
                 return _chushen_report_url(json.load(f), namespace)
         except Exception:
             pass
-    return f"{CHUSHEN_BASE_URL}/{namespace}/{doi_to_slug(paper.doi) or 'unknown'}.pdf"
+    fallback = paper.doi or paper.doi_slug or paper.fold_name or paper.submission_no
+    return f"{CHUSHEN_BASE_URL}/{namespace}/{_safe_report_slug(fallback)}.pdf"

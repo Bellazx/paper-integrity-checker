@@ -1,4 +1,5 @@
 import logging
+import hashlib
 from pathlib import Path
 from dataclasses import dataclass, field
 
@@ -18,6 +19,15 @@ class ExtractedImage:
     width: int
     height: int
     xref: int = 0
+
+
+def _file_fingerprint(path: Path) -> tuple[int, str] | None:
+    """Return a stable content fingerprint for duplicate-file skipping."""
+    try:
+        return path.stat().st_size, hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as e:
+        log.warning("Failed to fingerprint %s: %s", path, e)
+        return None
 
 
 def extract_images(pdf_path: str, output_dir: str, min_size: int = 200) -> list[ExtractedImage]:
@@ -74,8 +84,14 @@ def extract_images(pdf_path: str, output_dir: str, min_size: int = 200) -> list[
     return images
 
 
-def extract_standalone_images(paper_dir: str, output_dir: str, min_size: int = 200, max_images: int = 30) -> list[ExtractedImage]:
-    """Load standalone image files (TIF/TIFF/JPEG/PNG) from paper directory."""
+def extract_standalone_images(paper_dir: str, output_dir: str, min_size: int = 200, max_images: int = 30, extra_image_dirs: list[str] | None = None) -> list[ExtractedImage]:
+    """Load standalone image files (TIF/TIFF/JPEG/PNG) from paper directory.
+
+    extra_image_dirs: optional list of additional directories whose image files
+    should be included in the scan (e.g. an `<output_dir>/images/` populated
+    by the docx extractor that lives inside the recursion guard's exclusion
+    zone).
+    """
     import cv2
     from PIL import Image
 
@@ -84,18 +100,39 @@ def extract_standalone_images(paper_dir: str, output_dir: str, min_size: int = 2
     images = []
     img_extensions = {".tif", ".tiff", ".jpg", ".jpeg", ".png"}
 
+    # Allow callers to inject extra image roots that the default rglob guard
+    # would otherwise skip (the output-images folder is the canonical case).
+    extra_image_dirs = list(extra_image_dirs or [])
+
     img_files = []
     for ext in img_extensions:
         img_files.extend(paper_path.rglob(f"*{ext}"))
         img_files.extend(paper_path.rglob(f"*{ext.upper()}"))
+    # Also pull from explicitly injected dirs (e.g. docx_extractor output)
+    for extra in extra_image_dirs:
+        ep = Path(extra)
+        if not ep.exists():
+            continue
+        for ext in img_extensions:
+            img_files.extend(ep.glob(f"*{ext}"))
+            img_files.extend(ep.glob(f"*{ext.upper()}"))
 
     seen_paths = set()
+    seen_file_fingerprints: set[tuple[int, str]] = set()
     for f in sorted(img_files):
         if f.resolve() in seen_paths:
             continue
         seen_paths.add(f.resolve())
-        if str(f).startswith(str(output_images)):
-            continue
+        # NOTE: previously had `if str(f).startswith(str(output_images)): continue`
+        # which silently dropped legitimate images (e.g. docx_extractor output).
+        # We now rely on file-fingerprint dedup to avoid double-counting.
+
+        fp = _file_fingerprint(f)
+        if fp is not None:
+            if fp in seen_file_fingerprints:
+                log.info("Skipping duplicate standalone image file by content: %s", f.name)
+                continue
+            seen_file_fingerprints.add(fp)
 
         try:
             arr = cv2.imread(str(f))

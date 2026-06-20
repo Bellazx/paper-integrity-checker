@@ -35,9 +35,10 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 BASE = Path("/opt/paper-integrity-checker")
-OUTPUT_DIR = BASE / "data" / "output"
+OUTPUT_DIR = BASE / "data" / "output" / "yujing_quanliang"  # per-table layout (screen_quanliang writes here)
 INPUT_DIR = BASE / "data" / "input"
-REVIEW_V2_DIR = BASE / "data" / "output" / "review_v2"
+REVIEW_V2_DIR = BASE / "data" / "output" / "review_v2" / "yujing_quanliang"  # per-table isolation for review PDFs
+REVIEW_V2_DIR.mkdir(parents=True, exist_ok=True)
 # All runtime files live under data/ (the 1T disk), never /tmp (root disk fills up → nginx 500)
 TMP_DIR = BASE / "data" / "tmp"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -93,6 +94,46 @@ def save_results(results):
         json.dump(results, f, ensure_ascii=False, indent=2)
 
 
+# Markers that the review fell back to the internal-error placeholder. Any of
+# these in the rendered PDF would expose a system failure to the user, which
+# is never acceptable. Keep this list in sync with watch_4050_reviews.py
+# `_is_review_error` and api/services/review.py `_fallback_result`.
+_REVIEW_ERROR_MARKERS = (
+    "复核过程中出现错误",
+    "复核流程执行失败",
+    "未获得可解析的复核结果",
+    "Review pass 1 exhausted retries",
+    "Review pass 2 exhausted retries",
+    "could not parse output",
+    "timed out",
+    "claude CLI not found",
+    "Bun has crashed",
+)
+
+
+def _is_review_error(result: dict) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if result.get("trigger") == "review_error":
+        return True
+    text = "\n".join(str(result.get(key, "")) for key in (
+        "trigger", "image_review", "data_review", "ref_review", "reason",
+    ))
+    return any(marker in text for marker in _REVIEW_ERROR_MARKERS)
+
+
+def _split_review_errors(results: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split results into (renderable, failed). Failed entries MUST never be
+    rendered into a user-facing PDF — caller should log them loudly and skip."""
+    renderable, failed = [], []
+    for r in results:
+        if _is_review_error(r):
+            failed.append(r)
+        else:
+            renderable.append(r)
+    return renderable, failed
+
+
 def _seconds_left(deadline: float | None) -> float | None:
     if deadline is None:
         return None
@@ -108,11 +149,23 @@ def generate_reports(batch_results: list[dict]):
     """Generate PDF reports and update DB for a batch of results."""
     if not batch_results:
         return
+    # Filter out review_error placeholders so we never render a PDF that
+    # exposes internal failure text to the user. Surface them loudly instead.
+    renderable, failed = _split_review_errors(batch_results)
+    if failed:
+        log.error(
+            "Refusing to render %d paper(s) with review_error placeholder: %s",
+            len(failed), ", ".join(r.get("doi", "<unknown>") for r in failed),
+        )
+    if not renderable:
+        log.error("No renderable results in batch; skipping PDF+DB pass.")
+        return
     batch_file = str(TMP_DIR / f"rereview_batch_{int(time.time())}.json")
     with open(batch_file, "w") as f:
-        json.dump(batch_results, f, ensure_ascii=False, indent=2)
+        json.dump(renderable, f, ensure_ascii=False, indent=2)
 
-    log.info("Generating PDFs + updating DB for %d papers...", len(batch_results))
+    log.info("Generating PDFs + updating DB for %d papers (skipped %d errors)...",
+             len(renderable), len(failed))
     try:
         proc = subprocess.run(
             [sys.executable, REPORT_SCRIPT, "--results", batch_file, "--output", str(REVIEW_V2_DIR)],

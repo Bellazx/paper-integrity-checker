@@ -22,6 +22,7 @@ from utils.stats import (
     grim_test, benfords_law_test, check_cross_group_duplicates,
     check_decimal_uniformity, check_linear_dependency,
     check_value_recycling, terminal_digit_test, sd_regularity_test,
+    check_trailing_digit_uniformity, check_passage_offset_pattern,
 )
 
 log = logging.getLogger(__name__)
@@ -270,15 +271,35 @@ def _split_sub_tables(df: pd.DataFrame, filename: str, sheet_name: str) -> dict[
     return tables
 
 
-def _load_data_files(data_dir: str) -> tuple[dict[str, dict[str, pd.DataFrame]], list[str]]:
+def _load_data_files(
+    data_dir: str | Path | list[str | Path],
+) -> tuple[dict[str, dict[str, pd.DataFrame]], list[str]]:
     """Load all Excel/CSV files with retry logic.
     Returns (loaded_data, failed_file_names)."""
-    data_dir = Path(data_dir)
+    data_dirs = [Path(data_dir)] if not isinstance(data_dir, list) else [Path(d) for d in data_dir]
     result = {}
     failed_files = []
     seen_fingerprints: set[tuple[int, str]] = set()
 
-    for f in sorted(data_dir.rglob("*")):
+    def display_name(path: Path) -> str:
+        if len(data_dirs) == 1:
+            return path.name
+        rel_candidates = []
+        for root in data_dirs:
+            try:
+                rel_candidates.append(path.relative_to(root.parent))
+            except ValueError:
+                continue
+        if rel_candidates:
+            return min(rel_candidates, key=lambda p: len(p.parts)).as_posix()
+        return path.name
+
+    candidates = []
+    for root in data_dirs:
+        if root.exists():
+            candidates.extend(root.rglob("*"))
+
+    for f in sorted(candidates):
         if is_metadata_data_file(f):
             continue  # crawler metadata, not experimental data
         if f.is_file() and f.suffix.lower() in TABLE_DATA_EXTENSIONS:
@@ -292,6 +313,7 @@ def _load_data_files(data_dir: str) -> tuple[dict[str, dict[str, pd.DataFrame]],
                 log.info("Skipping duplicate source data file by content: %s", f.name)
                 continue
             seen_fingerprints.add(fp)
+        name = display_name(f)
         if f.suffix.lower() in (".xlsx", ".xls"):
             loaded = False
             engine = "xlrd" if f.suffix.lower() == ".xls" else "openpyxl"
@@ -300,35 +322,35 @@ def _load_data_files(data_dir: str) -> tuple[dict[str, dict[str, pd.DataFrame]],
                     raw = pd.read_excel(f, sheet_name=None, engine=engine, header=None)
                     all_tables = {}
                     for sheet_name, df in raw.items():
-                        sub_tables = _split_sub_tables(df, f.name, sheet_name)
+                        sub_tables = _split_sub_tables(df, name, sheet_name)
                         all_tables.update(sub_tables)
-                    result[f.name] = all_tables
-                    log.info("Loaded %s: %d sub-tables", f.name, len(all_tables))
+                    result[name] = all_tables
+                    log.info("Loaded %s: %d sub-tables", name, len(all_tables))
                     loaded = True
                     break
                 except Exception as e:
                     if attempt < MAX_LOAD_RETRIES - 1:
-                        log.warning("Failed to load %s (attempt %d/%d): %s", f.name, attempt + 1, MAX_LOAD_RETRIES, e)
+                        log.warning("Failed to load %s (attempt %d/%d): %s", name, attempt + 1, MAX_LOAD_RETRIES, e)
                         time.sleep(2 * (attempt + 1))
                     else:
-                        log.error("Failed to load %s after %d attempts: %s", f.name, MAX_LOAD_RETRIES, e)
-                        failed_files.append(f.name)
+                        log.error("Failed to load %s after %d attempts: %s", name, MAX_LOAD_RETRIES, e)
+                        failed_files.append(name)
         elif f.suffix.lower() == ".csv":
             loaded = False
             for attempt in range(MAX_LOAD_RETRIES):
                 try:
                     df = pd.read_csv(f)
-                    result[f.name] = {"Sheet1": df}
-                    log.info("Loaded %s", f.name)
+                    result[name] = {"Sheet1": df}
+                    log.info("Loaded %s", name)
                     loaded = True
                     break
                 except Exception as e:
                     if attempt < MAX_LOAD_RETRIES - 1:
-                        log.warning("Failed to load %s (attempt %d/%d): %s", f.name, attempt + 1, MAX_LOAD_RETRIES, e)
+                        log.warning("Failed to load %s (attempt %d/%d): %s", name, attempt + 1, MAX_LOAD_RETRIES, e)
                         time.sleep(2 * (attempt + 1))
                     else:
-                        log.error("Failed to load %s after %d attempts: %s", f.name, MAX_LOAD_RETRIES, e)
-                        failed_files.append(f.name)
+                        log.error("Failed to load %s after %d attempts: %s", name, MAX_LOAD_RETRIES, e)
+                        failed_files.append(name)
         elif f.suffix.lower() == ".docx":
             try:
                 from docx import Document
@@ -341,29 +363,29 @@ def _load_data_files(data_dir: str) -> tuple[dict[str, dict[str, pd.DataFrame]],
                         df = df.apply(lambda col: pd.to_numeric(col, errors='coerce'))
                         tables[f"Table_{i}"] = df
                 if tables:
-                    result[f.name] = tables
-                    log.info("Loaded %s: %d tables", f.name, len(tables))
+                    result[name] = tables
+                    log.info("Loaded %s: %d tables", name, len(tables))
             except Exception as e:
-                log.warning("Failed to load %s: %s", f.name, e)
-                failed_files.append(f.name)
+                log.warning("Failed to load %s: %s", name, e)
+                failed_files.append(name)
         elif f.suffix.lower() == ".fcs":
             try:
                 import fcsparser
                 _, df = fcsparser.parse(str(f), reformat_meta=True)
-                result[f.name] = {"Sheet1": df}
-                log.info("Loaded %s: %d rows x %d cols", f.name, len(df), len(df.columns))
+                result[name] = {"Sheet1": df}
+                log.info("Loaded %s: %d rows x %d cols", name, len(df), len(df.columns))
             except Exception as e:
-                log.warning("Failed to load %s: %s", f.name, e)
-                failed_files.append(f.name)
+                log.warning("Failed to load %s: %s", name, e)
+                failed_files.append(name)
         elif f.suffix.lower() == ".sav":
             try:
                 import pyreadstat
                 df, _ = pyreadstat.read_sav(str(f))
-                result[f.name] = {"Sheet1": df}
-                log.info("Loaded %s: %d rows x %d cols", f.name, len(df), len(df.columns))
+                result[name] = {"Sheet1": df}
+                log.info("Loaded %s: %d rows x %d cols", name, len(df), len(df.columns))
             except Exception as e:
-                log.warning("Failed to load %s: %s", f.name, e)
-                failed_files.append(f.name)
+                log.warning("Failed to load %s: %s", name, e)
+                failed_files.append(name)
         elif f.suffix.lower() == ".rar":
             try:
                 import rarfile
@@ -661,15 +683,20 @@ def _analyze_pdb_file(pdb_path: Path, display_name: str) -> tuple[list[dict], bo
     return anomalies, True
 
 
-def _check_pdb_files(data_dir: str) -> tuple[list[dict], list[str], int]:
+def _check_pdb_files(data_dir: str | Path | list[str | Path]) -> tuple[list[dict], list[str], int]:
     """Check PDB files separately from table-like source data."""
-    data_dir_path = Path(data_dir)
+    data_dirs = [Path(data_dir)] if not isinstance(data_dir, list) else [Path(d) for d in data_dir]
     anomalies = []
     failed_files = []
     inspected = 0
     seen_fingerprints: set[tuple[int, str]] = set()
 
-    for f in sorted(data_dir_path.rglob("*")):
+    candidates = []
+    for root in data_dirs:
+        if root.exists():
+            candidates.extend(root.rglob("*"))
+
+    for f in sorted(candidates):
         if not f.is_file() or f.suffix.lower() not in STRUCTURE_DATA_EXTENSIONS:
             continue
         try:
@@ -1085,6 +1112,139 @@ def _analyze_named_arithmetic_measurements(df: pd.DataFrame, file_name: str, she
     return anomalies
 
 
+def _analyze_passage_offset_pattern(df: pd.DataFrame, file_name: str, sheet_name: str) -> list[dict]:
+    """Run `check_passage_offset_pattern` on sub-tables AND on 3-consecutive-column
+    windows within sub-tables.
+
+    This is a cross-row, cross-column check that flags passage/timepoint tables
+    where two rows share byte-equal first-N columns (replicate 1..N) but differ
+    in the last column by an integer / half-step offset — a synthetic
+    pseudo-replicate pattern documented by scitranslmed.aba3571 Fig.S11.
+
+    Multi-panel sheets (e.g. Fig.S11 has Sections A/B/C/D × 3 strains × 3
+    replicates) MUST be split into sub-tables first AND then into per-strain
+    3-column windows. Running on the whole sheet mixes rows from different
+    sections; running on a sub-table but with all 12 columns mixes columns
+    from different strains.
+    """
+    anomalies: list[dict] = []
+    try:
+        sub_tables = _split_sub_tables(df, file_name, sheet_name)
+    except Exception:
+        sub_tables = {"__whole__": df}
+
+    for sub_name, sub_df in sub_tables.items():
+        n_rows = sub_df.shape[0]
+        # Restrict to sub-tables with enough rows for the pattern to be
+        # statistically meaningful. <10 rows gives too many false positives
+        # because with so few row pairs the matching first-N columns are
+        # more likely coincidental.
+        # Cap at 200 rows: the O(n^2) row-pair scan becomes too costly on
+        # large sheets (e.g. 18k-row time series) AND a real passage × replicate
+        # table rarely exceeds ~50 passages.
+        if n_rows < 10 or n_rows > 200:
+            continue
+
+        # Try the whole sub-table first (covers the single-strain case)
+        _scan_passage_window(anomalies, sub_df, sub_name, window=None,
+                             label_suffix="")
+
+        # Also try 3-consecutive-column windows to handle multi-strain layouts
+        # where columns 1-3 = strain1 replicates, 5-7 = strain2, 9-11 = strain3.
+        # Cap at 12 numeric columns (4 strains × 3 replicates is the realistic
+        # max for a passage layout) — wider layouts aren't passage tables.
+        # Only useful when there are >3 numeric cols (single-strain case is
+        # already covered by the whole-sub-table call above).
+        num_cols = sub_df.select_dtypes(include=[np.number]).shape[1]
+        if num_cols > 3 and num_cols <= 12:
+            for start in range(0, num_cols - 2):
+                window_df = sub_df.iloc[:, start:start + 3].copy()
+                if window_df.select_dtypes(include=[np.number]).shape[1] < 3:
+                    continue
+                _scan_passage_window(anomalies, window_df, sub_name, window=start,
+                                     label_suffix=f" (cols {start}-{start + 2})")
+    return anomalies
+
+
+def _scan_passage_window(anomalies: list, sub_df: pd.DataFrame, sub_name: str, *,
+                         window: int | None, label_suffix: str) -> None:
+    """Helper: run check_passage_offset_pattern on one (sub-table, window) and
+    append any flagged results to `anomalies`. sub_name is the full path
+    (e.g. "Fig.S11 / A") — already includes sheet + sub-section."""
+    # Sanity: the LAST column of the window must be a real measurement, not a
+    # constant ceiling (e.g. 200.0 ug/mL "no inhibition" in MIC) or a row-index
+    # axis. If it has <5 unique values across the rows we consider, skip —
+    # the "offset" wouldn't be a meaningful synthesis indicator.
+    try:
+        num_df = sub_df.select_dtypes(include=[np.number])
+        if num_df.shape[1] < 3 or num_df.shape[0] < 10:
+            return
+        last_col = num_df.iloc[:, -1]
+        finite_last = last_col[np.isfinite(last_col)]
+        if len(finite_last) < 10 or finite_last.nunique() < 5:
+            return
+    except Exception:
+        return
+
+    # Filter out "baseline" rows where the first K columns are all zero (or
+    # all NaN). These are 0-dose / control rows that LEGITIMATELY match across
+    # panels (e.g. dose-response tables that each start with NC1=0 → all
+    # measurements=0 → next panel's NC1=0 → all measurements=0 again). They
+    # are not fraud signals.
+    try:
+        first_K = num_df.iloc[:, :-1]  # all numeric cols except the last
+        last = num_df.iloc[:, -1]
+        keep_mask = pd.Series(True, index=num_df.index)
+        for ridx in num_df.index:
+            row_K = first_K.loc[ridx]
+            row_last = last.loc[ridx]
+            row_K_finite = row_K[np.isfinite(row_K)]
+            if len(row_K_finite) == 0:
+                # row is all-NaN in first K cols — skip as structural blank
+                keep_mask.loc[ridx] = False
+                continue
+            # Baseline row: all first K finite values are 0 → control/baseline
+            if (row_K_finite.abs() <= 1e-12).all():
+                keep_mask.loc[ridx] = False
+        filtered = num_df[keep_mask]
+        if filtered.shape[0] < 10:
+            return
+        # Also need the last col to still have enough unique values after filter
+        if filtered.iloc[:, -1].nunique() < 5:
+            return
+    except Exception:
+        return
+
+    try:
+        # Require at least 3 row-pairs (more selective than 2) to reduce
+        # false positives on small sub-tables.
+        results = check_passage_offset_pattern(filtered, min_pairs=3)
+    except Exception:
+        return
+    for r in results:
+        pair_records = r.get("pairs", [])[:5]
+        pair_str = ", ".join(
+            f"R{p['row_a']}↔R{p['row_b']} (offset={p['offset']:+.2f})"
+            for p in pair_records
+        )
+        truncated = r.get("pairs_truncated", False)
+        if truncated:
+            pair_str += f" ... (+{r['n_pairs'] - len(pair_records)} more)"
+        anomalies.append({
+            "test": "passage_offset_pattern",
+            "location": f"{sub_name}{label_suffix}",
+            "severity": r["severity"],
+            "details": r,
+            "description": (
+                f"{r['n_pairs']} row-pair(s) share identical first {r['n_first_cols']} "
+                f"column(s); last column ({r['last_col']}) differs by integer/half-step "
+                f"offset ({r['n_exact_matches']} exact, {r['n_integer_offsets']} integer-offset). "
+                f"Examples: {pair_str}. Pattern is consistent with synthetic "
+                f"pseudo-replicates across passages/timepoints."
+            ),
+        })
+
+
 def _analyze_column_group(values: np.ndarray, location: str, col_name: str = "") -> list[dict]:
     """Run all statistical tests on a single data group."""
     anomalies = []
@@ -1154,6 +1314,39 @@ def _analyze_column_group(values: np.ndarray, location: str, col_name: str = "")
             "details": dec_result,
             "description": "All values have identical decimal precision — possible fabrication indicator",
         })
+
+    # Synthetic '末位填充' detection (末 N 位数字完全相同) — complements decimal_uniformity
+    # which only checks the COUNT of decimal places, not the digit CONTENT of the trailing
+    # portion. Strong fabrication marker when many values share the same last 3-4 digits.
+    # min_samples lowered to 5 to match decimal_uniformity — multi-panel sheets get
+    # split into ~5-row sub-tables and we still want the check to fire there.
+    trail_result = check_trailing_digit_uniformity(values, n_digits=4, min_samples=5)
+    if trail_result.get("testable") and trail_result.get("flagged"):
+        # Filter out "round-number" patterns that are not fabrication signals.
+        # Small concentration values (e.g. 1e-4 M dose-response) legitimately
+        # share suffixes like "0001" or "0002" because the trailing digits are
+        # determined by the magnitude of the value, not by the experimenter.
+        # Real fabrication markers (e.g. aba3571 Fig.S9's "1246") have non-zero,
+        # non-trivial trailing digits.
+        suffix = str(trail_result.get("most_common_suffix", ""))
+        is_round_pattern = (
+            len(suffix) >= 4
+            and suffix.startswith("00")
+            and trail_result.get("match_ratio", 0) < 0.7
+        )
+        if not is_round_pattern:
+            anomalies.append({
+                "test": "trailing_digit_uniformity",
+                "location": location,
+                "severity": trail_result["severity"],
+                "details": trail_result,
+                "description": (
+                    f"{trail_result['match_count']}/{trail_result['total']} values share the "
+                    f"same last {trail_result['n_digits']} decimal digits "
+                    f"(\"{trail_result['most_common_suffix']}\", ratio={trail_result['match_ratio']:.2f}) "
+                    f"— likely synthetic-data trailing-digit padding"
+                ),
+            })
 
     if not is_iv and len(values) >= VALUE_RECYCLING_MIN_SAMPLES:
         recycle_result = check_value_recycling(values, min_samples=VALUE_RECYCLING_MIN_SAMPLES)
@@ -1232,6 +1425,7 @@ def _analyze_sheet(df: pd.DataFrame, file_name: str, sheet_name: str) -> list[di
     anomalies.extend(_analyze_short_curve_duplicates(df, file_name, sheet_name))
     anomalies.extend(_analyze_rowwise_value_reuse(df, file_name, sheet_name))
     anomalies.extend(_analyze_named_arithmetic_measurements(df, file_name, sheet_name))
+    anomalies.extend(_analyze_passage_offset_pattern(df, file_name, sheet_name))
 
     if not measurement_cols:
         return anomalies
@@ -1498,17 +1692,18 @@ def _analyze_cross_sheet(sheets: dict[str, pd.DataFrame], file_name: str) -> lis
     return anomalies
 
 
-def check_data_anomalies(data_dir: str) -> list[dict]:
+def check_data_anomalies(data_dir: str | Path | list[str | Path]) -> list[dict]:
     """Run all data anomaly checks on source data files."""
-    data_dir = Path(data_dir)
-    if not data_dir.exists():
+    data_dirs = [Path(data_dir)] if not isinstance(data_dir, list) else [Path(d) for d in data_dir]
+    existing_dirs = [d for d in data_dirs if d.exists()]
+    if not existing_dirs:
         log.info("No source data directory found: %s", data_dir)
         return []
 
-    pdb_anomalies, _pdb_failed, pdb_count = _check_pdb_files(str(data_dir))
-    all_files, _failed = _load_data_files(str(data_dir))
+    pdb_anomalies, _pdb_failed, pdb_count = _check_pdb_files(existing_dirs)
+    all_files, _failed = _load_data_files(existing_dirs)
     if not all_files and not pdb_count:
-        log.info("No data files found in %s", data_dir)
+        log.info("No data files found in %s", existing_dirs)
         return []
 
     all_anomalies = list(pdb_anomalies)
@@ -1530,15 +1725,16 @@ def check_data_anomalies(data_dir: str) -> list[dict]:
     return all_anomalies
 
 
-def check_data_with_validation(data_dir: str) -> tuple[list[dict], list[str]]:
+def check_data_with_validation(data_dir: str | Path | list[str | Path]) -> tuple[list[dict], list[str]]:
     """Run data anomaly checks and report files that failed to load.
     Returns (anomalies, failed_file_names)."""
-    data_dir = Path(data_dir)
-    if not data_dir.exists():
+    data_dirs = [Path(data_dir)] if not isinstance(data_dir, list) else [Path(d) for d in data_dir]
+    existing_dirs = [d for d in data_dirs if d.exists()]
+    if not existing_dirs:
         return [], []
 
-    pdb_anomalies, pdb_failed, pdb_count = _check_pdb_files(str(data_dir))
-    all_files, failed_files = _load_data_files(str(data_dir))
+    pdb_anomalies, pdb_failed, pdb_count = _check_pdb_files(existing_dirs)
+    all_files, failed_files = _load_data_files(existing_dirs)
     failed_files = failed_files + pdb_failed
     if not all_files and not failed_files and not pdb_count:
         return [], []
