@@ -10,6 +10,8 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.nature_adapter import find_image_pdfs
+from modules.image_checker import check_image_duplicates
+from utils.pdf_utils import ExtractedImage
 from utils.pdf_utils import extract_standalone_images
 
 
@@ -46,6 +48,22 @@ class DuplicateSkipTests(unittest.TestCase):
             self.assertEqual(len(pdfs), 1)
             self.assertTrue(first.exists())
             self.assertTrue(second.exists())
+
+    def test_duplicate_checker_skips_same_filepath_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            image_path = Path(tmp) / "page_003_img_000.png"
+            arr = np.full((240, 240, 3), 128, dtype=np.uint8)
+            Image.fromarray(arr).save(image_path)
+
+            images = [
+                ExtractedImage(3, 0, str(image_path), arr, 240, 240, xref=7),
+                ExtractedImage(0, 0, str(image_path), arr.copy(), 240, 240),
+            ]
+
+            matches = check_image_duplicates(images, str(out))
+
+            self.assertEqual(matches, [])
 
 
 if __name__ == "__main__":

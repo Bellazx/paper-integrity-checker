@@ -511,7 +511,24 @@ def analyze_nature_paper(
     log.info("Generating Chinese PDF report...")
     cn_path = None
     try:
-        cn_dir = chinese_reports_dir or str(Path(output_dir).parent / "chinese_reports")
+        # Same fallback logic as core/pipeline.py:537-562 — try 2 levels up (per-table
+        # layout), then 1 level up (legacy flat), then the dir itself (legacy batch).
+        if not chinese_reports_dir:
+            od = Path(output_dir).resolve()
+            candidates = [
+                od.parent.parent / "chinese_reports",
+                od.parent / "chinese_reports",
+                od / "chinese_reports",
+            ]
+            cn_dir = None
+            for cand in candidates:
+                if cand.is_dir():
+                    cn_dir = str(cand)
+                    break
+            if cn_dir is None:
+                cn_dir = str(candidates[0])
+        else:
+            cn_dir = chinese_reports_dir
         saved_authors = findings["paper"]["authors_full"][:]
         saved_affiliations = findings["paper"]["affiliations"][:]
         cn_path, _ = _retry(

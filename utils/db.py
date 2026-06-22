@@ -95,12 +95,26 @@ def _find_sjtu_authors(html_path: str) -> dict:
     return result
 
 
-def _make_report_url(findings: dict, chinese_reports_dir: str = None) -> str:
+def _make_report_url(findings: dict, chinese_reports_dir: str = None, namespace: str = "") -> str:
+    """Build the public report URL for a paper.
+
+    Precedence:
+      1. ``namespace`` (e.g. the table name ``yujing_4050_202606``) is used directly
+         — this is the cleanest path for the per-table layout where the URL is
+         ``/chinese_reports/<namespace>/<file>``.
+      2. Otherwise fall back to walking relative to ``OUTPUT_DIR/chinese_reports``
+         so legacy call sites that only pass ``chinese_reports_dir`` keep working.
+      3. With nothing else set, return ``/chinese_reports/<file>``.
+    """
     from modules.chinese_report_generator import _make_filename
     from config import OUTPUT_DIR
     doi = findings["paper"].get("doi", "unknown")
     title = findings["paper"].get("title", "unknown")
     filename = _make_filename(doi, title)
+
+    if namespace:
+        return f"{REPORT_BASE_URL}/{namespace}/{filename}"
+
     base_url = REPORT_BASE_URL
     if chinese_reports_dir:
         try:
@@ -169,7 +183,7 @@ def build_paper_metadata(findings: dict, html_path: str = None) -> dict:
     }
 
 
-def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: str = None):
+def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: str = None, namespace: str = ""):
     """Insert analysis results into SQL Server."""
     from modules.chinese_report_generator import (
         _compute_dimension_risk, _compute_image_risk, _compute_overall_risk, _apply_data_caps,
@@ -195,7 +209,7 @@ def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: 
 
     meta = build_paper_metadata(findings, html_path=html_path)
 
-    report_url = _make_report_url(findings, chinese_reports_dir)
+    report_url = _make_report_url(findings, chinese_reports_dir, namespace=namespace)
 
     row = {
         "title": meta["title"][:500],

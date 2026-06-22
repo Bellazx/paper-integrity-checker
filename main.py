@@ -10,6 +10,7 @@ Usage:
     python main.py --input <paper_dir> --skip-refs             # skip reference check
 """
 import argparse
+import gc
 import json
 import logging
 import re
@@ -45,10 +46,34 @@ def _safe_report_namespace(namespace: str) -> str:
     return "/".join(parts)
 
 
-def _chinese_reports_dir(output_root: str, report_namespace: str = "") -> str:
+def _table_root(table_name: str = "") -> Path:
+    """Return the per-table output root.
+
+    With --table-name=yujing_4050_202606 set, all outputs (init/<slug>/,
+    chinese_reports/, review_v2/, batch_summary.json) live under
+    data/output/yujing_4050_202606/. Without it, returns OUTPUT_DIR (legacy).
+    """
+    if not table_name:
+        return OUTPUT_DIR
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", table_name).strip("_-")[:80]
+    return OUTPUT_DIR / safe
+
+
+def _chinese_reports_dir(output_root: str, report_namespace: str = "", table_root: str = "") -> str:
+    """Resolve the chinese_reports directory.
+
+    Order of precedence:
+      1. table_root + "chinese_reports"  (when --table-name is set; new layout)
+      2. OUTPUT_DIR / "chinese_reports" / <namespace>  (legacy --report-namespace)
+      3. output_root / "chinese_reports"  (legacy flat)
+    """
     namespace = _safe_report_namespace(report_namespace)
-    base = OUTPUT_DIR / "chinese_reports" if namespace else Path(output_root) / "chinese_reports"
-    return str(base / namespace) if namespace else str(base)
+    if table_root:
+        base = Path(table_root) / "chinese_reports"
+        return str(base)
+    if namespace:
+        return str(OUTPUT_DIR / "chinese_reports" / namespace)
+    return str(Path(output_root) / "chinese_reports")
 
 
 def _analyze_one(input_dir: str, output_dir: str, skip_refs: bool = False, chinese_reports_dir: str = None, author_type: str = "", doi_override: str = "") -> dict:
@@ -66,10 +91,10 @@ def _dir_doi(paper_dir: Path) -> str:
     return dir_name_to_doi(paper_dir)
 
 
-def run_single(input_dir: str, output_dir: str, skip_refs: bool = False, author_type: str = "", no_db: bool = False, doi: str = "", report_namespace: str = ""):
+def run_single(input_dir: str, output_dir: str, skip_refs: bool = False, author_type: str = "", no_db: bool = False, doi: str = "", report_namespace: str = "", table_root: str = "", table_name: str = ""):
     paper_name = Path(input_dir).name
     out = Path(output_dir) / paper_name
-    cn_dir = _chinese_reports_dir(output_dir, report_namespace)
+    cn_dir = _chinese_reports_dir(output_dir, report_namespace, table_root=table_root)
     findings = _analyze_one(input_dir, str(out), skip_refs=skip_refs, chinese_reports_dir=cn_dir, author_type=author_type, doi_override=doi)
 
     excel_path = find_batch_excel(Path(input_dir).parent)
@@ -87,7 +112,8 @@ def run_single(input_dir: str, output_dir: str, skip_refs: bool = False, author_
             html_candidate = Path(input_dir) / "html" / "article.html"
         html_path = str(html_candidate) if html_candidate.exists() else None
         try:
-            insert_findings(findings, chinese_reports_dir=cn_dir, html_path=html_path)
+            insert_findings(findings, chinese_reports_dir=cn_dir, html_path=html_path,
+                            namespace=table_name)
         except Exception as e:
             log.error("DB insert failed: %s", e)
 
@@ -118,10 +144,15 @@ def _discover_papers(input_root: Path) -> list[Path]:
     return paper_dirs
 
 
-def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_workers: int = 4, author_type: str = "", force: bool = False, no_db: bool = False, report_namespace: str = ""):
+def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_workers: int = 4, author_type: str = "", force: bool = False, no_db: bool = False, report_namespace: str = "", table_root: str = "", table_name: str = ""):
     input_root = Path(input_root)
     output_root = Path(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
+
+    # When --table-name is set, the per-paper init outputs live under output_root/init/<slug>/
+    # so they don't collide with chinese_reports/ and review_v2/ siblings. The table root is
+    # the value of --table-name's resolved path (= output_root when table_root is empty).
+    paper_output_root = output_root / "init" if table_root else output_root
 
     paper_dirs = _discover_papers(input_root)
     if not paper_dirs:
@@ -154,9 +185,10 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
 
     def process_one(paper_dir: Path) -> dict:
         t0 = time.time()
+        findings = None
         try:
-            out = output_root / paper_dir.name
-            cn_dir = _chinese_reports_dir(str(output_root), report_namespace)
+            out = paper_output_root / paper_dir.name
+            cn_dir = _chinese_reports_dir(str(output_root), report_namespace, table_root=table_root)
             findings = _analyze_one(str(paper_dir), str(out), skip_refs=skip_refs, chinese_reports_dir=cn_dir, author_type=author_type)
             elapsed = time.time() - t0
 
@@ -173,7 +205,8 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
                     html_candidate = paper_dir / "html" / "article.html"
                 html_path = str(html_candidate) if html_candidate.exists() else None
                 try:
-                    insert_findings(findings, chinese_reports_dir=cn_dir, html_path=html_path)
+                    insert_findings(findings, chinese_reports_dir=cn_dir, html_path=html_path,
+                                    namespace=table_name)
                 except Exception as e:
                     log.error("DB insert failed for %s: %s", paper_dir.name, e)
 
@@ -195,6 +228,9 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
                 "error": str(e),
                 "elapsed_seconds": round(elapsed, 1),
             }
+        finally:
+            del findings
+            gc.collect()
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(process_one, d): d for d in paper_dirs}
@@ -271,18 +307,45 @@ def main():
     parser.add_argument("--report-namespace", default="", help="Subdirectory under chinese_reports for generated PDFs")
     parser.add_argument("--no-db", action="store_true", help="Skip database insertion")
     parser.add_argument("--force", action="store_true", help="Force re-analysis even if paper already in DB")
+    parser.add_argument("--table-name", default="",
+                        help="Namespace ALL outputs under data/output/<table-name>/ (init/<slug>/, chinese_reports/, review_v2/). "
+                             "When set, per-paper dir is <table>/init/<doi_slug>/. When unset, legacy flat layout is used.")
     args = parser.parse_args()
 
     if not args.input and not args.batch and not args.recheck:
         parser.print_help()
         sys.exit(1)
 
+    # Resolve table_root once for downstream use.
+    # When --table-name is set, the effective output_root for the batch runner IS the table root
+    # (the per-paper init/<slug> segment is added inside run_batch). For --input / --recheck we
+    # still keep args.output as the per-paper parent for backwards compat, but pin the chinese_reports
+    # location to <table_root>/chinese_reports via table_root.
+    table_root = str(_table_root(args.table_name)) if args.table_name else ""
+
+    if args.table_name:
+        if args.batch:
+            # For batch, redirect output_root to the table root so all per-paper init/<slug>/,
+            # chinese_reports/, review_v2/, batch_summary.json live under one tree.
+            effective_output_root = table_root
+        else:
+            # For single-paper, args.output is the parent dir of <doi_slug>/. Prepend init/ segment
+            # so the paper lands at <table_root>/init/<doi_slug>/ (matches batch layout).
+            effective_output_root = str(Path(table_root) / "init")
+    else:
+        effective_output_root = args.output
+
     if args.recheck:
-        run_recheck(args.recheck, args.output, args.skip_refs, author_type=args.author_type)
+        run_recheck(args.recheck, effective_output_root, args.skip_refs, author_type=args.author_type)
     elif args.input:
-        run_single(args.input, args.output, args.skip_refs, author_type=args.author_type, no_db=args.no_db, doi=args.doi, report_namespace=args.report_namespace)
+        run_single(args.input, effective_output_root, args.skip_refs, author_type=args.author_type,
+                   no_db=args.no_db, doi=args.doi, report_namespace=args.report_namespace,
+                   table_root=table_root, table_name=args.table_name)
     elif args.batch:
-        run_batch(args.batch, args.output, args.skip_refs, max_workers=args.workers, author_type=args.author_type, force=args.force, no_db=args.no_db, report_namespace=args.report_namespace)
+        run_batch(args.batch, effective_output_root, args.skip_refs, max_workers=args.workers,
+                  author_type=args.author_type, force=args.force, no_db=args.no_db,
+                  report_namespace=args.report_namespace, table_root=table_root,
+                  table_name=args.table_name)
 
 
 if __name__ == "__main__":

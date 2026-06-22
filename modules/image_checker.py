@@ -1,6 +1,7 @@
 import logging
 from dataclasses import dataclass, field
 from itertools import combinations
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -66,6 +67,20 @@ def _compute_phashes(images: list[ExtractedImage]) -> list[np.ndarray]:
     return hashes
 
 
+def _same_image_source(a: ExtractedImage, b: ExtractedImage) -> bool:
+    """Return True when two entries point to the same extracted image file."""
+    if a is b:
+        return True
+
+    if a.filepath and b.filepath:
+        try:
+            return Path(a.filepath).resolve() == Path(b.filepath).resolve()
+        except OSError:
+            return a.filepath == b.filepath
+
+    return False
+
+
 def _stage1_phash(images: list[ExtractedImage], output_dir: str) -> tuple[list[DuplicateMatch], set[tuple[int, int]]]:
     """Stage 1: Perceptual hash for near-full duplicates."""
     hashes = _compute_phashes(images)
@@ -74,6 +89,9 @@ def _stage1_phash(images: list[ExtractedImage], output_dir: str) -> tuple[list[D
     matched_pairs = set()
 
     for i, j in combinations(range(len(images)), 2):
+        if _same_image_source(images[i], images[j]):
+            log.debug("Skipping self image comparison: %s", images[i].filepath)
+            continue
         dist = hasher.compare(hashes[i], hashes[j])
         if dist <= PHASH_THRESHOLD:
             similarity = 1.0 - dist / 64.0
@@ -128,6 +146,8 @@ def _stage2_sift(images: list[ExtractedImage], skip_pairs: set[tuple[int, int]],
     region_candidates = []
 
     for i, j in combinations(range(len(images)), 2):
+        if _same_image_source(images[i], images[j]):
+            continue
         if (i, j) in skip_pairs:
             continue
         if descriptors[i] is None or descriptors[j] is None:

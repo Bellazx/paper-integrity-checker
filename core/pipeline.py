@@ -375,6 +375,24 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
                                             extra_image_dirs=[str(Path(output_dir) / "images")])
     if standalone:
         if images:
+            existing_image_paths = set()
+            for img in images:
+                try:
+                    existing_image_paths.add(Path(img.filepath).resolve())
+                except OSError:
+                    existing_image_paths.add(Path(img.filepath))
+            before = len(standalone)
+            standalone = [
+                img for img in standalone
+                if Path(img.filepath).resolve() not in existing_image_paths
+            ]
+            skipped = before - len(standalone)
+            if skipped:
+                log.info(
+                    "Skipped %d standalone images that point to already extracted PDF images",
+                    skipped,
+                )
+
             figures_dir = (Path(paper_dir) / "figures").resolve()
             before = len(standalone)
             standalone = [
@@ -538,7 +556,28 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
     log.info("Generating Chinese PDF report (combined metadata + analysis)...")
     cn_path = None
     try:
-        cn_dir = chinese_reports_dir or str(Path(output_dir).parent / "chinese_reports")
+        # Fallback when caller didn't supply chinese_reports_dir:
+        # With the new per-table layout (output_dir = <table>/init/<doi_slug>/),
+        # the chinese_reports/ dir is two levels up at <table>/chinese_reports/.
+        # With the legacy flat layout (output_dir = <doi_slug>/) it's one level up.
+        # Try both: two levels first (new), one level second (legacy), and finally
+        # OUTPUT_DIR/chinese_reports (legacy batch mode where output_dir IS the root).
+        if not chinese_reports_dir:
+            od = Path(output_dir).resolve()
+            candidates = [
+                od.parent.parent / "chinese_reports",
+                od.parent / "chinese_reports",
+                od / "chinese_reports",
+            ]
+            cn_dir = None
+            for cand in candidates:
+                if cand.is_dir():
+                    cn_dir = str(cand)
+                    break
+            if cn_dir is None:
+                cn_dir = str(candidates[0])
+        else:
+            cn_dir = chinese_reports_dir
         cn_path, full_meta = generate_chinese_pdf(findings, cn_dir, first_pages_text)
         findings["paper"]["authors_full"] = full_meta.get("authors_full", [])
         findings["paper"]["affiliations"] = full_meta.get("affiliations", [])

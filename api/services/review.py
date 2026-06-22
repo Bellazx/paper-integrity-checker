@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
 
@@ -208,6 +209,8 @@ LOWRISK_VERIFIER_PROMPT_TEMPLATE = """你是一位学术论文诚信检测低风
 
 你不需要从零重做全量复核，但必须带着怀疑立场审视首轮结论的每一个关键判断。最终结论只依据可核验的事实；不能因为低风险文本写得不充分，就在没有实质证据时直接判高风险。
 
+{original_review_instruction}
+
 ## 论文信息
 - DOI: {doi}
 - 检测报告路径: {report_json_path}
@@ -286,6 +289,7 @@ JUDGE_PROMPT_TEMPLATE = """你是学术论文诚信检测的综合复核专家�
 - 检测报告路径: {report_json_path}
 - 原始数据目录: {input_dir}
 - 复核证据包(确定性预处理清单): {evidence_path}
+{original_review_instruction}
 
 ## 复核结论一
 
@@ -317,6 +321,7 @@ JUDGE_PROMPT_TEMPLATE = """你是学术论文诚信检测的综合复核专家�
 6. 若证据包提供 cross_sheet_reuse_groups, 按分组复核代表样例和 requires_expansion=true 的分组；原始 cross_sheet_reuse 列表只用于追溯，不要求逐条写出每个成员。
 7. 若关键强证据已被确认足以支持建议高风险，可以围绕关键证据直接收敛，并简要交代其他维度是否有独立支持或暂无独立问题。
 8. 做出你自己的最终判断
+{original_review_task}
 
 ## 完整复核规则（与前序复核所用规则一致；据此校验其覆盖率与图文核查是否到位，并补做遗漏项）
 
@@ -400,11 +405,14 @@ def _build_lowrisk_verifier_prompt(
     evidence_display = ep.llm_summary or "(未生成,请直接审阅源数据)"
     if ep.full and ep.full != ep.llm_summary:
         evidence_display += f"\n- 完整证据包路径(仅必要时追溯): {ep.full}"
+    original_review = _prior_review_result_for_doi(doi)
+    original_review_instruction = _original_review_instruction(original_review)
     return LOWRISK_VERIFIER_PROMPT_TEMPLATE.format(
         doi=doi,
         report_json_path=report_json_path,
         input_dir=input_dir,
         evidence_path=evidence_display,
+        original_review_instruction=original_review_instruction,
         prior_result_json=json.dumps(_compact_review_result_for_prompt(prior_result), ensure_ascii=False, indent=2),
         skill_rules=COMPACT_REVIEW_RULES,
         reader_facing_text_rules=READER_FACING_TEXT_RULES,
@@ -421,6 +429,17 @@ def _build_judge_prompt(
     r1 = _compact_review_result_for_prompt(result1)
     r2 = _compact_review_result_for_prompt(result2)
     ep = ev or EvidencePaths("", "")
+    original_review = _prior_review_result_for_doi(doi)
+    original_review_instruction = ""
+    original_review_task = ""
+    if original_review:
+        original_review_instruction = f"- 本轮复核前既有复核结论: {original_review}"
+        if original_review == "高风险":
+            original_review_task = (
+                "9. 既有复核结论为高风险时，如果前序复核试图降为低风险，你必须进行反降级核验："
+                "逐项检查原高风险线索是否被具体证据排除；若无法具体排除，或图文一致性、"
+                "跨表/跨sheet/跨面板测量值复用、样本量与源数据一致性仍有疑点，应维持高风险。"
+            )
     evidence_display = ep.llm_summary or "(未生成,请直接审阅源数据)"
     if ep.full and ep.full != ep.llm_summary:
         evidence_display += f"\n- 完整证据包路径(仅必要时追溯): {ep.full}"
@@ -429,6 +448,8 @@ def _build_judge_prompt(
         report_json_path=report_json_path,
         input_dir=input_dir,
         evidence_path=evidence_display,
+        original_review_instruction=original_review_instruction,
+        original_review_task=original_review_task,
         skill_rules="@@SKILL_RULES@@",
         reader_facing_text_rules=READER_FACING_TEXT_RULES,
         r1_result=r1.get("result", ""),
@@ -911,6 +932,52 @@ def _store_stage(path: Path, state: dict, key: str, value) -> None:
 
 def _valid_review_result(result) -> bool:
     return isinstance(result, dict) and result.get("result") in ("高风险", "低风险")
+
+
+@lru_cache(maxsize=1)
+def _prior_review_result_map() -> dict[str, str]:
+    path = os.environ.get("REVIEW_PRIOR_RESULTS_JSON", "").strip()
+    if not path:
+        return {}
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception as e:
+        log.warning("Could not load REVIEW_PRIOR_RESULTS_JSON=%s: %s", path, e)
+        return {}
+    out: dict[str, str] = {}
+    if isinstance(data, dict):
+        iterable = data.items()
+    elif isinstance(data, list):
+        iterable = (
+            (item.get("doi"), item.get("review_result"))
+            for item in data
+            if isinstance(item, dict)
+        )
+    else:
+        return {}
+    for doi, result in iterable:
+        norm = normalize_doi(str(doi or "")) or str(doi or "")
+        if norm and result in ("高风险", "低风险"):
+            out[norm] = result
+    return out
+
+
+def _prior_review_result_for_doi(doi: str) -> str | None:
+    norm = normalize_doi(doi) or doi
+    return _prior_review_result_map().get(norm)
+
+
+def _original_review_instruction(original_review: str | None) -> str:
+    if not original_review:
+        return ""
+    text = f"本论文进入本轮复核前的既有复核结论：{original_review}。"
+    if original_review == "高风险":
+        text += (
+            "\n如果既有结论为高风险，而首轮本次复核给出低风险，你必须重点围绕原高风险线索做反降级核验："
+            "默认假设原高风险可能成立，主动查找首轮低风险是否遗漏了图文一致性、跨表/跨sheet/跨面板测量值复用、"
+            "样本量与源数据不一致等证据。只有原高风险线索被逐项核实为可解释，才可维持低风险。"
+        )
+    return text
 
 
 def _load_json_file(path: str) -> dict:
@@ -1522,21 +1589,34 @@ def _validate_review_result(
         return out
 
 
-def _accept_single_review(result: dict, validated: dict, evidence: dict) -> tuple[bool, str]:
+def _accept_single_review(doi: str, result: dict, validated: dict, evidence: dict) -> tuple[bool, str]:
     if result.get("trigger") == "review_error":
         return False, "首个复核失败"
     if not _valid_review_result(validated):
         return False, "首个复核结果无效"
+    prior = _prior_review_result_for_doi(doi)
+    if prior == "高风险":
+        return False, "既有复核结论为高风险，需要多轮对抗核验后才能闭环"
     if result.get("result") == "高风险" and validated.get("result") == "高风险":
         if _has_strong_deterministic_evidence(evidence):
             return True, "首个复核已确认强确定性证据，直接收敛为高风险结论"
         return True, "首个复核已给出高风险结论"
+    if (
+        prior == "低风险"
+        and result.get("result") == "低风险"
+        and validated.get("result") == "低风险"
+        and not validated.get("_coverage_gaps")
+        and not validated.get("_coverage_error")
+    ):
+        return True, "既有复核结论为低风险，首轮完整复核仍为低风险，直接闭环"
     if validated.get("_coverage_gaps"):
         return False, "首个低风险结论存在覆盖率留痕提醒，需要二次核验"
     return False, "首个复核为低风险，需要二次核验"
 
 
-def _accept_lowrisk_consensus(result1: dict, validated1: dict, result2: dict, validated2: dict) -> bool:
+def _accept_lowrisk_consensus(doi: str, result1: dict, validated1: dict, result2: dict, validated2: dict) -> bool:
+    if _prior_review_result_for_doi(doi) == "高风险":
+        return False
     return (
         result1.get("trigger") != "review_error"
         and result2.get("trigger") != "review_error"
@@ -1821,7 +1901,7 @@ async def run_review_single(
         validated1 = _validate_review_result(doi, report_json_path, input_dir, result1, evidence)
         _store_stage(state_path, state, "reviewer1_validated", validated1)
 
-    accept, reason = _accept_single_review(result1, validated1, evidence)
+    accept, reason = _accept_single_review(doi, result1, validated1, evidence)
     if accept:
         final = _clean_internal_references(dict(validated1))
         _store_stage(state_path, state, "decision", {"flow": "single", "reason": reason})
@@ -1850,7 +1930,7 @@ async def run_review_single(
         validated2 = _validate_review_result(doi, report_json_path, input_dir, result2, evidence)
         _store_stage(state_path, state, "reviewer2_validated", validated2)
 
-    if _accept_lowrisk_consensus(result1, validated1, result2, validated2):
+    if _accept_lowrisk_consensus(doi, result1, validated1, result2, validated2):
         final = _consensus_fallback(doi, validated1, validated2)
         decision_reason = "两轮独立复核均为低风险，且覆盖校验未发现需升级的问题。"
         _store_stage(state_path, state, "decision", {"flow": "two_review_low_consensus", "reason": decision_reason})
