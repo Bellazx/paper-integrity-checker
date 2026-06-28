@@ -16,8 +16,11 @@ from utils.llm_client import chat
 
 log = logging.getLogger(__name__)
 
-FONT_REGULAR = "Noto Sans CJK SC"
-FONT_BOLD = "Noto Sans CJK SC"
+# fitz 找不到 "Noto Sans CJK SC" 时会 fallback 到 mupdf 内置的 Droid Sans Fallback (含 CJK)
+# 但 mupdf 内置 Nimbus Sans (Latin) 不含 Latin Extended (é/ó/í/ú/ñ), 西文重音会被替换为 U+FFFD
+# 故把 Charis SIL (覆盖 Latin Extended) 放在 chain 里, 让西文重音字符能正常显示
+FONT_REGULAR = '"Noto Sans CJK SC", "Charis SIL", "DejaVu Sans", sans-serif'
+FONT_BOLD = '"Noto Sans CJK SC", "Charis SIL", "DejaVu Sans Bold", sans-serif'
 
 METHODS_HTML = """
 <h2 style="font-size:13pt; color:#1a1a1a; margin-top:18pt; margin-bottom:6pt;">附录：检测方法说明</h2>
@@ -385,11 +388,11 @@ def _reclassify_severity(issue: dict) -> str:
     if issue.get("test") == "linear_dependency":
         r2 = issue.get("details", {}).get("r_squared", 0)
         if r2 > 0.99999:
-            slope = issue.get("details", {}).get("slope", 0)
-            intercept = issue.get("details", {}).get("intercept", 0)
-            if abs(slope - 1.0) < 0.01 and abs(intercept) < 0.01:
-                return "high"
-            return "medium"
+            # r²>0.99999 即便是严格线性缩放（slope=0.85, 0.8, 1.2 ...）也属于
+            # 真实生物重复不可能出现的强模式（s41467-025-67914-y 漏判教训）。
+            # 2026-06-23: 之前仅在 slope≈1.0 且 intercept≈0 时升 high，会漏掉
+            # 比例缩放（BX = 0.85 * BW）和平移缩放等合成痕迹。
+            return "high"
         return "low"
     if issue.get("test") == "cross_group_duplicate":
         overlap = issue.get("details", {}).get("overlap_ratio", 0)
@@ -517,11 +520,12 @@ def _count_fraud_indicators(findings: dict) -> int:
         for x in data
     )
     has_img = any(x.get("severity") == "high" and _is_cross_image_duplicate(x) for x in img)
+    # 2026-06-23 修复：原本只判 slope≈1.0+intercept≈0 的恒等依赖，
+    # 漏掉了 BX=0.85*BW 这种比例缩放（s41467-025-67914-y 漏判教训）。
+    # 现在 r²>0.99999 任何 slope 都算强线性依赖。
     has_identity_dep = any(
         x.get("test") == "linear_dependency"
         and x.get("details", {}).get("r_squared", 0) > 0.99999
-        and abs(x.get("details", {}).get("slope", 0) - 1.0) < 0.01
-        and abs(x.get("details", {}).get("intercept", 0)) < 0.01
         for x in data
     )
     has_volume = len(data) > 100
@@ -751,6 +755,9 @@ def _compute_overall_risk(findings: dict) -> dict:
         or data_risk["score"] >= 20      # 数据维度中高（如 41467-025-62951-z data=37）
         or (ref_risk["score"] >= 40 and data_risk["score"] >= 15)  # 引用+数据组合
         or score >= 56                   # 总分接近阈值（如 41587-020-00781-8 total=56）
+        # 2026-06-24: 漏判修复 — fcimb 2025.1559182 图像 1 high + 数据 1 high 但被 image<30 拦在门外
+        # 双维度各自至少有 1 条 high 实质证据是 hard signal,任一独立维度都不能被另一维的低分拉下来
+        or (image_risk["high"] >= 1 and data_risk["high"] >= 1)
     )
 
     high_dims = set()
@@ -972,7 +979,7 @@ def _build_full_html(findings: dict, analysis_html: str) -> str:
     disclaimer = DISCLAIMER_HTML.format(date=today)
 
     full_html = f"""
-<body style="font-family: '{FONT_REGULAR}', sans-serif;">
+<body style="font-family: {FONT_REGULAR};">
 {header_html}
 {risk_score_html}
 {analysis_html}
@@ -984,11 +991,12 @@ def _build_full_html(findings: dict, analysis_html: str) -> str:
 
 
 def _soften_risk_wording(html: str) -> str:
-    """Display-only wording: render "高风险" / "建议高风险" as "疑似高风险" in the final
-    report HTML. This runs at the PDF render boundary ONLY — it never touches the risk
-    *values* used for logic, comparisons, DB writes or queries (those stay "高风险").
-    The negative lookbehind makes it idempotent (won't produce "疑似疑似高风险")."""
-    return re.sub(r"(?<!疑似)(?:建议)?高风险", "疑似高风险", html)
+    """Display-only wording: keep "高风险" / "建议高风险" in the final PDF
+    verbatim. Per the user's 2026-06-26 rule, the report must say
+    "建议高风险" (DB=高风险) and "建议低风险" (DB=低风险) — never
+    "疑似高风险". This function is now a no-op (kept for call-site
+    compatibility)."""
+    return html
 
 
 def _sanitize_internal_references(html: str) -> str:
@@ -1040,6 +1048,56 @@ def _sanitize_internal_references(html: str) -> str:
     html = re.sub(r"\btitle_mismatch\b", "标题不匹配", html)
     html = re.sub(r"\blinear_dependency\b", "线性依赖", html)
     return html
+
+
+def _sanitize_paper_text(s: str) -> str:
+    """删除 source 里 control chars + 修特定已知错编码.
+
+    例: report.json paper.title 里 EuBa2Cu3O7\\x01d 实际是 EuBa2Cu3O7δ
+    (Elsevier extraction 把 U+03B4 δ 错编为 U+0001 SOH + 'd').
+    也处理 U+0000-U+001F 范围内除 \\t\\n\\r 外的所有 control chars.
+    """
+    if not s:
+        return s
+    # 1) 修特定已知错: SOH + 字母 模式 -> 对应希腊字母
+    fix_map = {
+        '\x01d': 'δ',
+        '\x01D': 'Δ',
+        '\x01a': 'α',
+        '\x01A': 'Α',
+        '\x01b': 'β',
+        '\x01B': 'Β',
+        '\x01g': 'γ',
+        '\x01G': 'Γ',
+        '\x01s': 'σ',
+        '\x01S': 'Σ',
+        '\x01m': 'μ',
+        '\x01M': 'Μ',
+        '\x01p': 'π',
+        '\x01P': 'Π',
+        '\x01l': 'λ',
+        '\x01L': 'Λ',
+        '\x01t': 'τ',
+        '\x01T': 'Τ',
+    }
+    for bad, good in fix_map.items():
+        s = s.replace(bad, good)
+    # 2) 删剩余 control chars (除 \t \n \r)
+    s = ''.join(c for c in s if (c >= ' ' or c in '\t\n\r'))
+    return s
+
+
+def _sanitize_paper_dict(paper: dict) -> dict:
+    """对 paper dict 里所有字符串字段做 _sanitize_paper_text"""
+    if not paper:
+        return paper
+    out = dict(paper)
+    str_keys = ('title', 'author', 'author_type', 'department',
+                'author_all', 'department_all', 'journal')
+    for k in str_keys:
+        if k in out and isinstance(out[k], str):
+            out[k] = _sanitize_paper_text(out[k])
+    return out
 
 
 def _render_pdf(html: str, output_path: str):
@@ -1109,13 +1167,21 @@ def doi_to_slug(doi: str) -> str:
     """Filesystem-safe slug for a DOI, shared by the 初审 and 复核 report paths so a
     stored URL always matches the file actually written. Strips the doi.org prefix,
     maps '/' to '_', and removes the same unsafe characters as _make_filename (a plain
-    doi.replace('/','_') diverged for DOIs containing < > : " \\ | ? *)."""
+    doi.replace('/','_') diverged for DOIs containing < > : " \\ | ? *).
+
+    Always returns a lowercased slug: DOIs are case-insensitive per ISO 26324, and
+    some batch inputs arrive uppercased (e.g. ``CAN-20-3960``) which used to produce
+    a PDF whose filename did not match the lowercased URL in the DB (nginx is
+    case-sensitive), causing 404. Normalize here so the PDF, the URL in
+    review_report_url, and the slug in evidence.json all line up. The canonical DOI
+    string in the database keeps its original case.
+    """
     raw = str(doi or "").strip()
     raw = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", raw, flags=re.I).strip()
     doi_clean = normalize_doi(raw) or re.split(r"[\s,;，；]+", raw, maxsplit=1)[0]
     doi_clean = doi_clean.rstrip(".")
     doi_clean = doi_clean.replace("/", "_")
-    return _sanitize_filename_part(doi_clean, max_chars=120)
+    return _sanitize_filename_part(doi_clean, max_chars=120).lower()
 
 
 def _coalesce_metadata(existing: dict, extracted: dict) -> dict:
@@ -1130,7 +1196,10 @@ def _coalesce_metadata(existing: dict, extracted: dict) -> dict:
 
 def generate_chinese_pdf(findings: dict, chinese_reports_dir: str, first_pages_text: str = ""):
     """Generate Chinese PDF report. Returns (output_path, metadata_dict) or (None, metadata_dict)."""
-    paper = findings.get("paper", {})
+    # 修 source 里 control char 错编码 (e.g. δ 错编为 \x01d) + 删 control chars
+    paper = _sanitize_paper_dict(findings.get("paper", {}))
+    findings = dict(findings)
+    findings["paper"] = paper
     doi = paper.get("doi", "unknown")
     title = paper.get("title", "unknown")
 

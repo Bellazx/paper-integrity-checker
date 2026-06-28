@@ -2,7 +2,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-BASE_DIR = Path("/opt/paper-integrity-checker")
+BASE_DIR = Path("/home/sjtu/paper-integrity-checker")
 DATA_DIR = BASE_DIR / "data"
 TASKS_DIR = DATA_DIR / "tasks"
 UPLOADS_DIR = DATA_DIR / "uploads"
@@ -16,7 +16,7 @@ RUNTIME_TMP_DIR = DATA_DIR / "runtime_tmp"
 RUNTIME_TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 MAIN_PY = BASE_DIR / "main.py"
-REVIEW_REPORT_SCRIPT = Path("/opt/.claude/skills/paper-batch-review/scripts/generate_review_report.py")
+REVIEW_REPORT_SCRIPT = Path("/home/library/.claude/skills/paper-batch-review/scripts/generate_review_report.py")
 
 DEFAULT_TABLE = "yujing_quanliang"
 FORBIDDEN_TABLES = {"yujing"}

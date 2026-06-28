@@ -17,7 +17,7 @@ from urllib.parse import unquote
 import pymssql
 
 
-BASE = Path("/opt/paper-integrity-checker")
+BASE = Path("/home/sjtu/paper-integrity-checker")
 OUTPUT = BASE / "data" / "output"
 CHINESE_DIR = OUTPUT / "chinese_reports"
 REVIEW_DIR = OUTPUT / "review_v2"

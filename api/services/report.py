@@ -104,7 +104,7 @@ async def generate_reports(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd="/opt/paper-integrity-checker",
+        cwd="/home/sjtu/paper-integrity-checker",
         start_new_session=True,
     )
 

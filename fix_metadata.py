@@ -42,8 +42,8 @@ SJTU_KEYWORDS = [
     "上海交通", "交通大学", "SJTU",
 ]
 
-INPUT_BASE = Path("/opt/paper-integrity-checker/data/input")
-OUTPUT_BASE = Path("/opt/paper-integrity-checker/data/output")
+INPUT_BASE = Path("/home/sjtu/paper-integrity-checker/data/input")
+OUTPUT_BASE = Path("/home/sjtu/paper-integrity-checker/data/output")
 
 
 def load_excel_metadata(excel_path: str) -> dict:

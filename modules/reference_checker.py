@@ -6,6 +6,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
+from requests.adapters import HTTPAdapter
 
 import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
@@ -25,6 +26,50 @@ log = logging.getLogger(__name__)
 HEADERS = {
     "User-Agent": f"PaperIntegrityChecker/1.0 (mailto:{CROSSREF_MAILTO})",
 }
+
+# 2026-06-26 D: shared Session with connection pool — saves TCP/TLS handshake on every
+# CrossRef call (was 50-200ms each). 3 batches × 24 workers = 72 concurrent, so
+# pool_connections=20, pool_maxsize=20 is enough (semaphore(8) caps actual use).
+_session = requests.Session()
+_session.mount("https://", HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=0))
+_session.mount("http://", HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=0))
+
+# 2026-06-26 E: in-process LRU cache for CrossRef results. Many refs are shared across
+# papers in a batch (popular methods, classic papers) — caching (doi, ttl=1d) saves
+# 30-50% of HTTP calls. Thread-safe via single lock around the dict.
+_cache_lock = threading.Lock()
+_cache: dict[str, tuple[float, dict]] = {}
+_CACHE_TTL = 86400.0  # 1 day
+
+
+def _cache_get(key: str) -> dict | None:
+    with _cache_lock:
+        entry = _cache.get(key)
+        if not entry:
+            return None
+        ts, value = entry
+        if time.time() - ts > _CACHE_TTL:
+            _cache.pop(key, None)
+            return None
+        return value
+
+
+def _cache_put(key: str, value: dict) -> None:
+    with _cache_lock:
+        _cache[key] = (time.time(), value)
+
+
+def _is_dns_error(exc: BaseException) -> bool:
+    """Detect DNS-level failures (NameResolutionError, gaierror). These are
+    system-wide and won't recover within a 1-3s backoff, so retrying wastes
+    ~50s per failed lookup. We fast-fail to lookup_failed and let the rest
+    of the pipeline proceed (the ref is marked low-severity unverified, not
+    a fabrication signal)."""
+    name = type(exc).__name__
+    if name in ("NameResolutionError", "gaierror"):
+        return True
+    msg = str(exc).lower()
+    return "name or service not known" in msg or "failed to resolve" in msg or "temporary failure in name resolution" in msg
 
 
 def _scrub_running_headers(text: str, paper_doi: str | None = None) -> str:
@@ -200,17 +245,23 @@ def _verify_by_doi(doi: str) -> dict:
     Retries transient failures with backoff so rate-limiting during batch runs does
     not masquerade as reference fabrication.
     """
+    # 2026-06-26 E: cache check
+    cached = _cache_get(f"doi:{doi}")
+    if cached is not None:
+        return cached
     last_status = None
+    # 2026-06-26 B: tighter timeout on retries (20s first, 5s subsequent)
     for attempt in range(3):
+        timeout = 20 if attempt == 0 else 5
         try:
-            resp = requests.get(
+            resp = _session.get(
                 f"{CROSSREF_API_BASE}/works/{doi}",
                 headers=HEADERS,
-                timeout=20,
+                timeout=timeout,
             )
             if resp.status_code == 200:
                 work = resp.json()["message"]
-                return {
+                result = {
                     "doi_valid": True,
                     "crossref_title": (work.get("title") or [None])[0],
                     "crossref_authors": [a.get("family", "") for a in work.get("author", [])],
@@ -218,16 +269,34 @@ def _verify_by_doi(doi: str) -> dict:
                     "crossref_year": work.get("published-print", {}).get("date-parts", [[None]])[0][0]
                                      or work.get("published-online", {}).get("date-parts", [[None]])[0][0],
                 }
+                _cache_put(f"doi:{doi}", result)
+                return result
             if resp.status_code == 404:
-                return {"doi_valid": False, "error": "not_found"}
+                result = {"doi_valid": False, "error": "not_found"}
+                _cache_put(f"doi:{doi}", result)
+                return result
             # 429 / 500 / 502 / 503 → transient, retry with backoff
             last_status = resp.status_code
+            # Read Retry-After header for 429; respect it (cap at 5s)
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after and retry_after.isdigit():
+                    time.sleep(min(int(retry_after), 5))
+                    continue
         except Exception as e:
             log.warning("CrossRef DOI lookup error for %s (attempt %d): %s", doi, attempt + 1, e)
             last_status = "exception"
+            # 2026-06-26 A: DNS errors are system-wide and won't recover in 1-3s.
+            # Fast-fail to lookup_failed; ref will be marked low-severity unverified
+            # (not fabrication), which is the correct behavior.
+            if _is_dns_error(e):
+                log.warning("CrossRef DNS failure for %s — fast-fail (no retry)", doi)
+                result = {"doi_valid": False, "error": "lookup_failed"}
+                return result
         time.sleep(1.5 * (attempt + 1))
     log.warning("CrossRef DOI lookup failed for %s after retries (last=%s)", doi, last_status)
-    return {"doi_valid": False, "error": "lookup_failed"}
+    result = {"doi_valid": False, "error": "lookup_failed"}
+    return result
 
 
 def _is_truncated_doi(doi: str) -> bool:
@@ -260,32 +329,55 @@ def _verify_by_text(ref_text: str) -> dict:
     exponential backoff, mirroring _verify_by_doi().
     """
     query = ref_text[:300]
+    # 2026-06-26 E: cache check (key on first 200 chars of query to avoid huge keys)
+    cache_key = f"text:{query[:200]}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     last_status = None
+    # 2026-06-26 B: tighter timeout on retries (15s first, 5s subsequent)
     for attempt in range(3):
+        timeout = 15 if attempt == 0 else 5
         try:
-            resp = requests.get(
+            resp = _session.get(
                 f"{CROSSREF_API_BASE}/works",
                 params={"query.bibliographic": query, "rows": 1},
                 headers=HEADERS,
-                timeout=15,
+                timeout=timeout,
             )
             if resp.status_code == 200:
                 items = resp.json()["message"]["items"]
                 if items:
                     best = items[0]
-                    return {
+                    result = {
                         "found": True,
                         "matched_doi": best.get("DOI"),
                         "crossref_title": (best.get("title") or [None])[0],
                         "crossref_score": best.get("score", 0),
                     }
-                return {"found": False, "error": "no_match"}
+                    _cache_put(cache_key, result)
+                    return result
+                result = {"found": False, "error": "no_match"}
+                _cache_put(cache_key, result)
+                return result
             if resp.status_code == 404:
-                return {"found": False, "error": "no_match"}
+                result = {"found": False, "error": "no_match"}
+                _cache_put(cache_key, result)
+                return result
             last_status = resp.status_code
+            # Read Retry-After header for 429; respect it (cap at 5s)
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after and retry_after.isdigit():
+                    time.sleep(min(int(retry_after), 5))
+                    continue
         except Exception as e:
             log.warning("CrossRef text search error (attempt %d): %s", attempt + 1, e)
             last_status = "exception"
+            # 2026-06-26 A: DNS fast-fail
+            if _is_dns_error(e):
+                log.warning("CrossRef DNS failure in text search — fast-fail")
+                return {"found": False, "error": "lookup_failed"}
         time.sleep(1.5 * (attempt + 1))
     log.warning("CrossRef text search exhausted retries (last status: %s)", last_status)
     return {"found": False, "error": "lookup_failed"}

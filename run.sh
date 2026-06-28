@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run paper integrity checker using the knowledge-base venv
+# Run paper integrity checker using the project venv
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PYTHON="/opt/knowledge-base/venv/bin/python3"
+PYTHON="$SCRIPT_DIR/venv/bin/python"
 exec "$PYTHON" "$SCRIPT_DIR/main.py" "$@"

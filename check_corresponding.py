@@ -9,7 +9,7 @@ from pathlib import Path
 import openpyxl
 
 KB_DIR = Path("/opt/knowledge-base/data/paper-integrity/input/zhangwanbin")
-EXCEL_PATH = Path("/opt/paper-integrity-checker/data/input/zhangwanbin/学术数据-Excel-20260525 (1).xlsx")
+EXCEL_PATH = Path("/home/sjtu/paper-integrity-checker/data/input/zhangwanbin/学术数据-Excel-20260525 (1).xlsx")
 
 ZHANG_PATTERNS = [
     "zhang, wanbin", "zhang,wanbin", "zhang wanbin", "wanbin zhang",

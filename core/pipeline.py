@@ -179,8 +179,13 @@ def extract_metadata(pdf_path: str) -> dict:
         if "doi:" in subject.lower():
             idx = subject.lower().index("doi:")
             journal = subject[:idx].strip().rstrip(",").strip()
-            doi = subject[idx + 4:].strip()
-            doi = re.sub(r'^https?://(?:dx\.)?doi\.org/', '', doi)
+            # 2026-06-26: 一些出版商 (Oxford UP, Elsevier) 把整段 abstract 塞到 PDF subject,
+            # 形如 "DOI: 10.1093/bjd/ljaf185; British Journal of Dermatology, ...; Abstract: ...".
+            # 旧代码 doi = subject[idx+4:] 会拿掉整段 200 字符。让 normalize_doi 重新抽出第一段合法 DOI。
+            raw_doi = subject[idx + 4:].strip()
+            raw_doi = re.sub(r'^https?://(?:dx\.)?doi\.org/', '', raw_doi)
+            from modules.doi_utils import normalize_doi as _norm_doi
+            doi = _norm_doi(raw_doi)
         elif "10." in subject:
             m = re.search(r'(10\.\d{4,}/\S+)', subject)
             if m:
@@ -331,9 +336,8 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
             metadata["doi"] = normalize_doi(doi_file.read_text(encoding="utf-8"))
         else:
             folder_name = Path(paper_dir).name
-            if folder_name.startswith("10."):
-                from modules.doi_utils import dir_name_to_doi
-                metadata["doi"] = normalize_doi(dir_name_to_doi(folder_name))
+            from modules.doi_utils import dir_name_to_doi
+            metadata["doi"] = normalize_doi(dir_name_to_doi(folder_name))
 
     from utils.crossref import is_bad_title, enrich_metadata
     if metadata.get("doi") and (is_bad_title(metadata.get("title", "")) or not metadata.get("journal")):
@@ -371,7 +375,7 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
         log.warning("docx image extraction failed: %s", _e)
         docx_imgs = []
 
-    standalone = extract_standalone_images(paper_dir, output_dir, max_images=200,
+    standalone = extract_standalone_images(paper_dir, output_dir, max_images=50,
                                             extra_image_dirs=[str(Path(output_dir) / "images")])
     if standalone:
         if images:
@@ -553,8 +557,17 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
         },
     }
 
-    log.info("Generating Chinese PDF report (combined metadata + analysis)...")
+    from modules.chinese_report_generator import _compute_overall_risk
+    overall_risk = _compute_overall_risk(findings)
+    findings["initial_risk_level"] = overall_risk.get("level", "")
+    findings["initial_risk_score"] = overall_risk.get("score", 0)
+
     cn_path = None
+    # 2026-06-24: 强制为低风险也生成 PDF。原始逻辑跳过低风险以省时间，但导致
+    # batch 重审后 yujing_quanliang.report_url 仍指向不存在的文件（404）。
+    # 本次修复以 DB URL 健康度优先，恢复对低风险也走 PDF 生成路径。
+    pdf_skipped_low_risk = False
+    log.info("Generating Chinese PDF report (forced for all risk levels)...")
     try:
         # Fallback when caller didn't supply chinese_reports_dir:
         # With the new per-table layout (output_dir = <table>/init/<doi_slug>/),
@@ -593,6 +606,7 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
     # Persisted to report.json below so downstream readers (main.py DB guards, API
     # self-insert paths) skip inserting records that would point at a missing PDF.
     findings["pdf_generated"] = cn_path is not None
+    findings["pdf_skipped_low_risk"] = pdf_skipped_low_risk
 
     json_path = Path(output_dir) / "report.json"
     with open(json_path, "w", encoding="utf-8") as f:

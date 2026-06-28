@@ -1,6 +1,7 @@
 import logging
 import hashlib
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 import fitz  # PyMuPDF
@@ -30,57 +31,115 @@ def _file_fingerprint(path: Path) -> tuple[int, str] | None:
         return None
 
 
-def extract_images(pdf_path: str, output_dir: str, min_size: int = 200) -> list[ExtractedImage]:
-    """Extract all embedded images from a PDF using PyMuPDF."""
+def _extract_xref(pdf_path: str, page_num: int, img_index: int, xref: int, min_size: int, output_path: Path) -> ExtractedImage | None:
+    """Worker: extract one xref image. Opens its own fitz doc (thread-safe via per-thread context)."""
+    try:
+        doc = fitz.open(pdf_path)
+        try:
+            # 2026-06-24: 二次保险 — Pixmap() 之前先看 xref 编码，JPXDecode segfault
+            xref_info = doc.xref_object(xref, compressed=False)
+            if "/JPXDecode" in xref_info or "/Filter /JPXDecode" in xref_info:
+                log.debug("xref=%d uses JPXDecode, skipping", xref)
+                return None
+            pix = fitz.Pixmap(doc, xref)
+            if pix.width < min_size or pix.height < min_size:
+                return None
+
+            if pix.alpha or pix.n > 3:
+                pix = fitz.Pixmap(fitz.csRGB, pix)
+            elif pix.n == 1:
+                pix = fitz.Pixmap(fitz.csRGB, pix)
+
+            fname = f"page_{page_num + 1:03d}_img_{img_index:03d}.png"
+            fpath = str(output_path / fname)
+            pix.save(fpath)
+
+            arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+            if pix.n == 4:
+                arr = arr[:, :, :3]
+
+            return ExtractedImage(
+                page_num=page_num + 1,
+                img_index=img_index,
+                filepath=fpath,
+                array=arr,
+                width=pix.width,
+                height=pix.height,
+                xref=xref,
+            )
+        finally:
+            doc.close()
+    except Exception as e:
+        log.warning("Failed to extract image xref=%d from page %d: %s", xref, page_num + 1, e)
+        return None
+
+
+def extract_images(pdf_path: str, output_dir: str, min_size: int = 200, max_workers: int = 4) -> list[ExtractedImage]:
+    """Extract all embedded images from a PDF using PyMuPDF.
+
+    Per-xref extraction is parallelized across pages (each worker opens its own
+    fitz doc to avoid the GIL contention and PyMuPDF's non-thread-safe doc handle).
+    For small PDFs (< 8 images) the parallel overhead would dominate, so we fall
+    back to the sequential path. For large 20-30MB Elsevier PDFs with 30+ images,
+    page-level parallelism cuts extraction time roughly 2-3x.
+    """
     output_path = Path(output_dir) / "images"
     output_path.mkdir(parents=True, exist_ok=True)
 
+    # Pass 1: collect (page_num, img_index, xref) tuples sequentially
+    # 2026-06-24: 跳过 JPXDecode (JPEG2000) — PyMuPDF 1.26 在 Pixmap(doc, xref) 时 segfault
+    # (Frontiers PDF 用 jpx + 1-bit index masks，主图仍 jpeg 可提)
     doc = fitz.open(pdf_path)
-    images = []
+    xref_jobs: list[tuple[int, int, int]] = []
     seen_xrefs = set()
-
+    skipped_jpx = 0
     for page_num in range(len(doc)):
         page = doc[page_num]
-        img_list = page.get_images(full=True)
-
-        for img_index, img_info in enumerate(img_list):
+        for img_index, img_info in enumerate(page.get_images(full=True)):
             xref = img_info[0]
             if xref in seen_xrefs:
                 continue
             seen_xrefs.add(xref)
-
-            try:
-                pix = fitz.Pixmap(doc, xref)
-                if pix.width < min_size or pix.height < min_size:
-                    continue
-
-                if pix.alpha or pix.n > 3:
-                    pix = fitz.Pixmap(fitz.csRGB, pix)
-                elif pix.n == 1:
-                    pix = fitz.Pixmap(fitz.csRGB, pix)
-
-                fname = f"page_{page_num + 1:03d}_img_{img_index:03d}.png"
-                fpath = str(output_path / fname)
-                pix.save(fpath)
-
-                arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
-                if pix.n == 4:
-                    arr = arr[:, :, :3]
-
-                images.append(ExtractedImage(
-                    page_num=page_num + 1,
-                    img_index=img_index,
-                    filepath=fpath,
-                    array=arr,
-                    width=pix.width,
-                    height=pix.height,
-                    xref=xref,
-                ))
-            except Exception as e:
-                log.warning("Failed to extract image xref=%d from page %d: %s", xref, page_num + 1, e)
-
+            # img_info: (xref, smask, w, h, bpc, cs, alt, name, filter, ref)
+            filt = img_info[8] if len(img_info) > 8 else ""
+            if filt == "JPXDecode":
+                skipped_jpx += 1
+                continue
+            xref_jobs.append((page_num, img_index, xref))
     doc.close()
-    log.info("Extracted %d images from %s", len(images), pdf_path)
+    if skipped_jpx:
+        log.info("Skipped %d JPXDecode images from %s (PyMuPDF segfault workaround)",
+                 skipped_jpx, pdf_path)
+
+    if not xref_jobs:
+        log.info("Extracted 0 images from %s", pdf_path)
+        return []
+
+    # Small docs: sequential (avoid thread overhead)
+    if len(xref_jobs) < 8:
+        images: list[ExtractedImage] = []
+        for page_num, img_index, xref in xref_jobs:
+            r = _extract_xref(pdf_path, page_num, img_index, xref, min_size, output_path)
+            if r is not None:
+                images.append(r)
+        log.info("Extracted %d images from %s", len(images), pdf_path)
+        return images
+
+    # Large docs: parallel
+    images = []
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(_extract_xref, pdf_path, p, i, x, min_size, output_path): (p, i, x)
+            for p, i, x in xref_jobs
+        }
+        for fut in as_completed(futures):
+            r = fut.result()
+            if r is not None:
+                images.append(r)
+
+    # Sort by page_num for deterministic ordering
+    images.sort(key=lambda e: (e.page_num, e.img_index))
+    log.info("Extracted %d images from %s (parallel, %d workers)", len(images), pdf_path, max_workers)
     return images
 
 
@@ -163,6 +222,19 @@ def extract_standalone_images(paper_dir: str, output_dir: str, min_size: int = 2
             if len(images) >= max_images:
                 log.info("Reached standalone image limit (%d), skipping remaining", max_images)
                 break
+            # Early-stop when dedup ratio is high: if we've already dedup'd >= 80%
+            # of files seen, the remaining ones are overwhelmingly duplicates of
+            # the ones we already have. This skips the long tail of large mmc
+            # directories where 200+ figures are mostly redrawn versions of the
+            # same Western-blot / bar-chart template.
+            if len(seen_paths) >= 30:
+                dedup_ratio = 1 - (len(seen_file_fingerprints) / len(seen_paths))
+                if dedup_ratio >= 0.80 and len(images) >= 20:
+                    log.info(
+                        "Early-stop standalone: dedup_ratio=%.2f (%d unique / %d seen)",
+                        dedup_ratio, len(seen_file_fingerprints), len(seen_paths),
+                    )
+                    break
         except Exception as e:
             log.warning("Failed to load image %s: %s", f.name, e)
 

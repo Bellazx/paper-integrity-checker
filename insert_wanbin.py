@@ -209,7 +209,7 @@ def upsert_row(cursor, conn, row: dict, stats: dict):
 
 
 def main():
-    pattern = "/opt/paper-integrity-checker/data/output/zhangwanbin/*/report.json"
+    pattern = "/home/sjtu/paper-integrity-checker/data/output/zhangwanbin/*/report.json"
     report_files = sorted(glob.glob(pattern))
     log.info("Found %d report.json files", len(report_files))
 

@@ -209,7 +209,7 @@ def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: 
 
     meta = build_paper_metadata(findings, html_path=html_path)
 
-    report_url = _make_report_url(findings, chinese_reports_dir, namespace=namespace)
+    report_url = "" if findings.get("pdf_skipped_low_risk") else _make_report_url(findings, chinese_reports_dir, namespace=namespace)
 
     row = {
         "title": meta["title"][:500],

@@ -31,6 +31,7 @@ import pymssql
 BASE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
 from modules.doi_utils import dir_name_to_doi
+from utils.paper_preprocessor import cleanup_review_artifacts
 TABLE = "yujing_4050"
 INPUT_BASE = BASE / "data" / "input" / "4050-matched"
 OUTPUT_BASE = BASE / "data" / "output" / TABLE
@@ -39,7 +40,7 @@ TMP_DIR = BASE / "data" / "tmp" / "4050_review_watcher"
 STATE_FILE = TMP_DIR / "state.json"
 LOG_FILE = TMP_DIR / "watcher.log"
 METRICS_FILE = TMP_DIR / "metrics.jsonl"
-REPORT_SCRIPT = Path("/opt/.claude/skills/paper-batch-review/scripts/generate_review_report.py")
+REPORT_SCRIPT = Path("/home/library/.claude/skills/paper-batch-review/scripts/generate_review_report.py")
 
 DB_CONFIG = {
     "server": "10.119.5.44",
@@ -629,6 +630,17 @@ async def run_worker(group_id: str, dois: list[str]) -> int:
     status["completed"] = [r.get("doi") for r in renderable if r.get("doi")]
     with status_path.open("w", encoding="utf-8") as f:
         json.dump(status, f, ensure_ascii=False, indent=2)
+
+    # Sweep stale review-render artifacts left behind by subagents in this
+    # group. min_age_seconds=3600 leaves anything <1h old alone so we never
+    # delete a render dir that another worker is still writing.
+    try:
+        dirs_n, files_n = cleanup_review_artifacts(base_dir=BASE, min_age_seconds=3600)
+        if dirs_n or files_n:
+            log.info("Cleanup: removed %d stale dir(s) and %d stale file(s)", dirs_n, files_n)
+    except Exception as e:
+        log.warning("Cleanup sweep failed (non-fatal): %s", e)
+
     return 2 if errors else 0
 
 
@@ -644,11 +656,27 @@ def run_watch(args: argparse.Namespace) -> int:
         args.interval,
     )
 
+    # Periodically sweep stale review-render artifacts at the project root.
+    # The function only removes items older than 1h, so it's safe to call
+    # frequently without disturbing any in-flight review.
+    cleanup_interval_seconds = 1800  # 30 min
+    last_cleanup_at = 0.0
+
     while True:
         state = _load_state()
         active.update({gid: pid for gid, pid in _adopt_active_groups(state).items() if gid not in active})
         _reap_groups(active, state)
         counts = _query_counts()
+
+        if time.time() - last_cleanup_at >= cleanup_interval_seconds:
+            try:
+                dirs_n, files_n = cleanup_review_artifacts(base_dir=BASE, min_age_seconds=3600)
+                if dirs_n or files_n:
+                    log.info("Periodic cleanup: removed %d stale dir(s) and %d stale file(s)", dirs_n, files_n)
+                last_cleanup_at = time.time()
+            except Exception as e:
+                log.warning("Periodic cleanup failed (non-fatal): %s", e)
+                last_cleanup_at = time.time()
         log.info(
             "DB total=%d high=%d low=%d rate=%.2f%% low_with_high_dim=%d active_review_groups=%d",
             counts["total"],
@@ -681,6 +709,13 @@ def run_watch(args: argparse.Namespace) -> int:
                 killed,
                 audit,
             )
+            # Sweep before bailing so the next run starts from a clean root.
+            try:
+                dirs_n, files_n = cleanup_review_artifacts(base_dir=BASE, min_age_seconds=3600)
+                if dirs_n or files_n:
+                    log.info("Final cleanup: removed %d stale dir(s) and %d stale file(s)", dirs_n, files_n)
+            except Exception as e:
+                log.warning("Final cleanup failed (non-fatal): %s", e)
             return 3
 
         rows = _query_pending_high_risk()

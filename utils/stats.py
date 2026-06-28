@@ -409,7 +409,7 @@ def check_value_recycling(values: np.ndarray, min_samples: int = 10) -> dict:
     }
 
 
-def _last_significant_digit(v) -> int | None:
+def _last_significant_digit(v) -> int or None:
     """Return the last significant digit of a number (trailing zeros stripped)."""
     if not np.isfinite(v):
         return None
@@ -566,7 +566,7 @@ def recompute_p(stat_type: str, stat_value: float, df1: float,
 def check_passage_offset_pattern(
     df,
     min_pairs: int = 2,
-    n_first_cols: int | None = None,
+    n_first_cols: int or None = None,
 ) -> list[dict]:
     """Detect 'synthetic pseudo-replicate' pattern across rows in a sub-table.
 
@@ -584,7 +584,7 @@ def check_passage_offset_pattern(
         Numeric DataFrame (one row per passage/timepoint, one column per replicate).
     min_pairs : int
         Minimum number of matching row-pairs to flag a sub-table. Default 2.
-    n_first_cols : int | None
+    n_first_cols : int or None
         Number of leading columns to require exact-match. None = use
         df.shape[1] - 1 (i.e. last column is the offset-bearing one).
 

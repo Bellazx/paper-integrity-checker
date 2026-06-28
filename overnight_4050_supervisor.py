@@ -19,6 +19,9 @@ from pathlib import Path
 
 import pymssql
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from utils.paper_preprocessor import cleanup_review_artifacts
+
 BASE = Path(__file__).resolve().parent
 TMP_DIR = BASE / "data" / "tmp" / "4050_review_watcher"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -168,6 +171,19 @@ def main() -> int:
         f"supervisor starting threshold={THRESHOLD} "
         f"min_total={state['min_total_for_threshold']} interval={INTERVAL_SECONDS}s"
     )
+
+    # Sweep stale review-render artifacts at startup. min_age_seconds=3600
+    # leaves anything <1h old alone so we never disturb a review that is
+    # still writing its render dir. Subsequent worker runs do their own
+    # sweeps at completion; this one handles leftovers from previous
+    # overnight sessions.
+    try:
+        dirs_n, files_n = cleanup_review_artifacts(base_dir=BASE, min_age_seconds=3600)
+        if dirs_n or files_n:
+            log(f"startup cleanup: removed {dirs_n} stale dir(s) and {files_n} stale file(s)")
+    except Exception as e:
+        log(f"startup cleanup failed (non-fatal): {e}")
+
     while True:
         state = load_state()
         counts = query_counts()

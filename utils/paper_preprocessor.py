@@ -761,6 +761,73 @@ def preprocess_paper_dir(
     }
 
 
+# Review subagents (and the LLM-driven review pipeline) drop PDF-to-PNG render
+# artifacts at the project root as `.tmp_*/.render_*/.batch_*_render` directories
+# and `.tmp_*.png`/`.render_*.png` loose files. These are intermediate products
+# that are not part of the deliverable — the final images live under
+# `data/output/yujing_quanliang/<doi>/images/` and the source PDFs stay in
+# `data/input/<date>/<doi>/`. In practice subagents never clean them up, and
+# the project root accumulates ~900+ of them (≈2.5 GB) per overnight run.
+#
+# The function below is the project's own sweeper. It is intentionally narrow
+# (only the named patterns at depth 1) and only removes items older than
+# `min_age_seconds` so a review that is *currently* writing its render dir
+# is never disturbed. Callers wire it into the end of each review entry point
+# (see `batch_rereview.py`, `watch_4050_reviews.py`).
+
+_REVIEW_ARTIFACT_PATTERNS = (".tmp_*", ".render_*", ".batch_*_render")
+
+
+def cleanup_review_artifacts(
+    base_dir: str | os.PathLike | None = None,
+    min_age_seconds: int = 3600,
+    dry_run: bool = False,
+) -> tuple[int, int]:
+    """Remove stale review-render artifacts from the project root.
+
+    Scans the top level of `base_dir` (defaults to the project root) for
+    `.tmp_*`, `.render_*`, and `.batch_*_render` entries. Anything older
+    than `min_age_seconds` is removed (directories are rmtree'd, files are
+    unlinked). Items newer than the cutoff are left alone so a review that
+    is still writing its render dir does not race with the sweeper.
+
+    Args:
+        base_dir: Project root to scan. Defaults to this file's repo root.
+        min_age_seconds: Skip artifacts modified within this many seconds.
+            Default 1h — long enough that no in-flight review is at risk.
+        dry_run: When True, do not delete; just count what would be removed.
+
+    Returns:
+        (dirs_removed, files_removed) tuple. Safe to call repeatedly.
+    """
+    base = Path(base_dir) if base_dir else _REPO_ROOT
+    cutoff = time.time() - max(0, int(min_age_seconds))
+    dirs_removed = 0
+    files_removed = 0
+
+    for pattern in _REVIEW_ARTIFACT_PATTERNS:
+        for entry in base.glob(pattern):
+            try:
+                mtime = entry.stat().st_mtime
+            except OSError:
+                continue
+            if mtime >= cutoff:
+                continue
+            try:
+                if entry.is_dir() and not entry.is_symlink():
+                    if not dry_run:
+                        shutil.rmtree(entry, ignore_errors=True)
+                    dirs_removed += 1
+                elif entry.is_file():
+                    if not dry_run:
+                        entry.unlink(missing_ok=True)
+                    files_removed += 1
+            except OSError as e:
+                log.warning("cleanup_review_artifacts: failed to remove %s: %s", entry, e)
+
+    return dirs_removed, files_removed
+
+
 if __name__ == "__main__":
     # Allow ad-hoc usage: python utils/paper_preprocessor.py <paper_dir> [--apply]
     import argparse

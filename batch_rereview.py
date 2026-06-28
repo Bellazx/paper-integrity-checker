@@ -18,23 +18,24 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, "/opt/paper-integrity-checker")
+sys.path.insert(0, "/home/sjtu/paper-integrity-checker")
 from api.services.review import run_review_single
+from utils.paper_preprocessor import cleanup_review_artifacts
 
 # Ensure runtime dir on the 1T data disk exists before logging attaches its file handler
-Path("/opt/paper-integrity-checker/data/tmp").mkdir(parents=True, exist_ok=True)
+Path("/home/sjtu/paper-integrity-checker/data/tmp").mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("/opt/paper-integrity-checker/data/tmp/batch_rereview.log"),
+        logging.FileHandler("/home/sjtu/paper-integrity-checker/data/tmp/batch_rereview.log"),
     ],
 )
 log = logging.getLogger(__name__)
 
-BASE = Path("/opt/paper-integrity-checker")
+BASE = Path("/home/sjtu/paper-integrity-checker")
 OUTPUT_DIR = BASE / "data" / "output" / "yujing_quanliang"  # per-table layout (screen_quanliang writes here)
 INPUT_DIR = BASE / "data" / "input"
 REVIEW_V2_DIR = BASE / "data" / "output" / "review_v2" / "yujing_quanliang"  # per-table isolation for review PDFs
@@ -43,7 +44,7 @@ REVIEW_V2_DIR.mkdir(parents=True, exist_ok=True)
 TMP_DIR = BASE / "data" / "tmp"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 RESULTS_FILE = TMP_DIR / "rereview_voted_results.json"
-REPORT_SCRIPT = "/opt/.claude/skills/paper-batch-review/scripts/generate_review_report.py"
+REPORT_SCRIPT = "/home/library/.claude/skills/paper-batch-review/scripts/generate_review_report.py"
 CONCURRENCY = 5
 BATCH_SIZE = 5
 DEFAULT_TIME_BUDGET_MIN = 55.0
@@ -269,6 +270,13 @@ async def main():
 
     if not remaining:
         log.info("All papers already reviewed!")
+        # Still sweep stale review artifacts so the project root doesn't pile up
+        try:
+            dirs_n, files_n = cleanup_review_artifacts(base_dir=BASE, min_age_seconds=3600)
+            if dirs_n or files_n:
+                log.info("Cleanup: removed %d stale dir(s) and %d stale file(s)", dirs_n, files_n)
+        except Exception as e:
+            log.warning("Cleanup sweep failed (non-fatal): %s", e)
         return
 
     semaphore = asyncio.Semaphore(max(1, args.concurrency))
@@ -383,6 +391,17 @@ async def main():
         )
     else:
         log.info("=== COMPLETE: %d papers reviewed ===", len(all_results))
+
+    # Sweep stale review-render artifacts (default: 1h+ old) so the project
+    # root doesn't accumulate hundreds of .tmp_*/.render_* dirs from prior
+    # subagent runs. Safe to run concurrently with active reviews — anything
+    # newer than the cutoff is left alone.
+    try:
+        dirs_n, files_n = cleanup_review_artifacts(base_dir=BASE, min_age_seconds=3600)
+        if dirs_n or files_n:
+            log.info("Cleanup: removed %d stale dir(s) and %d stale file(s)", dirs_n, files_n)
+    except Exception as e:
+        log.warning("Cleanup sweep failed (non-fatal): %s", e)
 
 
 if __name__ == "__main__":

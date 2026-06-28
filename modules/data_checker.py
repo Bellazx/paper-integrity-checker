@@ -39,7 +39,7 @@ DATA_FILE_EXTENSIONS = TABLE_DATA_EXTENSIONS | STRUCTURE_DATA_EXTENSIONS
 _METADATA_FILENAMES = {"resources.csv", "figures.csv", "manifest.csv", "resources.tsv"}
 
 
-def is_metadata_data_file(path: str | Path) -> bool:
+def is_metadata_data_file(path: str or Path) -> bool:
     """Return True for crawler metadata files that are not experimental source data."""
     return Path(path).name.lower() in _METADATA_FILENAMES
 
@@ -272,7 +272,7 @@ def _split_sub_tables(df: pd.DataFrame, filename: str, sheet_name: str) -> dict[
 
 
 def _load_data_files(
-    data_dir: str | Path | list[str | Path],
+    data_dir: str or Path or list,
 ) -> tuple[dict[str, dict[str, pd.DataFrame]], list[str]]:
     """Load all Excel/CSV files with retry logic.
     Returns (loaded_data, failed_file_names)."""
@@ -369,9 +369,21 @@ def _load_data_files(
                 log.warning("Failed to load %s: %s", name, e)
                 failed_files.append(name)
         elif f.suffix.lower() == ".fcs":
+            # 2026-06-25: 跳过大型 .fcs（flow cytometry 原始事件，s44318-024 一个 fcs 就 24MB、
+            # 数百万 events，fcsparser.parse 几十分钟不出结果）。统计 derived xlsx 已覆盖。
+            try:
+                fcs_size_mb = f.stat().st_size / 1024 / 1024
+            except OSError:
+                fcs_size_mb = 0
+            if fcs_size_mb > 5:
+                log.info("Skipping large .fcs file (%.1fMB > 5MB cap): %s", fcs_size_mb, name)
+                continue
             try:
                 import fcsparser
                 _, df = fcsparser.parse(str(f), reformat_meta=True)
+                # Row cap — _analyze_sheet 对百万行 DataFrame 会卡死
+                if len(df) > 100000:
+                    df = df.sample(n=100000, random_state=42)
                 result[name] = {"Sheet1": df}
                 log.info("Loaded %s: %d rows x %d cols", name, len(df), len(df.columns))
             except Exception as e:
@@ -381,6 +393,8 @@ def _load_data_files(
             try:
                 import pyreadstat
                 df, _ = pyreadstat.read_sav(str(f))
+                if len(df) > 100000:
+                    df = df.sample(n=100000, random_state=42)
                 result[name] = {"Sheet1": df}
                 log.info("Loaded %s: %d rows x %d cols", name, len(df), len(df.columns))
             except Exception as e:
@@ -683,7 +697,7 @@ def _analyze_pdb_file(pdb_path: Path, display_name: str) -> tuple[list[dict], bo
     return anomalies, True
 
 
-def _check_pdb_files(data_dir: str | Path | list[str | Path]) -> tuple[list[dict], list[str], int]:
+def _check_pdb_files(data_dir: str or Path or list) -> tuple[list[dict], list[str], int]:
     """Check PDB files separately from table-like source data."""
     data_dirs = [Path(data_dir)] if not isinstance(data_dir, list) else [Path(d) for d in data_dir]
     anomalies = []
@@ -792,7 +806,7 @@ def _looks_like_categorical_code(values: np.ndarray) -> bool:
     return False
 
 
-def _is_measurement_column(col_name: str, values: np.ndarray | None = None, *, allow_unnamed: bool = False) -> bool:
+def _is_measurement_column(col_name: str, values: np.ndarray or None, *, allow_unnamed: bool = False) -> bool:
     """Return True only for columns suitable for statistical fabrication checks."""
     name = str(col_name)
     if (_is_unnamed_column(name) or _is_numeric_column_name(name)) and not allow_unnamed:
@@ -1167,7 +1181,7 @@ def _analyze_passage_offset_pattern(df: pd.DataFrame, file_name: str, sheet_name
 
 
 def _scan_passage_window(anomalies: list, sub_df: pd.DataFrame, sub_name: str, *,
-                         window: int | None, label_suffix: str) -> None:
+                         window: int or None, label_suffix: str) -> None:
     """Helper: run check_passage_offset_pattern on one (sub-table, window) and
     append any flagged results to `anomalies`. sub_name is the full path
     (e.g. "Fig.S11 / A") — already includes sheet + sub-section."""
@@ -1243,6 +1257,255 @@ def _scan_passage_window(anomalies: list, sub_df: pd.DataFrame, sub_name: str, *
                 f"pseudo-replicates across passages/timepoints."
             ),
         })
+
+
+def _analyze_decimal_injection(
+    df: pd.DataFrame,
+    measurement_cols: list,
+    file_name: str,
+    sheet_name: str,
+) -> list[dict]:
+    """Detect decimal-digit injection / systematic decimal-place rewriting.
+
+    Pattern (per user spec): a column's decimal portion looks like it was
+    produced by taking values from a sibling column and randomly inserting
+    1-2 extra digits into the decimal portion. Concretely we test for:
+
+    1. **Truncation match** — for each value v in this column, round v down
+       to N decimal places for N ∈ {min_dec, min_dec+1} (where min_dec is the
+       smaller of the two columns' median decimal-place counts). The rounded
+       value must appear in the sibling column (rounded to the same N).
+    2. **Single-digit removal** — for each value v, try removing one digit
+       at every position of the decimal portion (e.g. 0.9137 → 0.137,
+       0.9137 → 0.937, 0.9137 → 0.917, 0.9137 → 0.913). The result must
+       appear in the sibling column.
+    3. **Two-digit removal** — same but remove 2 digits.
+
+    If >=40% of v's transformations land in the sibling column's value set,
+    the column is flagged. The pattern is "digit injection" because the
+    suspect column has systematically more decimal digits than its sibling
+    AND those extra digits are random (i.e. removing them recovers the
+    sibling's value).
+
+    Severity: medium (single indicator) → high if both (1) AND (2) fire
+    with >=60% match ratio.
+    """
+    anomalies: list[dict] = []
+
+    def _decimal_places(v: float) -> int:
+        s = f"{v:.10f}".rstrip("0")
+        if "." not in s:
+            return 0
+        return len(s.split(".")[1])
+
+    def _values_with_min_n(df_col: pd.Series, n: int) -> set[float]:
+        # Round all non-null values to N decimal places and dedup
+        out = set()
+        for v in df_col.dropna().values:
+            try:
+                f = float(v)
+                if not np.isfinite(f):
+                    continue
+                out.add(round(f, n))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def _one_digit_removals(v: float) -> set[float]:
+        # Remove one digit at every position of the decimal portion
+        s = f"{v:.10f}".rstrip("0")
+        if "." not in s:
+            return set()
+        int_part, dec_part = s.split(".")
+        out = set()
+        for i in range(len(dec_part)):
+            new_dec = dec_part[:i] + dec_part[i + 1:]
+            if not new_dec:
+                continue
+            try:
+                out.add(float(f"{int_part}.{new_dec}"))
+            except ValueError:
+                continue
+        return out
+
+    def _two_digit_removals(v: float) -> set[float]:
+        s = f"{v:.10f}".rstrip("0")
+        if "." not in s:
+            return set()
+        int_part, dec_part = s.split(".")
+        out = set()
+        for i in range(len(dec_part)):
+            for j in range(i + 1, len(dec_part)):
+                new_dec = dec_part[:i] + dec_part[i + 1:j] + dec_part[j + 1:]
+                if not new_dec:
+                    continue
+                try:
+                    out.add(float(f"{int_part}.{new_dec}"))
+                except ValueError:
+                    continue
+        return out
+
+    for i, col_a in enumerate(measurement_cols):
+        vals_a = df[col_a].dropna().values
+        if len(vals_a) < 5:
+            continue
+        vals_a = [float(v) for v in vals_a if np.isfinite(float(v))]
+        if len(vals_a) < 5:
+            continue
+        dec_a_med = sorted(_decimal_places(v) for v in vals_a)[len(vals_a) // 2]
+
+        for col_b in measurement_cols[i + 1:]:
+            vals_b = df[col_b].dropna().values
+            vals_b = [float(v) for v in vals_b if np.isfinite(float(v))]
+            if len(vals_b) < 5:
+                continue
+            dec_b_med = sorted(_decimal_places(v) for v in vals_b)[len(vals_b) // 2]
+
+            # The suspect column must have strictly more median decimal places
+            # than its sibling for the digit-injection hypothesis to be
+            # plausible. Even a 1-decimal-place shift is a real signal — the
+            # sibling's clean N places vs suspect's noisy N+1 / N+2 places
+            # is exactly the "1-2 digits randomly inserted" pattern.
+            # Skip pairs where both columns have identical precision — those
+            # are normal reporting precision, not injection.
+            dec_diff = abs(dec_a_med - dec_b_med)
+            if dec_diff < 1:
+                continue
+
+            if dec_a_med > dec_b_med:
+                suspect_vals, sibling_vals = vals_a, vals_b
+                suspect_dec, sibling_dec = dec_a_med, dec_b_med
+                suspect_name, sibling_name = col_a, col_b
+            else:
+                suspect_vals, sibling_vals = vals_b, vals_a
+                suspect_dec, sibling_dec = dec_b_med, dec_a_med
+                suspect_name, sibling_name = col_b, col_a
+
+            min_dec = min(suspect_dec, sibling_dec)
+            # Build sibling lookup: the suspect's truncated values must land in
+            # the sibling at the same rounding precision. We expand the
+            # rounding window by ±1 decimal place to absorb legitimate
+            # instrument-precision differences (e.g. 0.95 reported as 0.950).
+            sibling_at_n = set()
+            for n in range(min_dec, min(min_dec + 2, sibling_dec + 2)):
+                sibling_at_n |= _values_with_min_n(df[sibling_name], n)
+
+            # Same-row-position sibling lookup. Real injection papers have
+            # treatment[i] derived from control[i] (sibling values paired by
+            # replicate). A pure set-membership test (above) cannot tell
+            # injection from random collision when the sibling has few
+            # distinct values (1-decimal data only has 10 candidates, so
+            # random 3-decimal values collide ~100% on round-to-1).
+            sibling_at_n_rows: dict[float, set[int]] = {}
+            for row_idx, v in df[sibling_name].dropna().items():
+                try:
+                    f = float(v)
+                    if not np.isfinite(f):
+                        continue
+                    for n in range(min_dec, min(min_dec + 2, sibling_dec + 2)):
+                        rounded = round(f, n)
+                        sibling_at_n_rows.setdefault(rounded, set()).add(row_idx)
+                except (TypeError, ValueError):
+                    continue
+            sibling_at_n_rows_full: dict[float, set[int]] = {rounded: rows for rounded, rows in sibling_at_n_rows.items()}
+
+            # One- and two-digit removal tests are only meaningful when the
+            # suspect column has >=2 (or >=3) more decimal places than the
+            # sibling. Otherwise the candidate removal set is large enough
+            # that random values collide spuriously.
+            do_one_digit = dec_diff >= 2
+            do_two_digit = dec_diff >= 3
+
+            trunc_hits = 0
+            one_digit_hits = 0
+            two_digit_hits = 0
+            for row_idx_v, v in enumerate(suspect_vals):
+                # Test 1: truncation match at min_dec / min_dec+1
+                r1, r2 = round(v, min_dec), round(v, min_dec + 1)
+                hit = (r1 in sibling_at_n) or (r2 in sibling_at_n)
+                # If hit, also require same-row coincidence — distinguishes
+                # injection (treatment[i] ≈ control[i]) from random collision
+                # (treatment[i] ≈ some control[j], j != i).
+                if hit:
+                    rows_r1 = sibling_at_n_rows_full.get(r1, set())
+                    rows_r2 = sibling_at_n_rows_full.get(r2, set())
+                    if row_idx_v in rows_r1 or row_idx_v in rows_r2:
+                        trunc_hits += 1
+                # Test 2: one-digit removal
+                if do_one_digit:
+                    for rem in _one_digit_removals(v):
+                        if rem in sibling_at_n:
+                            rows = sibling_at_n_rows_full.get(rem, set())
+                            if row_idx_v in rows:
+                                one_digit_hits += 1
+                                break
+                # Test 3: two-digit removal
+                if do_two_digit:
+                    for rem in _two_digit_removals(v):
+                        if rem in sibling_at_n:
+                            rows = sibling_at_n_rows_full.get(rem, set())
+                            if row_idx_v in rows:
+                                two_digit_hits += 1
+                                break
+
+            n = len(suspect_vals)
+            trunc_ratio = trunc_hits / n
+            one_ratio = one_digit_hits / n
+            two_ratio = two_digit_hits / n
+            best_ratio = max(trunc_ratio, one_ratio, two_ratio)
+            best_kind = (
+                "truncation" if trunc_ratio == best_ratio
+                else "one_digit_removal" if one_ratio == best_ratio
+                else "two_digit_removal"
+            )
+
+            # Truncation alone is too permissive when sibling has very few
+            # distinct values (e.g. 1-decimal data only has 10 candidates, so
+            # 2-decimal values truncate-collide randomly ~70% of the time).
+            # Same-row constraint cuts this to a 60% threshold (random
+            # alignment is much less likely than same-row coincidence).
+            if not (one_ratio >= 0.40 or two_ratio >= 0.40):
+                if not (trunc_ratio >= 0.60):
+                    continue
+
+            # Both (1) and (2) firing with >=60% → high
+            # Or a single kind firing with >=80% AND a 2+ decimal-place shift
+            # (extreme injection: 5-decimal vs 3-decimal column is unambiguous
+            # fabrication, even when truncation can't find the sibling values).
+            if (trunc_ratio >= 0.60 and one_ratio >= 0.60) or (trunc_ratio + one_ratio >= 1.20):
+                severity = "high"
+            elif best_ratio >= 0.80 and dec_diff >= 2:
+                severity = "high"
+            else:
+                severity = "medium"
+
+            location = f"{file_name} / {sheet_name} / column '{suspect_name}' (vs '{sibling_name}')"
+            anomalies.append({
+                "test": "decimal_injection",
+                "location": location,
+                "severity": severity,
+                "details": {
+                    "suspect_column": str(suspect_name),
+                    "sibling_column": str(sibling_name),
+                    "suspect_dec_med": suspect_dec,
+                    "sibling_dec_med": sibling_dec,
+                    "truncation_match_ratio": round(trunc_ratio, 3),
+                    "one_digit_removal_ratio": round(one_ratio, 3),
+                    "two_digit_removal_ratio": round(two_ratio, 3),
+                    "best_match_kind": best_kind,
+                    "best_match_ratio": round(best_ratio, 3),
+                    "n_suspect": n,
+                    "n_sibling": len(sibling_vals),
+                },
+                "description": (
+                    f"Column '{suspect_name}' shows decimal-digit injection pattern vs sibling "
+                    f"'{sibling_name}': median {suspect_dec} vs {sibling_dec} decimal places, "
+                    f"with {best_ratio*100:.0f}% of values ({best_kind}, "
+                    f"n={n}) recoverable by digit removal/truncation to match the sibling"
+                ),
+            })
+
+    return anomalies
 
 
 def _analyze_column_group(values: np.ndarray, location: str, col_name: str = "") -> list[dict]:
@@ -1437,6 +1700,26 @@ def _analyze_sheet(df: pd.DataFrame, file_name: str, sheet_name: str) -> list[di
         location = f"{file_name} / {sheet_name} / column '{col}'"
         anomalies.extend(_analyze_column_group(values, location, col_name=str(col)))
 
+    # Per-column decimal-injection / systematic-digit-rewrite pattern.
+    # Fabrication pattern: a column's decimal portion looks like it was generated
+    # by taking values from another (sibling) column and randomly inserting 1-2
+    # extra digits into the decimal portion. The result: most of this column's
+    # values, when truncated to a shorter decimal length, coincide with values
+    # in the sibling column. Detected by:
+    #   (1) truncation-match: each value, rounded down to N decimal places
+    #       where N ∈ {min_dec, min_dec+1}, must hit a value (rounded to the
+    #       same N) in another measurement column on the same sheet.
+    #   (2) digit-insertion: each value, with 1 digit removed from its decimal
+    #       portion at every position, must hit a value in another column.
+    # If >40% of the column's values satisfy (1) or (2) against any single
+    # sibling column, the column is flagged. Single high ratio, no minimum
+    # sample count beyond 5, because this is precisely a small-N fabrication
+    # pattern (Figure panels often have n=3 or n=5).
+    if len(measurement_cols) >= 2:
+        anomalies.extend(
+            _analyze_decimal_injection(df, measurement_cols, file_name, sheet_name)
+        )
+
     benford_values = [df[c].dropna().values for c in measurement_cols if len(df[c].dropna().values) > 0]
     if benford_values:
         benford_all = np.concatenate(benford_values)
@@ -1616,8 +1899,38 @@ def _find_matching_columns(df_a: pd.DataFrame, df_b: pd.DataFrame) -> list[dict]
     return matches
 
 
+def _transpose_row_subtables(sheets: dict) -> dict:
+    """Transpose (1, N) sub-tables so cross-sheet column comparison can match.
+
+    A common data layout (especially in behavioral/biology papers) is one metric
+    per sub-table with all biological replicates arranged as columns, e.g.
+        Total distance(cm): [v1, v2, v3, ..., v20]  (shape (1, 20))
+    The cross-sheet column matcher requires len(vals) >= 3 to find duplicates,
+    so a 1-row shape with N columns never triggers because each column vector
+    has length 1. Transposing (1, N) -> (N, 1) lets the matcher see all 20
+    replicates in one column. Multi-row sub-tables pass through unchanged.
+    """
+    out = {}
+    for name, df in sheets.items():
+        if isinstance(df, pd.DataFrame) and df.shape[0] == 1 and df.shape[1] > 1:
+            t = df.T.copy()
+            t.columns = ["value"]
+            out[name] = t
+        else:
+            out[name] = df
+    return out
+
+
 def _analyze_cross_sheet(sheets: dict[str, pd.DataFrame], file_name: str) -> list[dict]:
-    """Compare data blocks across sheets within the same file."""
+    """Compare data blocks across sheets within the same file.
+
+    2026-06-24: _transpose_row_subtables() pre-flattens (1, N) sub-tables
+    (replicate-as-column layout) so the column matcher actually sees the
+    replicate data; without this fix a 1-row 20-column sheet silently yields
+    zero matches even when an identical (1, 20) sheet exists elsewhere in
+    the file (e.g. fcimb 2025.1559182 Average speed vs RI%).
+    """
+    sheets = _transpose_row_subtables(sheets)
     MAX_SHEET_PAIRS = 200
     MAX_ROWS_FOR_CROSS = 5000
     MAX_COLS_FOR_CROSS = 50
@@ -1692,7 +2005,7 @@ def _analyze_cross_sheet(sheets: dict[str, pd.DataFrame], file_name: str) -> lis
     return anomalies
 
 
-def check_data_anomalies(data_dir: str | Path | list[str | Path]) -> list[dict]:
+def check_data_anomalies(data_dir: str or Path or list) -> list[dict]:
     """Run all data anomaly checks on source data files."""
     data_dirs = [Path(data_dir)] if not isinstance(data_dir, list) else [Path(d) for d in data_dir]
     existing_dirs = [d for d in data_dirs if d.exists()]
@@ -1725,7 +2038,7 @@ def check_data_anomalies(data_dir: str | Path | list[str | Path]) -> list[dict]:
     return all_anomalies
 
 
-def check_data_with_validation(data_dir: str | Path | list[str | Path]) -> tuple[list[dict], list[str]]:
+def check_data_with_validation(data_dir: str or Path or list) -> tuple[list[dict], list[str]]:
     """Run data anomaly checks and report files that failed to load.
     Returns (anomalies, failed_file_names)."""
     data_dirs = [Path(data_dir)] if not isinstance(data_dir, list) else [Path(d) for d in data_dir]

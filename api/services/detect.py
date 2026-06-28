@@ -78,7 +78,7 @@ async def run_detection_single(
         # never fires here — honor it before writing a record that would link to a
         # missing PDF.
         if write_db and table_name != DEFAULT_TABLE:
-            if findings.get("pdf_generated", True):
+            if findings.get("pdf_generated", True) or findings.get("pdf_skipped_low_risk", False):
                 _insert_to_custom_table(findings, table_name, input_dir)
             else:
                 log.warning("Skipping custom-table insert: PDF generation failed (DOI=%s)",
@@ -222,9 +222,11 @@ def _insert_to_custom_table(findings: dict, table_name: str, input_dir: str):
         "ref_risk_level": ref_risk["level"],
         # Use the shared helper so the URL matches the actual PDF filename
         # (_make_filename = "{doi}_{title30}.pdf"), not a doi-slug-only guess.
-        "report_url": _make_report_url(
-            findings,
-            chinese_reports_dir=str(OUTPUT_DIR / "chinese_reports" / sanitize_report_namespace(table_name)),
+        "report_url": (
+            "" if findings.get("pdf_skipped_low_risk") else _make_report_url(
+                findings,
+                chinese_reports_dir=str(OUTPUT_DIR / "chinese_reports" / sanitize_report_namespace(table_name)),
+            )
         )[:500],
         "generation_time": datetime.now(),
     }

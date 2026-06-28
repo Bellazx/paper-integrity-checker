@@ -50,6 +50,8 @@ def _task_report_namespace(task_id: str) -> str:
 def _chushen_report_url(findings: dict, namespace: str = REPORT_NAMESPACE) -> str:
     """First-pass detection PDF URL — matches the filename main.py writes via
     modules.chinese_report_generator._make_filename(doi, title)."""
+    if findings.get("pdf_skipped_low_risk"):
+        return ""
     from modules.chinese_report_generator import _make_filename
     paper = findings.get("paper", {})
     filename = _make_filename(paper.get("doi", "unknown"), paper.get("title", "unknown"))
@@ -137,9 +139,9 @@ async def _run_inner(
                 report_namespace=report_namespace,
             )
 
-            # main.py ran with --no-db, so its pdf_generated guard never fired here.
-            # A missing PDF means the chushen report URL would 404 — treat as error.
-            if not findings.get("pdf_generated", True):
+            # Low-risk papers intentionally skip PDF generation. High-risk papers
+            # still require a first-pass report because they proceed to review.
+            if not findings.get("pdf_generated", True) and not findings.get("pdf_skipped_low_risk", False):
                 raise RuntimeError("PDF generation failed; skipping detection_reports write")
 
             report_json = Path(paper.output_dir) / "report.json"

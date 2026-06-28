@@ -20,7 +20,7 @@ from pathlib import Path
 import pymssql
 
 
-BASE = Path("/opt/paper-integrity-checker")
+BASE = Path("/home/sjtu/paper-integrity-checker")
 AUDIT_DIR = BASE / "data" / "output" / "migration_audit"
 OUTPUT_DIR = BASE / "data" / "output"
 

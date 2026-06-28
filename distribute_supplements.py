@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 
 SRC_BASE = Path("/tmp/zhangwanbin_extract/zhangwanbin_papers")
-TARGET_BASE = Path("/opt/paper-integrity-checker/data/input/zhangwanbin")
+TARGET_BASE = Path("/home/sjtu/paper-integrity-checker/data/input/zhangwanbin")
 KB_BASE = Path("/opt/knowledge-base/data/paper-integrity/input/zhangwanbin")
 
 SRC_DATA_DIR = SRC_BASE / "source_data"

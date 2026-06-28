@@ -20,7 +20,7 @@ SJTU_KEYWORDS = [
     "上海交通", "交通大学", "SJTU",
 ]
 
-OUTPUT_DIR = Path("/opt/paper-integrity-checker/data/output")
+OUTPUT_DIR = Path("/home/sjtu/paper-integrity-checker/data/output")
 
 
 def find_report(doi: str) -> Path | None:

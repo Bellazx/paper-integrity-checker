@@ -11,7 +11,7 @@ from collections import defaultdict
 import openpyxl
 
 KB_DIR = Path("/opt/knowledge-base/data/paper-integrity/input/zhangwanbin")
-CHECKER_DIR = Path("/opt/paper-integrity-checker/data/input/zhangwanbin")
+CHECKER_DIR = Path("/home/sjtu/paper-integrity-checker/data/input/zhangwanbin")
 EXCEL_PATH = CHECKER_DIR / "学术数据-Excel-20260525 (1).xlsx"
 OUTPUT_MD = CHECKER_DIR / "论文统计.md"
 

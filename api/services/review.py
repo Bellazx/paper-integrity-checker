@@ -20,15 +20,15 @@ from modules.doi_utils import normalize_doi
 
 log = logging.getLogger(__name__)
 
-_SKILL_SCRIPTS = "/opt/.claude/skills/paper-batch-review/scripts"
+_SKILL_SCRIPTS = "/home/library/.claude/skills/paper-batch-review/scripts"
 
 MAX_RETRIES = 2
 STATE_VERSION = 2
 REVIEW_STATE_DIR = Path(os.environ.get(
     "REVIEW_STATE_DIR",
-    "/opt/paper-integrity-checker/data/output/review_v2/state",
+    "/home/sjtu/paper-integrity-checker/data/output/review_v2/state",
 ))
-EVIDENCE_TIMEOUT_SECONDS = int(os.environ.get("REVIEW_COVERAGE_TIMEOUT_SECONDS", "240"))
+EVIDENCE_TIMEOUT_SECONDS = int(os.environ.get("REVIEW_COVERAGE_TIMEOUT_SECONDS", "6000"))
 EVIDENCE_MEMORY_MB = int(os.environ.get("REVIEW_COVERAGE_MEMORY_MB", "2048"))
 LLM_EVIDENCE_MAX_BYTES = int(os.environ.get("REVIEW_LLM_EVIDENCE_MAX_BYTES", "60000"))
 MAX_PROMPT_FIELD_CHARS = int(os.environ.get("REVIEW_MAX_PROMPT_FIELD_CHARS", "4000"))
@@ -70,6 +70,8 @@ PROMPT_HEADER = """你是一位学术论文诚信检测复核专家。请对以�
 
 证据包(review_evidence.json)已由确定性脚本预先生成,包含:源数据各sheet列的预分类(自变量/统计输出/标准差/测量值)、确定性发现(重复列对/跨表复用/小数精度不一致)、必须逐一查看的主图清单、以及每条HIGH发现。其中 coverage_manifest.must_address 列出本次复核**必须逐项给出结论**的条目。请在文字中留下明确核查痕迹；覆盖率校验会记录遗漏提醒，但不会把单纯格式留痕不足直接等同于论文高风险。请先读证据包,再展开复核。
 
+{soft_explain_guardrails}
+
 若证据包包含 deterministic_findings.cross_sheet_reuse_groups, 复核覆盖单位是“分组”而不是原始 cross_sheet_reuse 的每一条成员。你必须查看每个分组的代表样例、最高风险样例和 requires_expansion=true 的分组；原始 cross_sheet_reuse 列表用于追溯, 不需要逐条写成 100+ 段。若一个分组经代表样例确认属于同一类合理复用或同一类完整性问题, 可以按分组给出结论并说明抽查/扩展依据。
 
 若已确认强确定性证据本身足以支持“建议高风险”（例如跨图/跨文件大量整列复用、小数精度跨sheet显著不一致、重复列对、恒等依赖或真实图像重复/拼接）, 可以围绕关键证据直接收敛为高风险结论；同时用简短句子说明其他维度是否有独立支持或暂无独立问题。不要为了完成低风险排除项而拖长高风险报告。
@@ -104,6 +106,54 @@ READER_FACING_TEXT_RULES = """
 
 使用编号列表时，序号必须连续（1,2,3...），不得跳号。输出前检查一遍编号连续性。
 """
+
+SOFT_EXPLAIN_GUARDRAILS = """
+## 软解释反证约束（来自 2026-06-23 s41467-023-42025-8 漏判教训，强制遵守）
+
+你必须采取**反证立场**复核：主动寻找支持高风险的证据，不能为低风险辩护。整篇 verdict 必须是"我尝试推翻低风险结论但失败"或"我确认存在高风险问题"，不能是"我替低风险找到了合理解释"。
+
+### 必须强制核查的硬性清单（漏一项即视为复核不到位）
+
+1. **逐图 n 核对（不可跳过）**：对论文主图 Fig.1 至 Fig.7+ **每一张** 都要明确回答：
+   - 论文图注/方法学声明的 n=几？生物重复数？技术重复数？
+   - 对应 Source Data（xlsx）该图实际有多少个数据点（行/列）？
+   - n 是否一致？若不一致，写出具体差异（例：论文声明 n=9 但 xlsx 仅 8 行）。
+   **任何一张主图未做此核对 → 复核不到位 → 不得判低风险。**
+
+2. **逐图 vs Source Data 比对（不可跳过）**：对每个主图亲自渲染 PDF 页面 → Read 查看图像 → 读取对应 xlsx sheet → 逐图比对柱高、峰位、曲线趋势、量级、坐标轴范围。**仅查看 annotation 标注图不算完成。**
+
+3. **跨图穷举对比（不可跳过）**：每个图 vs 每个图（含 Fig.X vs Fig.Y、Fig.X vs Supplementary Fig.Y），**剥除"共享对照/共享横轴/同一实验不同展示"等结构解释后**，实测 r/slope/intercept/r²。判定标准：r>0.99999 + slope≈1.0 + intercept≈0 即为合成痕迹。**真生物重复有随机变异，前 N 列完全相同+第 N+1 列整数偏移是合成数据"伪重复"模式。**
+
+4. **跨处理组重复值核验（不可跳过）**：对论文中声称"不同处理组"或"独立实验"的数据列，剥除"基线/对照"后，**直接 r/slope 测量非基线列对的等同性**。Rep1=Rep3 逐位全等+Rep2 正常+多组同时 = 合成痕迹，不接"高存活对照"软解释。
+
+5. **末位数字 / SD 规律性（不可跳过）**：必须运行 forensic_checks.py scan-digits。同一列 ≥60% 值末 4 位完全相同 = 合成数据"末位填充"。SD/SEM=0 但 raw 离散+Avrg 反算正确 = 选择性遗漏。Benford χ² 偏离需在测量值列（非聚类 ID / p 值 / 整数社区编号）上才有意义。
+
+6. **方法学/图注 vs 源数据 矛盾核查（不可跳过）**：论文 Methods/图注声明的实验设计（独立实验数、处理条件、剂量、时间点）必须与 xlsx sheet 标题/列名/数据组织完全一致。若声明"3 次独立重复"但 xlsx 中 9 个重复全是同一组测量 = 高风险。
+
+### 软解释黑名单（出现以下解释必须配硬约束数字反证，否则视为辩护不是核验）
+
+下列软解释**单独不能维持低风险**，必须配具体数字（n、r、slope、p 值、列名、列单位、跨文件 cross-check）才能作为反证成立：
+
+- "标准格式" / "MaxQuant 导出格式" / "质谱学定义特征" — 配 215 行中多少行满足？定义引用出处？**Razor+unique 与 Unique 在所有蛋白都相等的真实场景：仅当蛋白只有一个 unique peptide 时，**比例多少？**与"78% 蛋白"明显矛盾 → 软解释不成立。**
+- "实验惯例" / "归一化为 100% 是惯例" — 该图是否声明 n=9 但实际归一化列只有 8 个不同值？**n 永远等于数据点总数，n 不符 = 高风险。**
+- "测量分辨率有限" — 同类测量在 xlsx 其他列是否精度更高？同类数据中只有 1-2 个值重复 N 次是分辨率，**所有值都是同一小数末位是合成。**
+- "同一患者分入多组临床分类" — 患者 ID 维度去重后是否真有那么多独立测量？**n 仍等于独立患者数。**
+- "1/3 数学必然" / "标准存储格式" — 该列的列名/单位是否支持"被 3 整除"的解释？3 个生物重复×2/3 末位 = 0.6667 是计算结果，**3 个重复完全相同的末 4 位是合成。**
+- "Benford 偏离正常" — 该列是否是测量值列？非衍生量列偏离 Benford 是否仍可接受？**网络中心性/MD 轨迹/Benford 适用问题，测量值列偏离不接。**
+- "Intensity/iBAQ 大整数" — 其他同类测量列是否也是大整数？还是混合了浮点？**部分列大整数+部分列浮点是异质，部分列全是 10^10 大整数是格式特征。**
+
+### 反证失败 = 维持高风险
+
+任何软解释如未配硬约束反证 → 视为辩护不成立 → 该 HIGH finding 维持 → 整体 verdict 倾向高风险。
+
+### 真实案例 (s41467-023-42025-8, 2026-06-23)
+
+复核误判低风险，GPT 复核翻盘为高风险。漏查的硬证据：
+- **Fig. 2a n 不符**：论文声明 n=9 但 xlsx 实际只有 8 行数据
+- **Fig. 7b 跨处理组重复值**：不同处理组非基线列完全相同（r=1.0）
+漏判原因：用了 6 个软解释（"惯例"、"标准格式"、"分辨率"、"1/3 数学"、"大整数存储"、"Benford 偏离正常"），**未逐图核对 n，未做跨处理组非基线列对的 r/slope 测量**。
+"""
+
 
 PROMPT_FOOTER = READER_FACING_TEXT_RULES + """
 
@@ -217,6 +267,8 @@ LOWRISK_VERIFIER_PROMPT_TEMPLATE = """你是一位学术论文诚信检测低风
 - 原始数据目录: {input_dir}
 - 复核证据包(确定性预处理清单,务必先读): {evidence_path}
 
+{soft_explain_guardrails}
+
 ## 待核验低风险结论
 ```json
 {prior_result_json}
@@ -289,6 +341,8 @@ JUDGE_PROMPT_TEMPLATE = """你是学术论文诚信检测的综合复核专家�
 - 检测报告路径: {report_json_path}
 - 原始数据目录: {input_dir}
 - 复核证据包(确定性预处理清单): {evidence_path}
+
+{soft_explain_guardrails}
 {original_review_instruction}
 
 ## 复核结论一
@@ -385,6 +439,7 @@ def _build_prompt(
         report_json_path=report_json_path,
         input_dir=input_dir,
         evidence_path=ep.llm_summary or "(未生成,请直接审阅源数据)",
+        soft_explain_guardrails=SOFT_EXPLAIN_GUARDRAILS,
     )
     if ep.full and ep.full != ep.llm_summary:
         header += f"\n完整证据包路径(仅必要时追溯, 不要求逐条展开): {ep.full}\n"
@@ -416,6 +471,7 @@ def _build_lowrisk_verifier_prompt(
         prior_result_json=json.dumps(_compact_review_result_for_prompt(prior_result), ensure_ascii=False, indent=2),
         skill_rules=COMPACT_REVIEW_RULES,
         reader_facing_text_rules=READER_FACING_TEXT_RULES,
+        soft_explain_guardrails=SOFT_EXPLAIN_GUARDRAILS,
     )
 
 
@@ -452,6 +508,7 @@ def _build_judge_prompt(
         original_review_task=original_review_task,
         skill_rules="@@SKILL_RULES@@",
         reader_facing_text_rules=READER_FACING_TEXT_RULES,
+        soft_explain_guardrails=SOFT_EXPLAIN_GUARDRAILS,
         r1_result=r1.get("result", ""),
         r1_image=r1.get("image_review", ""),
         r1_data=r1.get("data_review", ""),
@@ -486,7 +543,7 @@ def _evidence_bundle_path(doi: str, report_json_path: str, input_dir: str, artif
     # New API/review calls pass artifacts_dir=output_dir/review_artifacts.
     # The legacy review_v2 root is kept only for old scripts/tests that do not
     # know a per-paper output_dir.
-    base = artifacts_dir or Path("/opt/paper-integrity-checker/data/output/review_v2")
+    base = artifacts_dir or Path("/home/sjtu/paper-integrity-checker/data/output/review_v2")
     return base / f"{doi.replace('/', '_')}_{digest}_evidence.json"
 
 
@@ -499,7 +556,7 @@ def _ensure_evidence_bundle(doi, report_json_path, input_dir, artifacts_dir: Pat
     artifacts = Path(artifacts_dir) if artifacts_dir else None
     if artifacts:
         artifacts.mkdir(parents=True, exist_ok=True)
-    legacy_dir = Path("/opt/paper-integrity-checker/data/output/review_v2")
+    legacy_dir = Path("/home/sjtu/paper-integrity-checker/data/output/review_v2")
     legacy_dir.mkdir(parents=True, exist_ok=True)
     out_path = _evidence_bundle_path(doi, report_json_path, input_dir, artifacts)
     if out_path.exists():
@@ -538,11 +595,18 @@ def _ensure_evidence_bundle(doi, report_json_path, input_dir, artifacts_dir: Pat
         ]
         if report_json_path:
             cmd.extend(["--report-json", report_json_path])
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.pathsep.join(
+            p for p in ("/home/sjtu/paper-integrity-checker", _SKILL_SCRIPTS, env.get("PYTHONPATH", ""))
+            if p
+        )
         completed = subprocess.run(
             cmd,
             text=True,
             capture_output=True,
             timeout=EVIDENCE_TIMEOUT_SECONDS,
+            cwd="/home/sjtu/paper-integrity-checker",
+            env=env,
             preexec_fn=limit_child_memory if os.name == "posix" else None,
         )
         if completed.returncode != 0:
@@ -1583,10 +1647,39 @@ def _validate_review_result(
         return validated
     except Exception as e:
         log.error("DOI=%s coverage validation errored: %s", doi, e)
-        out = dict(result)
+        return _fail_closed_on_evidence_missing(doi, result, f"coverage validation errored: {e}")
+
+
+def _fail_closed_on_evidence_missing(doi: str, result: dict, reason: str) -> dict:
+    """When the deterministic evidence bundle cannot be built, a low-risk verdict
+    is unsafe — we have nothing to cross-check the LLM's claim of "verified against
+    source data". 5 漏判 (s41467-023-42025-8 etc.) root cause: evidence timeout →
+    all stages rubber-stamp 低风险. Force-validate by promoting to high-risk with
+    a clear audit trail. Operators must rerun review with a working bundle to
+    down-grade.
+
+    High-risk results are kept (the LLM still flagged genuine concerns; we just
+    can't prove the negatives are real).
+    """
+    out = dict(result)
+    if out.get("result") == "高风险":
         out["_coverage_status"] = "unavailable"
-        out["_coverage_error"] = str(e)
+        out["_coverage_error"] = reason
+        out["_review_warning"] = (
+            f"复核证据包不可用（{reason}），无法独立确认低风险排除项。"
+            "高风险结论已保留，需补证据后重审才能降级。"
+        )
         return out
+    out["result"] = "高风险"
+    out["verdict"] = "建议高风险"
+    out["_coverage_status"] = "unavailable"
+    out["_coverage_error"] = reason
+    out["_review_warning"] = (
+        f"复核证据包不可用（{reason}）。fail-closed：低风险结论无法独立验证，"
+        "已自动升级为高风险，需补证据后重审才能降级。"
+    )
+    log.warning("DOI=%s fail-closed: low-risk -> 高风险 (%s)", doi, reason)
+    return out
 
 
 def _accept_single_review(doi: str, result: dict, validated: dict, evidence: dict) -> tuple[bool, str]:
@@ -1595,6 +1688,13 @@ def _accept_single_review(doi: str, result: dict, validated: dict, evidence: dic
     if not _valid_review_result(validated):
         return False, "首个复核结果无效"
     prior = _prior_review_result_for_doi(doi)
+    if (
+        os.environ.get("REVIEW_ACCEPT_FIRST_LOW", "0") == "1"
+        and result.get("result") == "低风险"
+        and validated.get("result") == "低风险"
+        and not validated.get("_coverage_error")
+    ):
+        return True, "运行配置允许首轮低风险直接闭环"
     if prior == "高风险":
         return False, "既有复核结论为高风险，需要多轮对抗核验后才能闭环"
     if result.get("result") == "高风险" and validated.get("result") == "高风险":
@@ -1678,23 +1778,27 @@ def _is_lowrisk_result(result: dict) -> bool:
 def _apply_coverage_validation(doi: str, report_json_path: str, input_dir: str, result: dict) -> dict:
     """Build the deterministic evidence bundle and validate the synthesis result against
     it. Coverage gaps are annotations; they do not change the review's risk
-    result by themselves."""
+    result by themselves.
+
+    2026-06-23 fail-closed fix: when the evidence bundle is unavailable, a low-risk
+    verdict is unsafe (5 漏判 root cause: evidence timeout → rubber-stamp 低风险).
+    We escalate to 高风险 with an audit warning so operators must rerun review with
+    a working bundle to down-grade. High-risk results are kept (LLM still flagged
+    genuine concerns).
+    """
     try:
         if _SKILL_SCRIPTS not in sys.path:
             sys.path.insert(0, _SKILL_SCRIPTS)
         import coverage_validator
         evidence_path = _ensure_evidence_bundle(doi, report_json_path, input_dir)
         if not evidence_path:
-            raise RuntimeError("evidence bundle unavailable")
+            return _fail_closed_on_evidence_missing(doi, result, "evidence bundle unavailable")
         bundle = _load_json_file(evidence_path)
         if not bundle:
-            raise RuntimeError("evidence bundle unreadable")
+            return _fail_closed_on_evidence_missing(doi, result, "evidence bundle unreadable")
     except Exception as e:
         log.error("DOI=%s evidence bundle build failed: %s", doi, e)
-        out = dict(result)
-        out["_coverage_status"] = "unavailable"
-        out["_coverage_error"] = str(e)
-        return out
+        return _fail_closed_on_evidence_missing(doi, result, f"evidence bundle build failed: {e}")
     try:
         validated, gaps = coverage_validator.validate(result, bundle)
         if gaps:
@@ -1702,10 +1806,7 @@ def _apply_coverage_validation(doi: str, report_json_path: str, input_dir: str, 
         return validated
     except Exception as e:
         log.error("DOI=%s coverage validation errored: %s", doi, e)
-        out = dict(result)
-        out["_coverage_status"] = "unavailable"
-        out["_coverage_error"] = str(e)
-        return out
+        return _fail_closed_on_evidence_missing(doi, result, f"coverage validation errored: {e}")
 
 
 def _preprocess_review_input_dir(input_dir: str) -> None:
@@ -2073,7 +2174,7 @@ async def _run_judge(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd="/opt/paper-integrity-checker",
+        cwd="/home/sjtu/paper-integrity-checker",
     )
 
     try:
@@ -2353,7 +2454,7 @@ async def _run_claude_prompt(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd="/opt/paper-integrity-checker",
+        cwd="/home/sjtu/paper-integrity-checker",
     )
 
     try:
@@ -2433,18 +2534,27 @@ def _find_claude_cli() -> str:
     env_path = os.environ.get("CLAUDE_CLI")
     if env_path:
         candidates.append(env_path)
+        p = Path(env_path)
+        if p.is_file() and os.access(p, os.X_OK):
+            return env_path
     candidates.extend([
+        "/home/library/.vscode-server/extensions/anthropic.claude-code-2.1.186-linux-arm64/resources/native-binary/claude",
         "/usr/local/bin/claude",
         "/usr/bin/claude",
     ])
-    candidates.extend(
-        str(p) for p in sorted(
-            Path("/root/.vscode-server/extensions").glob(
-                "anthropic.claude-code-*-linux-x64/resources/native-binary/claude"
-            ),
-            reverse=True,
-        )
-    )
+    for root in (
+        Path("/home/library/.vscode-server/extensions"),
+        Path("/root/.vscode-server/extensions"),
+    ):
+        try:
+            candidates.extend(
+                str(p) for p in sorted(
+                    root.glob("anthropic.claude-code-*/resources/native-binary/claude"),
+                    reverse=True,
+                )
+            )
+        except PermissionError:
+            log.debug("Skipping unreadable Claude extension dir: %s", root)
     for candidate in candidates:
         p = Path(candidate)
         if p.is_file() and os.access(p, os.X_OK):

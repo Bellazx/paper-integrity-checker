@@ -104,7 +104,7 @@ def run_single(input_dir: str, output_dir: str, skip_refs: bool = False, author_
 
     if no_db:
         log.info("Skipping DB insert (--no-db)")
-    elif not findings.get("pdf_generated", True):
+    elif not findings.get("pdf_generated", True) and not findings.get("pdf_skipped_low_risk", False):
         log.warning("Skipping DB insert: PDF generation failed")
     else:
         html_candidate = Path(input_dir) / "article.html"
@@ -197,7 +197,7 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
 
             if no_db:
                 pass
-            elif not findings.get("pdf_generated", True):
+            elif not findings.get("pdf_generated", True) and not findings.get("pdf_skipped_low_risk", False):
                 log.warning("Skipping DB insert for %s: PDF generation failed", paper_dir.name)
             else:
                 html_candidate = paper_dir / "article.html"
