@@ -20,6 +20,7 @@ class ExtractedImage:
     width: int
     height: int
     xref: int = 0
+    source_id: str = ""
 
 
 def _file_fingerprint(path: Path) -> tuple[int, str] | None:
@@ -31,7 +32,18 @@ def _file_fingerprint(path: Path) -> tuple[int, str] | None:
         return None
 
 
-def _extract_xref(pdf_path: str, page_num: int, img_index: int, xref: int, min_size: int, output_path: Path) -> ExtractedImage | None:
+def _pdf_source_id(pdf_path: str) -> str:
+    return str(Path(pdf_path).resolve())
+
+
+def _pdf_output_prefix(pdf_path: str) -> str:
+    source_id = _pdf_source_id(pdf_path)
+    stem = "".join(ch if ch.isalnum() else "_" for ch in Path(pdf_path).stem).strip("_")[:40]
+    digest = hashlib.sha256(source_id.encode("utf-8")).hexdigest()[:10]
+    return f"{stem}_{digest}" if stem else digest
+
+
+def _extract_xref(pdf_path: str, page_num: int, img_index: int, xref: int, min_size: int, output_path: Path, output_prefix: str) -> ExtractedImage | None:
     """Worker: extract one xref image. Opens its own fitz doc (thread-safe via per-thread context)."""
     try:
         doc = fitz.open(pdf_path)
@@ -50,7 +62,7 @@ def _extract_xref(pdf_path: str, page_num: int, img_index: int, xref: int, min_s
             elif pix.n == 1:
                 pix = fitz.Pixmap(fitz.csRGB, pix)
 
-            fname = f"page_{page_num + 1:03d}_img_{img_index:03d}.png"
+            fname = f"{output_prefix}_page_{page_num + 1:03d}_img_{img_index:03d}.png"
             fpath = str(output_path / fname)
             pix.save(fpath)
 
@@ -66,6 +78,7 @@ def _extract_xref(pdf_path: str, page_num: int, img_index: int, xref: int, min_s
                 width=pix.width,
                 height=pix.height,
                 xref=xref,
+                source_id=_pdf_source_id(pdf_path),
             )
         finally:
             doc.close()
@@ -85,6 +98,7 @@ def extract_images(pdf_path: str, output_dir: str, min_size: int = 200, max_work
     """
     output_path = Path(output_dir) / "images"
     output_path.mkdir(parents=True, exist_ok=True)
+    output_prefix = _pdf_output_prefix(pdf_path)
 
     # Pass 1: collect (page_num, img_index, xref) tuples sequentially
     # 2026-06-24: 跳过 JPXDecode (JPEG2000) — PyMuPDF 1.26 在 Pixmap(doc, xref) 时 segfault
@@ -119,7 +133,7 @@ def extract_images(pdf_path: str, output_dir: str, min_size: int = 200, max_work
     if len(xref_jobs) < 8:
         images: list[ExtractedImage] = []
         for page_num, img_index, xref in xref_jobs:
-            r = _extract_xref(pdf_path, page_num, img_index, xref, min_size, output_path)
+            r = _extract_xref(pdf_path, page_num, img_index, xref, min_size, output_path, output_prefix)
             if r is not None:
                 images.append(r)
         log.info("Extracted %d images from %s", len(images), pdf_path)
@@ -129,7 +143,7 @@ def extract_images(pdf_path: str, output_dir: str, min_size: int = 200, max_work
     images = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
-            pool.submit(_extract_xref, pdf_path, p, i, x, min_size, output_path): (p, i, x)
+            pool.submit(_extract_xref, pdf_path, p, i, x, min_size, output_path, output_prefix): (p, i, x)
             for p, i, x in xref_jobs
         }
         for fut in as_completed(futures):
@@ -218,6 +232,7 @@ def extract_standalone_images(paper_dir: str, output_dir: str, min_size: int = 2
                 array=arr,
                 width=arr.shape[1],
                 height=arr.shape[0],
+                source_id=str(f.resolve()),
             ))
             if len(images) >= max_images:
                 log.info("Reached standalone image limit (%d), skipping remaining", max_images)

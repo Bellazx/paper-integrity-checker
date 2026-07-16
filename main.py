@@ -144,7 +144,7 @@ def _discover_papers(input_root: Path) -> list[Path]:
     return paper_dirs
 
 
-def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_workers: int = 4, author_type: str = "", force: bool = False, no_db: bool = False, report_namespace: str = "", table_root: str = "", table_name: str = ""):
+def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_workers: int = 4, author_type: str = "", force: bool = False, no_db: bool = False, report_namespace: str = "", table_root: str = "", table_name: str = "", resume_existing_output: bool = False, summary_tag: str = ""):
     input_root = Path(input_root)
     output_root = Path(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -172,6 +172,13 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
         skipped = before - len(paper_dirs)
         if skipped:
             log.info("Skipped %d papers already in DB, %d remaining", skipped, len(paper_dirs))
+
+    if resume_existing_output:
+        before = len(paper_dirs)
+        paper_dirs = [d for d in paper_dirs if not (paper_output_root / d.name / "report.json").exists()]
+        skipped = before - len(paper_dirs)
+        if skipped:
+            log.info("Skipped %d papers with existing report.json, %d remaining", skipped, len(paper_dirs))
 
     if not paper_dirs:
         log.info("All papers already processed. Nothing to do.")
@@ -257,10 +264,15 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
         "total_time_seconds": round(total_time, 1),
         "avg_time_per_paper": round(total_time / len(paper_dirs), 1) if paper_dirs else 0,
         "workers": max_workers,
+        "summary_tag": summary_tag,
         "results": batch_results,
     }
 
-    summary_path = output_root / "batch_summary.json"
+    safe_summary_tag = re.sub(r"[^A-Za-z0-9_.-]+", "_", summary_tag).strip("._-")[:120]
+    summary_name = f"batch_summary_{safe_summary_tag}.json" if safe_summary_tag else "batch_summary.json"
+    failed_name = f"failed_papers_{safe_summary_tag}.json" if safe_summary_tag else "failed_papers.json"
+
+    summary_path = output_root / summary_name
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
@@ -272,7 +284,7 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
 
     if failed > 0:
         failed_items = [r for r in batch_results if r["status"] == "error"]
-        failed_path = output_root / "failed_papers.json"
+        failed_path = output_root / failed_name
         with open(failed_path, "w", encoding="utf-8") as f:
             json.dump(failed_items, f, ensure_ascii=False, indent=2)
 
@@ -307,6 +319,10 @@ def main():
     parser.add_argument("--report-namespace", default="", help="Subdirectory under chinese_reports for generated PDFs")
     parser.add_argument("--no-db", action="store_true", help="Skip database insertion")
     parser.add_argument("--force", action="store_true", help="Force re-analysis even if paper already in DB")
+    parser.add_argument("--resume-existing-output", action="store_true",
+                        help="In batch mode, skip paper directories that already have report.json in the output tree")
+    parser.add_argument("--summary-tag", default="",
+                        help="Suffix batch summary/failed files to avoid collisions when running sharded batches")
     parser.add_argument("--table-name", default="",
                         help="Namespace ALL outputs under data/output/<table-name>/ (init/<slug>/, chinese_reports/, review_v2/). "
                              "When set, per-paper dir is <table>/init/<doi_slug>/. When unset, legacy flat layout is used.")
@@ -345,7 +361,8 @@ def main():
         run_batch(args.batch, effective_output_root, args.skip_refs, max_workers=args.workers,
                   author_type=args.author_type, force=args.force, no_db=args.no_db,
                   report_namespace=args.report_namespace, table_root=table_root,
-                  table_name=args.table_name)
+                  table_name=args.table_name, resume_existing_output=args.resume_existing_output,
+                  summary_tag=args.summary_tag)
 
 
 if __name__ == "__main__":

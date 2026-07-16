@@ -23,7 +23,7 @@ log = logging.getLogger("screen-20250526")
 BASE = Path(__file__).resolve().parent
 INPUT_BASE = BASE / "data" / "input" / "20250526"
 OUTPUT_BASE = BASE / "data" / "output"
-REPORT_BASE_URL = "http://10.119.9.99/chinese_reports"
+REPORT_BASE_URL = "http://202.120.57.100/chinese_reports"
 
 DB_CONFIG = {
     "server": "10.119.5.44", "user": "yujing",

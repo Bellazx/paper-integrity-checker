@@ -254,7 +254,7 @@ def process_one(doi: str) -> dict:
     data_risk = _compute_dimension_risk(capped_data)
     ref_risk = _compute_dimension_risk(findings.get("reference_issues", []))
 
-    report_url = f"http://10.119.9.99/chinese_reports/{_make_filename(doi, title)}"
+    report_url = f"http://202.120.57.100/chinese_reports/{_make_filename(doi, title)}"
 
     db_row = {
         "doi": doi,

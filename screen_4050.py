@@ -9,7 +9,7 @@ artifact for this run is namespaced by the target table name:
 
     report.json + images : data/output/yujing_4050/<doi_dir>/
     served Chinese PDF   : data/output/chinese_reports/yujing_4050/<doi>_title.pdf
-    DB report_url        : http://10.119.9.99/chinese_reports/yujing_4050/<file>
+    DB report_url        : http://202.120.57.100/chinese_reports/yujing_4050/<file>
 
 nginx already serves data/output/chinese_reports/ via a trailing-slash `alias`, so the
 yujing_4050/ subdir resolves automatically — no nginx change needed.
@@ -56,7 +56,7 @@ INPUT_BASE = BASE / "data" / "input" / "4050-matched"
 # Per-table isolation: artifacts namespaced under the table name.
 OUTPUT_BASE = BASE / "data" / "output" / TABLE
 CN_DIR = BASE / "data" / "output" / "chinese_reports" / TABLE
-REPORT_BASE_URL = f"http://10.119.9.99/chinese_reports/{TABLE}"
+REPORT_BASE_URL = f"http://202.120.57.100/chinese_reports/{TABLE}"
 RESULTS_PATH = BASE / "data" / "output" / f"{TABLE}_screening_results.json"
 
 DB_CONFIG = {

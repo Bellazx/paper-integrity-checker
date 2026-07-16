@@ -762,12 +762,13 @@ def preprocess_paper_dir(
 
 
 # Review subagents (and the LLM-driven review pipeline) drop PDF-to-PNG render
-# artifacts at the project root as `.tmp_*/.render_*/.batch_*_render` directories
-# and `.tmp_*.png`/`.render_*.png` loose files. These are intermediate products
-# that are not part of the deliverable — the final images live under
-# `data/output/yujing_quanliang/<doi>/images/` and the source PDFs stay in
+# artifacts at the project root as `.tmp_*/.render_*/.batch_*_render` directories,
+# `.tmp_*.png`/`.render_*.png`, and manual-review-style loose PNGs such as
+# `page_*.png`, `audit_*.png`, `fig*.png`, and `ann_*.png`. These are
+# intermediate products that are not part of the deliverable — the final images
+# live under `data/output/.../<doi>/images/` and the source PDFs stay in
 # `data/input/<date>/<doi>/`. In practice subagents never clean them up, and
-# the project root accumulates ~900+ of them (≈2.5 GB) per overnight run.
+# the project root accumulates hundreds of them per overnight run.
 #
 # The function below is the project's own sweeper. It is intentionally narrow
 # (only the named patterns at depth 1) and only removes items older than
@@ -776,6 +777,27 @@ def preprocess_paper_dir(
 # (see `batch_rereview.py`, `watch_4050_reviews.py`).
 
 _REVIEW_ARTIFACT_PATTERNS = (".tmp_*", ".render_*", ".batch_*_render")
+_REVIEW_LOOSE_PNG_PATTERNS = (
+    ".tmp_*.png",
+    ".render_*.png",
+    "ann_*.png",
+    "audit*.png",
+    "aud_*.png",
+    "cm_*.png",
+    "docx_*.png",
+    "fig*.png",
+    "gr2_*.png",
+    "p[0-9]_*.png",
+    "page*.png",
+    "pair_*.png",
+    "paper_p*.png",
+    "peer_p*.png",
+    "r2_*.png",
+    "round8_*.png",
+    "splice_*.png",
+    "supp_p*.png",
+    "table*.png",
+)
 
 
 def cleanup_review_artifacts(
@@ -786,10 +808,11 @@ def cleanup_review_artifacts(
     """Remove stale review-render artifacts from the project root.
 
     Scans the top level of `base_dir` (defaults to the project root) for
-    `.tmp_*`, `.render_*`, and `.batch_*_render` entries. Anything older
-    than `min_age_seconds` is removed (directories are rmtree'd, files are
-    unlinked). Items newer than the cutoff are left alone so a review that
-    is still writing its render dir does not race with the sweeper.
+    known review artifact directories plus narrowly named loose PNG render
+    files. Anything older than `min_age_seconds` is removed (directories are
+    rmtree'd, files are unlinked). Items newer than the cutoff are left alone
+    so a review that is still writing its render dir does not race with the
+    sweeper.
 
     Args:
         base_dir: Project root to scan. Defaults to this file's repo root.
@@ -805,8 +828,12 @@ def cleanup_review_artifacts(
     dirs_removed = 0
     files_removed = 0
 
-    for pattern in _REVIEW_ARTIFACT_PATTERNS:
+    seen: set[Path] = set()
+    for pattern in _REVIEW_ARTIFACT_PATTERNS + _REVIEW_LOOSE_PNG_PATTERNS:
         for entry in base.glob(pattern):
+            if entry in seen:
+                continue
+            seen.add(entry)
             try:
                 mtime = entry.stat().st_mtime
             except OSError:

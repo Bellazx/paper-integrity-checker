@@ -610,25 +610,36 @@ def check_passage_offset_pattern(
 
     last_col_idx = num_df.shape[1] - 1
     last_col_name = str(num_df.columns[last_col_idx])
-    rows = num_df.to_numpy()
+    rows = num_df.to_numpy(dtype=float)
     pairs: list[tuple[int, int, float]] = []
 
-    for i in range(len(rows)):
-        for j in range(i + 1, len(rows)):
-            a, b = rows[i], rows[j]
-            first_a, first_b = a[:K], b[:K]
-            if (np.any(~np.isfinite(first_a)) or np.any(~np.isfinite(first_b))
-                    or not np.isfinite(a[last_col_idx]) or not np.isfinite(b[last_col_idx])):
-                continue
-            if not np.allclose(first_a, first_b, atol=1e-12, rtol=0):
-                continue
-            offset = float(b[last_col_idx] - a[last_col_idx])
-            offset_abs = abs(offset)
-            if offset_abs < 1e-12:
-                pairs.append((i, j, 0.0))  # exact match — Passage 5↔17 style
-            elif offset_abs >= 0.5 and abs(offset - round(offset, 1)) < 1e-9:
-                # half-step (0.5/1.0/1.5/2.0/...) — human-edited offset
-                pairs.append((i, j, offset))
+    # Only rows with matching leading values can satisfy the pattern. Grouping
+    # candidates first avoids an O(n^2) full-table scan on large measurement
+    # sheets while retaining the final allclose check below.
+    candidate_groups: dict[tuple[float, ...], list[int]] = {}
+    for i, row in enumerate(rows):
+        first = row[:K]
+        if np.any(~np.isfinite(first)) or not np.isfinite(row[last_col_idx]):
+            continue
+        key = tuple(np.round(first, decimals=12))
+        candidate_groups.setdefault(key, []).append(i)
+
+    for indices in candidate_groups.values():
+        if len(indices) < 2:
+            continue
+        for pos, i in enumerate(indices):
+            for j in indices[pos + 1:]:
+                a, b = rows[i], rows[j]
+                first_a, first_b = a[:K], b[:K]
+                if not np.allclose(first_a, first_b, atol=1e-12, rtol=0):
+                    continue
+                offset = float(b[last_col_idx] - a[last_col_idx])
+                offset_abs = abs(offset)
+                if offset_abs < 1e-12:
+                    pairs.append((i, j, 0.0))  # exact match — Passage 5↔17 style
+                elif offset_abs >= 0.5 and abs(offset - round(offset, 1)) < 1e-9:
+                    # half-step (0.5/1.0/1.5/2.0/...) — human-edited offset
+                    pairs.append((i, j, offset))
 
     if len(pairs) < min_pairs:
         return results

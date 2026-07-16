@@ -31,7 +31,7 @@ DB_CONFIG = {
 }
 TABLE = "yujing_scholar"
 SCHOLAR = "yanpeng"
-REPORT_BASE_URL = "http://10.119.9.99/chinese_reports"
+REPORT_BASE_URL = "http://202.120.57.100/chinese_reports"
 
 
 def get_paper_dirs():

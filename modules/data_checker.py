@@ -1,9 +1,15 @@
 import logging
 import hashlib
+import math
 import re
 import time
 from collections import defaultdict
 from pathlib import Path
+
+try:
+    import gemmi
+except ImportError:  # Keep non-CIF screening available until the optional dependency is installed.
+    gemmi = None
 
 import numpy as np
 import pandas as pd
@@ -29,14 +35,42 @@ log = logging.getLogger(__name__)
 
 MAX_LOAD_RETRIES = 3
 TABLE_DATA_EXTENSIONS = {".xlsx", ".xls", ".csv", ".docx", ".fcs", ".sav"}
-STRUCTURE_DATA_EXTENSIONS = {".pdb"}
+STRUCTURE_DATA_EXTENSIONS = {".pdb", ".cif"}
 DATA_FILE_EXTENSIONS = TABLE_DATA_EXTENSIONS | STRUCTURE_DATA_EXTENSIONS
+MAX_SUBTABLES_PER_WORKBOOK = 40
+MAX_SUBTABLES_FOR_FULL_SCAN = 500
+_SHEET_SCAN_SKIP_WORKBOOKS: set[str] = set()
+_CROSS_SHEET_SKIP_WORKBOOKS: set[str] = set()
 
 # Crawler-generated metadata files (resource manifests / figure download logs) that live
 # alongside the paper but are NOT experimental data. Analyzing them produces meaningless
 # anomalies (e.g. decimal_uniformity on a 'figure_no' column) and masks real source-data
 # absence, so they must be skipped during data-anomaly detection.
 _METADATA_FILENAMES = {"resources.csv", "figures.csv", "manifest.csv", "resources.tsv"}
+
+
+def _cap_workbook_subtables(all_tables: dict[str, pd.DataFrame], workbook_name: str) -> dict[str, pd.DataFrame]:
+    """Bound per-workbook sub-table scans for pathological split outputs.
+
+    Some source-data workbooks contain thousands of tiny gene/feature blocks. Running
+    every per-sheet statistical check over all of them can dominate screening for
+    hours while adding little practical coverage beyond a broad sample. Keep a stable
+    prefix sample so screening finishes and the PDF still records available evidence.
+    """
+    if len(all_tables) <= MAX_SUBTABLES_FOR_FULL_SCAN:
+        return all_tables
+    _SHEET_SCAN_SKIP_WORKBOOKS.add(workbook_name)
+    _CROSS_SHEET_SKIP_WORKBOOKS.add(workbook_name)
+    capped_items = list(all_tables.items())[:MAX_SUBTABLES_PER_WORKBOOK]
+    skipped = len(all_tables) - len(capped_items)
+    log.warning(
+        "Workbook %s has %d sub-tables; scanning first %d and skipping %d to avoid pathological runtime",
+        workbook_name,
+        len(all_tables),
+        len(capped_items),
+        skipped,
+    )
+    return dict(capped_items)
 
 
 def is_metadata_data_file(path: str or Path) -> bool:
@@ -177,6 +211,85 @@ def _row_numeric_ratio(row) -> float:
     return num / len(vals)
 
 
+def _looks_like_feature_matrix_raw(df: pd.DataFrame) -> bool:
+    """True for gene/transcript x stage score matrices, not stacked sub-tables."""
+    if df.shape[0] < 200 or df.shape[1] < 4:
+        return False
+    header = df.iloc[0]
+    first_header = header.iloc[0] if len(header) else None
+    if pd.notna(first_header) and str(first_header).strip():
+        return False
+    named_value_cols = sum(
+        1 for v in header.iloc[1:]
+        if isinstance(v, str) and v.strip()
+    )
+    if named_value_cols < 3:
+        return False
+
+    sample = df.iloc[1:min(len(df), 501)]
+    if sample.empty:
+        return False
+    id_col = sample.iloc[:, 0]
+    id_like = sum(
+        1 for v in id_col
+        if isinstance(v, str) and v.strip() and not pd.notna(pd.to_numeric(v, errors="coerce"))
+    )
+    id_ratio = id_like / max(len(id_col.dropna()), 1)
+    value_block = sample.iloc[:, 1:]
+    flat_values = pd.Series(value_block.to_numpy().ravel()).dropna()
+    flat_values = flat_values[flat_values.astype(str).str.strip() != ""]
+    if flat_values.empty:
+        return False
+    numeric_ratio = pd.to_numeric(flat_values, errors="coerce").notna().mean()
+    return id_ratio >= 0.8 and numeric_ratio >= 0.8
+
+
+def _feature_matrix_from_raw(df: pd.DataFrame) -> pd.DataFrame:
+    headers = df.iloc[0].tolist()
+    columns = ["feature_id"]
+    seen = {"feature_id": 0}
+    for j, h in enumerate(headers[1:], start=1):
+        name = str(h).strip() if pd.notna(h) and str(h).strip() else f"value_{j}"
+        if name in seen:
+            seen[name] += 1
+            name = f"{name}_{seen[name]}"
+        else:
+            seen[name] = 0
+        columns.append(name)
+
+    out = pd.DataFrame(df.iloc[1:].values, columns=columns)
+    out = out.dropna(how="all")
+    out = out[out["feature_id"].notna()]
+    for col in out.columns[1:]:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    return out.reset_index(drop=True)
+
+
+def _looks_like_feature_matrix(df: pd.DataFrame) -> bool:
+    if df.shape[0] < 200 or df.shape[1] < 4:
+        return False
+    first_col = str(df.columns[0]).lower()
+    if first_col not in {"feature_id", "gene", "gene_id", "transcript", "transcript_id"}:
+        id_series = df.iloc[:min(len(df), 500), 0]
+        id_like = sum(1 for v in id_series if isinstance(v, str) and v.strip())
+        if id_like / max(len(id_series.dropna()), 1) < 0.8:
+            return False
+    numeric_cols = df.iloc[:, 1:].select_dtypes(include=[np.number]).columns
+    return len(numeric_cols) >= 3
+
+
+def _looks_like_sequence_alignment_table(df: pd.DataFrame) -> bool:
+    """True for computational Query/Target alignment output tables."""
+    if df.shape[1] < 6:
+        return False
+    cols = {str(c).strip().lower().replace(" ", "_") for c in df.columns}
+    has_query_target = {"query", "target"} <= cols
+    has_lengths = bool({"length_query", "length_target"} & cols)
+    has_scores = bool({"dg", "_dg", "ndg", "_ndg"} & cols)
+    has_positions = any("start_position" in c or "end_position" in c for c in cols)
+    return has_query_target and has_lengths and has_scores and has_positions
+
+
 def _find_header_row(df: pd.DataFrame, start_row: int, end_row: int) -> int:
     """Locate the REAL header row of a sub-table.
 
@@ -197,6 +310,9 @@ def _find_header_row(df: pd.DataFrame, start_row: int, end_row: int) -> int:
 
 def _split_sub_tables(df: pd.DataFrame, filename: str, sheet_name: str) -> dict[str, pd.DataFrame]:
     """Split a sheet with multiple sub-tables (e.g., Fig.3b, Fig.3c) into separate DataFrames."""
+    if _looks_like_feature_matrix_raw(df):
+        return {sheet_name: _feature_matrix_from_raw(df)}
+
     label_rows = []
     for i in range(len(df)):
         first_val = df.iloc[i, 0]
@@ -324,6 +440,7 @@ def _load_data_files(
                     for sheet_name, df in raw.items():
                         sub_tables = _split_sub_tables(df, name, sheet_name)
                         all_tables.update(sub_tables)
+                    all_tables = _cap_workbook_subtables(all_tables, name)
                     result[name] = all_tables
                     log.info("Loaded %s: %d sub-tables", name, len(all_tables))
                     loaded = True
@@ -418,6 +535,7 @@ def _load_data_files(
                                 for sheet_name, df in raw.items():
                                     sub_tables = _split_sub_tables(df, extracted.name, sheet_name)
                                     all_tables.update(sub_tables)
+                                all_tables = _cap_workbook_subtables(all_tables, f"{f.name}/{extracted.name}")
                                 result[f"{f.name}/{extracted.name}"] = all_tables
                                 log.info("Loaded %s/%s: %d sub-tables", f.name, extracted.name, len(all_tables))
                             except Exception as e:
@@ -711,7 +829,7 @@ def _check_pdb_files(data_dir: str or Path or list) -> tuple[list[dict], list[st
             candidates.extend(root.rglob("*"))
 
     for f in sorted(candidates):
-        if not f.is_file() or f.suffix.lower() not in STRUCTURE_DATA_EXTENSIONS:
+        if not f.is_file() or f.suffix.lower() != ".pdb":
             continue
         try:
             fp = (f.stat().st_size, hashlib.sha256(f.read_bytes()).hexdigest())
@@ -731,6 +849,606 @@ def _check_pdb_files(data_dir: str or Path or list) -> tuple[list[dict], list[st
             failed_files.append(f.name)
         else:
             log.info("Checked PDB %s", f.name)
+
+    return anomalies, failed_files, inspected
+
+
+_CIF_CELL_TAGS = (
+    "_cell_length_a", "_cell_length_b", "_cell_length_c",
+    "_cell_angle_alpha", "_cell_angle_beta", "_cell_angle_gamma",
+)
+_CIF_SPACEGROUP_TAGS = (
+    "_space_group_name_H-M_alt",
+    "_space_group.name_H-M_alt",
+    "_symmetry_space_group_name_H-M",
+    "_symmetry_space_group_H-M",
+    "_space_group_IT_number",
+    "_symmetry_Int_Tables_number",
+)
+_CIF_FORMULA_TAGS = ("_chemical_formula_sum", "_chemical_formula_moiety")
+
+
+def _cif_text(block, *tags: str) -> str:
+    if gemmi is None:
+        return ""
+    for tag in tags:
+        try:
+            raw = block.find_value(tag)
+            if raw and not gemmi.cif.is_null(raw):
+                return gemmi.cif.as_string(raw).strip()
+        except (KeyError, RuntimeError, ValueError):
+            continue
+    return ""
+
+
+def _cif_number(block, *tags: str) -> float | None:
+    if gemmi is None:
+        return None
+    for tag in tags:
+        try:
+            raw = block.find_value(tag)
+            if not raw or gemmi.cif.is_null(raw):
+                continue
+            value = float(gemmi.cif.as_number(raw))
+            if math.isfinite(value):
+                return value
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            continue
+    return None
+
+
+def _cif_formula_weight(formula: str) -> float | None:
+    """Calculate a simple CIF formula weight; return None for ambiguous expressions."""
+    if gemmi is None or not formula:
+        return None
+    compact = re.sub(r"\s+", "", formula)
+    if not compact or any(ch in compact for ch in "()[]{}+-/,;·"):
+        return None
+    tokens = list(re.finditer(r"([A-Z][a-z]?)(\d*(?:\.\d+)?)", compact))
+    if not tokens or "".join(m.group(0) for m in tokens) != compact:
+        return None
+    total = 0.0
+    for match in tokens:
+        try:
+            element = gemmi.Element(match.group(1))
+        except ValueError:
+            return None
+        if element.atomic_number <= 0:
+            return None
+        count = float(match.group(2)) if match.group(2) else 1.0
+        total += element.weight * count
+    return total if total > 0 else None
+
+
+def _cif_location(path: Path, block_name: str) -> str:
+    return f"{path.name} / data_{block_name or '?'}"
+
+
+def _cif_has_structural_content(block) -> bool:
+    tags = _CIF_CELL_TAGS + _CIF_SPACEGROUP_TAGS + (
+        "_atom_site_label", "_atom_site_fract_x", "_atom_site.Cartn_x",
+        "_refln_index_h", "_diffrn_refln_index_h",
+    )
+    return any(_cif_text(block, tag) for tag in tags)
+
+
+def _cif_loop_values(block, label_tags: tuple[str, ...]) -> tuple[list[str], list[list[str]]]:
+    """Return one CIF loop as (tags, rows), locating it by any candidate label tag."""
+    if gemmi is None:
+        return [], []
+    column = None
+    for tag in label_tags:
+        try:
+            candidate = block.find_loop(tag)
+        except (KeyError, RuntimeError, ValueError):
+            continue
+        if candidate:
+            column = candidate
+            break
+    if column is None:
+        return [], []
+    loop = column.get_loop()
+    tags = [str(tag) for tag in loop.tags]
+    width = int(loop.width())
+    rows = []
+    for offset in range(0, len(loop.values), width):
+        rows.append([str(value) for value in loop.values[offset:offset + width]])
+    return tags, rows
+
+
+def _cif_row_value(row: dict[str, str], *tags: str) -> str:
+    for tag in tags:
+        value = row.get(tag.lower(), "")
+        if value and value not in {".", "?"}:
+            return value
+    return ""
+
+
+def _cif_raw_number(value: str, default: float | None = None) -> float | None:
+    if gemmi is None or not value or value in {".", "?"}:
+        return default
+    try:
+        number = float(gemmi.cif.as_number(value))
+    except (RuntimeError, TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _make_small_structure_compat(block):
+    """Build a SmallStructure from common CIF/mmCIF atom loops when strict conversion fails."""
+    cell_values = [
+        _cif_number(block, standard, mmcif)
+        for standard, mmcif in (
+            ("_cell_length_a", "_cell.length_a"),
+            ("_cell_length_b", "_cell.length_b"),
+            ("_cell_length_c", "_cell.length_c"),
+            ("_cell_angle_alpha", "_cell.angle_alpha"),
+            ("_cell_angle_beta", "_cell.angle_beta"),
+            ("_cell_angle_gamma", "_cell.angle_gamma"),
+        )
+    ]
+    structure = gemmi.SmallStructure()
+    structure.name = block.name
+    if all(value is not None for value in cell_values):
+        structure.cell = gemmi.UnitCell(*cell_values)
+
+    spacegroup = _cif_text(block, *_CIF_SPACEGROUP_TAGS)
+    if spacegroup:
+        structure.spacegroup_hm = spacegroup
+        try:
+            found = gemmi.find_spacegroup_by_name(spacegroup)
+            if found is not None:
+                structure.spacegroup = found
+        except (RuntimeError, ValueError):
+            pass
+
+    tags, raw_rows = _cif_loop_values(
+        block,
+        ("_atom_site_label", "_atom_site.label_atom_id", "_atom_site.auth_atom_id"),
+    )
+    if not raw_rows:
+        return structure
+    lower_tags = [tag.lower() for tag in tags]
+    parsed_sites = 0
+    for index, values in enumerate(raw_rows, 1):
+        row = dict(zip(lower_tags, values))
+        label = _cif_row_value(
+            row, "_atom_site_label", "_atom_site.label_atom_id", "_atom_site.auth_atom_id",
+        ) or f"site_{index}"
+        symbol = _cif_row_value(row, "_atom_site_type_symbol", "_atom_site.type_symbol")
+        if not symbol:
+            match = re.match(r"([A-Za-z]{1,2})", label)
+            symbol = match.group(1).title() if match else "X"
+
+        fract_values = [
+            _cif_raw_number(_cif_row_value(row, standard, mmcif))
+            for standard, mmcif in (
+                ("_atom_site_fract_x", "_atom_site.fract_x"),
+                ("_atom_site_fract_y", "_atom_site.fract_y"),
+                ("_atom_site_fract_z", "_atom_site.fract_z"),
+            )
+        ]
+        if all(value is not None for value in fract_values):
+            fractional = gemmi.Fractional(*fract_values)
+        else:
+            cartesian_values = [
+                _cif_raw_number(_cif_row_value(row, tag))
+                for tag in ("_atom_site.cartn_x", "_atom_site.cartn_y", "_atom_site.cartn_z")
+            ]
+            if not all(value is not None for value in cartesian_values) or not structure.cell.is_crystal():
+                continue
+            fractional = structure.cell.fractionalize(gemmi.Position(*cartesian_values))
+
+        site = gemmi.SmallStructure.Site()
+        site.label = label
+        site.type_symbol = symbol
+        try:
+            site.element = gemmi.Element(symbol)
+        except ValueError:
+            site.element = gemmi.Element("X")
+        site.fract = fractional
+        site.occ = _cif_raw_number(
+            _cif_row_value(row, "_atom_site_occupancy", "_atom_site.occupancy"),
+            1.0,
+        )
+        u_iso = _cif_raw_number(
+            _cif_row_value(row, "_atom_site_u_iso_or_equiv", "_atom_site.u_iso_or_equiv")
+        )
+        if u_iso is None:
+            b_iso = _cif_raw_number(
+                _cif_row_value(row, "_atom_site_b_iso_or_equiv", "_atom_site.b_iso_or_equiv")
+            )
+            u_iso = b_iso / (8 * math.pi ** 2) if b_iso is not None else 0.0
+        site.u_iso = u_iso
+        structure.add_site(site)
+        parsed_sites += 1
+
+    if raw_rows and parsed_sites == 0:
+        raise ValueError("atom-site loop exists but no coordinates could be parsed")
+    return structure
+
+
+def _analyze_cif_block(block, cif_path: Path) -> tuple[list[dict], bool]:
+    anomalies: list[dict] = []
+    location = _cif_location(cif_path, block.name)
+    try:
+        structure = gemmi.make_small_structure_from_block(block)
+    except Exception as strict_error:
+        try:
+            structure = _make_small_structure_compat(block)
+        except Exception as compat_error:
+            return [{
+                "test": "cif_structure_parse_error",
+                "location": location,
+                "severity": "high",
+                "details": {
+                    "strict_error": str(strict_error)[:300],
+                    "compatibility_error": str(compat_error)[:300],
+                },
+                "description": "CIF data block could not be converted into a crystal structure.",
+            }], False
+
+    sites = list(structure.sites)
+    if not sites:
+        anomalies.append({
+            "test": "cif_no_atom_sites",
+            "location": location,
+            "severity": "medium",
+            "details": {"data_block": block.name},
+            "description": "CIF data block contains crystallographic metadata but no readable atom sites.",
+        })
+        return anomalies, True
+
+    cell = structure.cell
+    cell_details = {
+        "a": round(float(cell.a), 6),
+        "b": round(float(cell.b), 6),
+        "c": round(float(cell.c), 6),
+        "alpha": round(float(cell.alpha), 6),
+        "beta": round(float(cell.beta), 6),
+        "gamma": round(float(cell.gamma), 6),
+        "calculated_volume": round(float(cell.volume), 6),
+    }
+    if not cell.is_crystal() or cell.volume <= 0:
+        anomalies.append({
+            "test": "cif_invalid_unit_cell",
+            "location": location,
+            "severity": "high",
+            "details": cell_details,
+            "description": "CIF unit-cell parameters are missing, non-positive, or geometrically invalid.",
+        })
+    else:
+        reported_volume = _cif_number(block, "_cell_volume")
+        if reported_volume is not None:
+            rel_error = abs(reported_volume - cell.volume) / max(abs(cell.volume), 1e-12)
+            if rel_error > 0.02:
+                anomalies.append({
+                    "test": "cif_cell_volume_mismatch",
+                    "location": location,
+                    "severity": "high" if rel_error > 0.10 else "medium",
+                    "details": {
+                        **cell_details,
+                        "reported_volume": round(reported_volume, 6),
+                        "relative_difference": round(rel_error, 4),
+                    },
+                    "description": "Reported CIF cell volume is inconsistent with the six unit-cell parameters.",
+                })
+
+    spacegroup = _cif_text(block, *_CIF_SPACEGROUP_TAGS)
+    if not spacegroup:
+        anomalies.append({
+            "test": "cif_missing_space_group",
+            "location": location,
+            "severity": "medium",
+            "details": {"atom_site_count": len(sites)},
+            "description": "CIF contains atom sites but does not declare a readable space group.",
+        })
+    else:
+        try:
+            spacegroup_problem = structure.check_spacegroup()
+        except Exception as e:
+            spacegroup_problem = str(e)
+        if spacegroup_problem:
+            anomalies.append({
+                "test": "cif_space_group_inconsistency",
+                "location": location,
+                "severity": "medium",
+                "details": {"space_group": spacegroup, "problem": spacegroup_problem[:500]},
+                "description": "CIF space-group declaration is inconsistent with its symmetry information.",
+            })
+
+    labels: dict[str, list[int]] = defaultdict(list)
+    coordinates: dict[tuple[float, float, float], list[dict]] = defaultdict(list)
+    invalid_occupancy = []
+    negative_displacement = []
+    for index, site in enumerate(sites, 1):
+        label = str(site.label or f"site_{index}")
+        labels[label].append(index)
+        fract = site.fract.wrap_to_unit()
+        coord = (round(float(fract.x), 6), round(float(fract.y), 6), round(float(fract.z), 6))
+        coordinates[coord].append({
+            "label": label,
+            "element": site.element.name,
+            "occupancy": round(float(site.occ), 6) if math.isfinite(float(site.occ)) else None,
+        })
+        occupancy = float(site.occ)
+        if not math.isfinite(occupancy) or occupancy < 0 or occupancy > 1.001:
+            invalid_occupancy.append({"label": label, "occupancy": occupancy})
+        elif occupancy == 0:
+            invalid_occupancy.append({"label": label, "occupancy": occupancy})
+
+        u_iso = float(site.u_iso)
+        if math.isfinite(u_iso) and u_iso < -0.0001:
+            negative_displacement.append({"label": label, "u_iso": round(u_iso, 6)})
+        try:
+            if site.aniso.nonzero():
+                eigenvalues = [float(v) for v in site.aniso.calculate_eigenvalues()]
+                if min(eigenvalues) < -0.005:
+                    negative_displacement.append({
+                        "label": label,
+                        "anisotropic_eigenvalues": [round(v, 6) for v in eigenvalues],
+                    })
+        except (RuntimeError, TypeError, ValueError):
+            pass
+
+    duplicate_labels = {label: rows for label, rows in labels.items() if len(rows) > 1}
+    if duplicate_labels:
+        anomalies.append({
+            "test": "cif_duplicate_atom_labels",
+            "location": location,
+            "severity": "high" if len(duplicate_labels) >= 5 else "medium",
+            "details": {
+                "duplicate_label_count": len(duplicate_labels),
+                "examples": dict(list(duplicate_labels.items())[:5]),
+            },
+            "description": "CIF reuses atom-site labels within the same data block.",
+        })
+
+    duplicate_coordinates = []
+    for coord, entries in coordinates.items():
+        if len(entries) < 2:
+            continue
+        occupancy_sum = sum(float(item.get("occupancy") or 0) for item in entries)
+        duplicate_coordinates.append({
+            "fractional_coordinate": coord,
+            "sites": entries[:8],
+            "occupancy_sum": round(occupancy_sum, 6),
+        })
+    if duplicate_coordinates:
+        overoccupied = sum(1 for item in duplicate_coordinates if item["occupancy_sum"] > 1.05)
+        anomalies.append({
+            "test": "cif_duplicate_fractional_coordinates",
+            "location": location,
+            "severity": "high" if overoccupied else "medium",
+            "details": {
+                "duplicate_coordinate_groups": len(duplicate_coordinates),
+                "overoccupied_groups": overoccupied,
+                "examples": duplicate_coordinates[:5],
+            },
+            "description": "Distinct CIF atom sites share identical fractional coordinates; occupancy must justify any disorder model.",
+        })
+
+    if invalid_occupancy:
+        has_out_of_range = any(
+            item["occupancy"] is None or item["occupancy"] < 0 or item["occupancy"] > 1.001
+            for item in invalid_occupancy
+        )
+        anomalies.append({
+            "test": "cif_invalid_occupancy",
+            "location": location,
+            "severity": "high" if has_out_of_range else "medium",
+            "details": {
+                "invalid_site_count": len(invalid_occupancy),
+                "examples": invalid_occupancy[:8],
+            },
+            "description": "CIF contains atom-site occupancies outside the expected 0-1 range or equal to zero.",
+        })
+
+    if negative_displacement:
+        anomalies.append({
+            "test": "cif_negative_displacement_parameter",
+            "location": location,
+            "severity": "medium",
+            "details": {
+                "invalid_site_count": len(negative_displacement),
+                "examples": negative_displacement[:8],
+            },
+            "description": "CIF contains materially negative isotropic or anisotropic displacement parameters.",
+        })
+
+    if cell.is_crystal() and len(sites) <= 500:
+        short_contacts = []
+        min_distance = None
+        for i, site_a in enumerate(sites):
+            for site_b in sites[i + 1:]:
+                try:
+                    distance = float(cell.find_nearest_pbc_image(site_a.fract, site_b.fract).dist())
+                except (RuntimeError, TypeError, ValueError):
+                    continue
+                if distance <= 1e-5:
+                    continue
+                involves_h = site_a.element.is_hydrogen or site_b.element.is_hydrogen
+                threshold = 0.35 if involves_h else max(
+                    0.55,
+                    0.45 * (float(site_a.element.covalent_r) + float(site_b.element.covalent_r)),
+                )
+                if distance < threshold:
+                    min_distance = distance if min_distance is None else min(min_distance, distance)
+                    short_contacts.append({
+                        "site_a": site_a.label,
+                        "site_b": site_b.label,
+                        "distance_angstrom": round(distance, 4),
+                        "threshold_angstrom": round(threshold, 4),
+                    })
+        if short_contacts:
+            anomalies.append({
+                "test": "cif_implausibly_short_contact",
+                "location": location,
+                "severity": "high" if (min_distance or 1) < 0.25 or len(short_contacts) >= 5 else "medium",
+                "details": {
+                    "short_contact_count": len(short_contacts),
+                    "minimum_distance_angstrom": round(min_distance or 0, 4),
+                    "examples": short_contacts[:8],
+                },
+                "description": "CIF contains interatomic contacts far below conservative covalent-distance limits.",
+            })
+
+    formula = _cif_text(block, *_CIF_FORMULA_TAGS)
+    formula_weight = _cif_formula_weight(formula)
+    reported_formula_weight = _cif_number(block, "_chemical_formula_weight")
+    if formula_weight and reported_formula_weight:
+        rel_error = abs(formula_weight - reported_formula_weight) / formula_weight
+        if rel_error > 0.05:
+            anomalies.append({
+                "test": "cif_formula_weight_mismatch",
+                "location": location,
+                "severity": "high" if rel_error > 0.20 else "medium",
+                "details": {
+                    "formula": formula,
+                    "calculated_formula_weight": round(formula_weight, 4),
+                    "reported_formula_weight": round(reported_formula_weight, 4),
+                    "relative_difference": round(rel_error, 4),
+                },
+                "description": "Reported CIF formula weight is inconsistent with the declared chemical formula.",
+            })
+
+    z_value = _cif_number(block, "_cell_formula_units_Z")
+    reported_density = _cif_number(block, "_exptl_crystal_density_diffrn", "_exptl_crystal_density_meas")
+    if formula_weight and z_value and reported_density and cell.is_crystal():
+        calculated_density = formula_weight * z_value * 1.66053906660 / cell.volume
+        rel_error = abs(calculated_density - reported_density) / max(calculated_density, 1e-12)
+        if rel_error > 0.20 and abs(calculated_density - reported_density) > 0.15:
+            anomalies.append({
+                "test": "cif_density_mismatch",
+                "location": location,
+                "severity": "high" if rel_error > 0.50 else "medium",
+                "details": {
+                    "formula": formula,
+                    "z": z_value,
+                    "calculated_density_g_cm3": round(calculated_density, 4),
+                    "reported_density_g_cm3": round(reported_density, 4),
+                    "relative_difference": round(rel_error, 4),
+                },
+                "description": "CIF density is inconsistent with its formula, Z value, and unit-cell volume.",
+            })
+
+    r_factor = _cif_number(
+        block,
+        "_refine_ls_R_factor_gt", "_refine_ls_R_factor_all", "_refine_ls_R_factor_obs",
+    )
+    wr_factor = _cif_number(block, "_refine_ls_wR_factor_ref", "_refine_ls_wR_factor_gt")
+    goodness = _cif_number(block, "_refine_ls_goodness_of_fit_ref", "_refine_ls_goodness_of_fit_all")
+    poor_refinement = (
+        (r_factor is not None and r_factor > 0.15)
+        or (wr_factor is not None and wr_factor > 0.35)
+        or (goodness is not None and (goodness < 0.5 or goodness > 2.5))
+    )
+    if poor_refinement:
+        extreme = (
+            (r_factor is not None and r_factor > 0.50)
+            or (wr_factor is not None and wr_factor > 0.80)
+            or (goodness is not None and (goodness < 0.25 or goodness > 4.0))
+        )
+        anomalies.append({
+            "test": "cif_poor_refinement_quality",
+            "location": location,
+            "severity": "high" if extreme else "medium",
+            "details": {
+                "r_factor": r_factor,
+                "weighted_r_factor": wr_factor,
+                "goodness_of_fit": goodness,
+            },
+            "description": "CIF refinement statistics are outside conservative quality ranges and require expert review.",
+        })
+
+    return anomalies, True
+
+
+def _analyze_cif_file(cif_path: Path) -> tuple[list[dict], bool]:
+    if gemmi is None:
+        return [{
+            "test": "cif_dependency_missing",
+            "location": cif_path.name,
+            "severity": "high",
+            "details": {"required_package": "gemmi"},
+            "description": "CIF file was not checked because the gemmi parser is unavailable.",
+        }], False
+    try:
+        document = gemmi.cif.read_file(str(cif_path))
+    except Exception as e:
+        return [{
+            "test": "cif_read_error",
+            "location": cif_path.name,
+            "severity": "high",
+            "details": {"error": str(e)[:500]},
+            "description": "CIF file is unreadable or syntactically invalid.",
+        }], False
+
+    if len(document) == 0:
+        return [{
+            "test": "cif_empty_document",
+            "location": cif_path.name,
+            "severity": "high",
+            "details": {},
+            "description": "CIF file contains no data blocks.",
+        }], False
+
+    anomalies: list[dict] = []
+    structural_blocks = 0
+    all_blocks_ok = True
+    for block in document:
+        if not _cif_has_structural_content(block):
+            continue
+        structural_blocks += 1
+        block_anomalies, ok = _analyze_cif_block(block, cif_path)
+        anomalies.extend(block_anomalies)
+        all_blocks_ok = all_blocks_ok and ok
+
+    if structural_blocks == 0:
+        anomalies.append({
+            "test": "cif_no_structure_block",
+            "location": cif_path.name,
+            "severity": "medium",
+            "details": {"data_block_count": len(document)},
+            "description": "CIF file has data blocks but no recognizable cell, symmetry, reflection, or atom-site data.",
+        })
+    return anomalies, all_blocks_ok
+
+
+def _check_cif_files(data_dir: str or Path or list) -> tuple[list[dict], list[str], int]:
+    """Check CIF files separately from table-like and PDB source data."""
+    data_dirs = [Path(data_dir)] if not isinstance(data_dir, list) else [Path(d) for d in data_dir]
+    anomalies: list[dict] = []
+    failed_files: list[str] = []
+    inspected = 0
+    seen_fingerprints: set[tuple[int, str]] = set()
+
+    candidates = []
+    for root in data_dirs:
+        if root.exists():
+            candidates.extend(root.rglob("*"))
+
+    for path in sorted(candidates):
+        if not path.is_file() or path.suffix.lower() != ".cif":
+            continue
+        try:
+            fingerprint = (path.stat().st_size, hashlib.sha256(path.read_bytes()).hexdigest())
+        except OSError as e:
+            log.warning("Failed to fingerprint CIF %s: %s", path.name, e)
+            failed_files.append(path.name)
+            continue
+        if fingerprint in seen_fingerprints:
+            log.info("Skipping duplicate CIF file by content: %s", path.name)
+            continue
+        seen_fingerprints.add(fingerprint)
+
+        inspected += 1
+        file_anomalies, ok = _analyze_cif_file(path)
+        anomalies.extend(file_anomalies)
+        if not ok:
+            failed_files.append(path.name)
+        else:
+            log.info("Checked CIF %s", path.name)
 
     return anomalies, failed_files, inspected
 
@@ -1657,6 +2375,115 @@ def _analyze_column_group(values: np.ndarray, location: str, col_name: str = "")
     return anomalies
 
 
+def _analyze_feature_matrix(df: pd.DataFrame, file_name: str, sheet_name: str) -> list[dict]:
+    """Lightweight vectorized checks for gene/transcript x stage matrices."""
+    anomalies: list[dict] = []
+    feature_col = df.columns[0]
+    numeric = df.iloc[:, 1:].select_dtypes(include=[np.number]).copy()
+    if numeric.empty or len(numeric.columns) < 3:
+        return anomalies
+
+    row_count = len(numeric)
+    valid_counts = numeric.notna().sum()
+    zero_counts = (numeric.fillna(0) == 0).sum()
+    empty_cols = [str(c) for c in numeric.columns if valid_counts[c] == 0]
+    all_zero_cols = [str(c) for c in numeric.columns if valid_counts[c] > 0 and zero_counts[c] == row_count]
+    if empty_cols or all_zero_cols:
+        anomalies.append({
+            "test": "feature_matrix_empty_or_zero_columns",
+            "location": f"{file_name} / {sheet_name}",
+            "severity": "medium",
+            "details": {
+                "empty_columns": empty_cols[:20],
+                "all_zero_columns": all_zero_cols[:20],
+                "rows": row_count,
+            },
+            "description": "Feature matrix contains stage columns that are empty or entirely zero.",
+        })
+
+    row_sums = numeric.sum(axis=1, skipna=True)
+    finite_sums = row_sums[np.isfinite(row_sums)]
+    near_one_ratio = float(((finite_sums - 1.0).abs() <= 1e-6).mean()) if len(finite_sums) else 0.0
+    if len(finite_sums) >= 100 and near_one_ratio >= 0.95:
+        log.info(
+            "Feature matrix %s / %s appears to be normalized proportions: %.1f%% rows sum to 1",
+            file_name,
+            sheet_name,
+            near_one_ratio * 100,
+        )
+
+    rounded = numeric.round(10)
+    valid_profiles = rounded.dropna(how="all")
+    nonzero_counts = (valid_profiles.fillna(0).abs() > 1e-12).sum(axis=1)
+    # Sparse one-hot/mostly-zero profiles are expected in developmental
+    # specificity matrices; exact duplicates there are not useful signals.
+    valid_profiles = valid_profiles[nonzero_counts >= 3]
+    duplicate_rows = valid_profiles.duplicated(keep=False)
+    dup_row_count = int(duplicate_rows.sum())
+    if dup_row_count >= max(25, int(0.01 * row_count)):
+        examples = []
+        duplicate_index = valid_profiles.index[duplicate_rows]
+        feature_ids = df.loc[duplicate_index, feature_col].astype(str).head(20).tolist()
+        examples.extend(feature_ids)
+        anomalies.append({
+            "test": "feature_matrix_duplicate_profiles",
+            "location": f"{file_name} / {sheet_name}",
+            "severity": "medium",
+            "details": {
+                "duplicate_profile_rows": dup_row_count,
+                "total_rows": row_count,
+                "example_features": examples,
+            },
+            "description": f"{dup_row_count} features share an identical rounded stage profile.",
+        })
+
+    col_hashes: dict[tuple, list[str]] = defaultdict(list)
+    for col in rounded.columns:
+        vals = rounded[col].dropna().values
+        if len(vals) < max(100, int(0.5 * row_count)):
+            continue
+        col_hashes[tuple(vals.tolist())].append(str(col))
+    duplicate_col_groups = [cols for cols in col_hashes.values() if len(cols) > 1]
+    if duplicate_col_groups:
+        anomalies.append({
+            "test": "feature_matrix_duplicate_columns",
+            "location": f"{file_name} / {sheet_name}",
+            "severity": "high",
+            "details": {
+                "duplicate_column_groups": duplicate_col_groups[:10],
+                "rows": row_count,
+            },
+            "description": "Feature matrix has stage columns with identical values across features.",
+        })
+
+    if len(numeric.columns) <= 20 and row_count >= 100:
+        corr = numeric.corr(method="pearson", min_periods=max(100, int(row_count * 0.5))).abs()
+        high_pairs = []
+        cols = list(corr.columns)
+        for i, col_a in enumerate(cols):
+            for col_b in cols[i + 1:]:
+                value = corr.loc[col_a, col_b]
+                if pd.notna(value) and float(value) >= 0.999999:
+                    high_pairs.append({
+                        "col_a": str(col_a),
+                        "col_b": str(col_b),
+                        "abs_pearson": float(value),
+                    })
+        if high_pairs:
+            anomalies.append({
+                "test": "feature_matrix_near_identical_columns",
+                "location": f"{file_name} / {sheet_name}",
+                "severity": "medium",
+                "details": {
+                    "pairs": high_pairs[:20],
+                    "rows": row_count,
+                },
+                "description": "Feature matrix has stage columns with near-perfect correlation.",
+            })
+
+    return anomalies
+
+
 def _analyze_sheet(df: pd.DataFrame, file_name: str, sheet_name: str) -> list[dict]:
     """Analyze a single sheet/dataframe for anomalies."""
     MAX_COLS_FOR_PAIRWISE = 200
@@ -1664,6 +2491,13 @@ def _analyze_sheet(df: pd.DataFrame, file_name: str, sheet_name: str) -> list[di
 
     if _is_non_measurement_context(file_name, sheet_name):
         return anomalies
+
+    if _looks_like_sequence_alignment_table(df):
+        log.info("Skipping sequence alignment table statistics: %s / %s", file_name, sheet_name)
+        return anomalies
+
+    if _looks_like_feature_matrix(df):
+        return _analyze_feature_matrix(df, file_name, sheet_name)
 
     if df.columns.duplicated().any():
         df = df.copy()
@@ -1946,6 +2780,9 @@ def _analyze_cross_sheet(sheets: dict[str, pd.DataFrame], file_name: str) -> lis
             name_a, name_b = sheet_names[i], sheet_names[j]
             df_a, df_b = sheets[name_a], sheets[name_b]
 
+            if _looks_like_sequence_alignment_table(df_a) or _looks_like_sequence_alignment_table(df_b):
+                continue
+
             if _is_non_measurement_context(file_name, name_a, name_b):
                 continue
 
@@ -2013,20 +2850,29 @@ def check_data_anomalies(data_dir: str or Path or list) -> list[dict]:
         log.info("No source data directory found: %s", data_dir)
         return []
 
+    _SHEET_SCAN_SKIP_WORKBOOKS.clear()
+    _CROSS_SHEET_SKIP_WORKBOOKS.clear()
     pdb_anomalies, _pdb_failed, pdb_count = _check_pdb_files(existing_dirs)
+    cif_anomalies, _cif_failed, cif_count = _check_cif_files(existing_dirs)
     all_files, _failed = _load_data_files(existing_dirs)
-    if not all_files and not pdb_count:
+    if not all_files and not pdb_count and not cif_count:
         log.info("No data files found in %s", existing_dirs)
         return []
 
-    all_anomalies = list(pdb_anomalies)
+    all_anomalies = list(pdb_anomalies) + list(cif_anomalies)
     for fname, sheets in all_files.items():
+        if fname in _SHEET_SCAN_SKIP_WORKBOOKS:
+            log.warning("Skipping per-subtable statistical scan for capped workbook %s (%d sampled sub-tables)", fname, len(sheets))
+            continue
         for sheet_name, df in sheets.items():
             sheet_anomalies = _analyze_sheet(df, fname, sheet_name)
             all_anomalies.extend(sheet_anomalies)
 
     for fname, sheets in all_files.items():
         if len(sheets) >= 2:
+            if fname in _CROSS_SHEET_SKIP_WORKBOOKS:
+                log.warning("Skipping cross-sheet duplicate scan for capped workbook %s (%d sampled sub-tables)", fname, len(sheets))
+                continue
             cross_anomalies = _analyze_cross_sheet(sheets, fname)
             all_anomalies.extend(cross_anomalies)
 
@@ -2046,19 +2892,28 @@ def check_data_with_validation(data_dir: str or Path or list) -> tuple[list[dict
     if not existing_dirs:
         return [], []
 
+    _SHEET_SCAN_SKIP_WORKBOOKS.clear()
+    _CROSS_SHEET_SKIP_WORKBOOKS.clear()
     pdb_anomalies, pdb_failed, pdb_count = _check_pdb_files(existing_dirs)
+    cif_anomalies, cif_failed, cif_count = _check_cif_files(existing_dirs)
     all_files, failed_files = _load_data_files(existing_dirs)
-    failed_files = failed_files + pdb_failed
-    if not all_files and not failed_files and not pdb_count:
+    failed_files = failed_files + pdb_failed + cif_failed
+    if not all_files and not failed_files and not pdb_count and not cif_count:
         return [], []
 
-    all_anomalies = list(pdb_anomalies)
+    all_anomalies = list(pdb_anomalies) + list(cif_anomalies)
     for fname, sheets in all_files.items():
+        if fname in _SHEET_SCAN_SKIP_WORKBOOKS:
+            log.warning("Skipping per-subtable statistical scan for capped workbook %s (%d sampled sub-tables)", fname, len(sheets))
+            continue
         for sheet_name, df in sheets.items():
             all_anomalies.extend(_analyze_sheet(df, fname, sheet_name))
 
     for fname, sheets in all_files.items():
         if len(sheets) >= 2:
+            if fname in _CROSS_SHEET_SKIP_WORKBOOKS:
+                log.warning("Skipping cross-sheet duplicate scan for capped workbook %s (%d sampled sub-tables)", fname, len(sheets))
+                continue
             all_anomalies.extend(_analyze_cross_sheet(sheets, fname))
 
     if all_anomalies:

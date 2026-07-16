@@ -1,8 +1,12 @@
+import os
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 
-BASE_DIR = Path("/home/sjtu/paper-integrity-checker")
+BASE_DIR = Path(
+    os.environ.get("PAPER_INTEGRITY_ROOT", Path(__file__).resolve().parents[1])
+).resolve()
 DATA_DIR = BASE_DIR / "data"
 TASKS_DIR = DATA_DIR / "tasks"
 UPLOADS_DIR = DATA_DIR / "uploads"
@@ -16,7 +20,14 @@ RUNTIME_TMP_DIR = DATA_DIR / "runtime_tmp"
 RUNTIME_TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 MAIN_PY = BASE_DIR / "main.py"
-REVIEW_REPORT_SCRIPT = Path("/home/library/.claude/skills/paper-batch-review/scripts/generate_review_report.py")
+REVIEW_SKILL_SCRIPTS = Path(os.environ.get(
+    "PAPER_REVIEW_SKILL_SCRIPTS",
+    "/home/library/.claude/skills/paper-batch-review/scripts",
+))
+REVIEW_REPORT_SCRIPT = Path(os.environ.get(
+    "PAPER_REVIEW_REPORT_SCRIPT",
+    REVIEW_SKILL_SCRIPTS / "generate_review_report.py",
+))
 
 DEFAULT_TABLE = "yujing_quanliang"
 FORBIDDEN_TABLES = {"yujing"}
@@ -37,7 +48,7 @@ MAX_PENDING_TASKS = 30
 MAX_RUN_CONCURRENT_STREAMS = 1
 MAX_REVIEW_WORKERS = 4
 
-PYTHON = "/usr/bin/python3"
+PYTHON = os.environ.get("PAPER_CHECKER_PYTHON", sys.executable)
 
 DETECT_TIMEOUT_SECONDS = 30 * 60
 REVIEW_TIMEOUT_SECONDS = 46 * 60
@@ -54,7 +65,7 @@ DB_CONFIG = {
 ALLOWED_EXTENSIONS = {
     ".pdf", ".xlsx", ".xls", ".csv", ".docx",
     ".tif", ".tiff", ".png", ".jpg", ".jpeg",
-    ".fcs", ".sav", ".pdb",
+    ".fcs", ".sav", ".pdb", ".cif",
     ".txt", ".html", ".json",
 }
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 
 from api.config import MAX_CONCURRENT_TASKS, MAX_REVIEW_WORKERS, REVIEW_DIR, TASKS_DIR
@@ -32,8 +33,13 @@ from api.services.detection_reports_db import (
 
 log = logging.getLogger(__name__)
 
-CHUSHEN_BASE_URL = "http://10.119.9.99/chinese_reports"
-REVIEW_BASE_URL = "http://10.119.9.99/review_reports"
+PUBLIC_BASE_URL = os.environ.get("PAPER_PUBLIC_BASE_URL", "http://202.120.57.100").rstrip("/")
+CHUSHEN_BASE_URL = os.environ.get(
+    "PAPER_CHUSHEN_BASE_URL", f"{PUBLIC_BASE_URL}/chinese_reports"
+).rstrip("/")
+REVIEW_BASE_URL = os.environ.get(
+    "PAPER_REVIEW_BASE_URL", f"{PUBLIC_BASE_URL}/review_reports"
+).rstrip("/")
 REPORT_NAMESPACE = "detection_reports"
 
 _semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)

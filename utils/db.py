@@ -21,7 +21,7 @@ DB_CONFIG = {
     "charset": "utf8",
 }
 
-REPORT_BASE_URL = "http://10.119.9.99/chinese_reports"
+REPORT_BASE_URL = "http://202.120.57.100/chinese_reports"
 
 SJTU_KEYWORDS = [
     "Shanghai Jiao Tong", "Shanghai Jiaotong", "Jiaotong University",
@@ -209,6 +209,13 @@ def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: 
 
     meta = build_paper_metadata(findings, html_path=html_path)
 
+    table_name = "yujing_quanliang"
+    if namespace:
+        if re.match(r"^yujing_[a-z0-9_]{1,50}$", namespace):
+            table_name = namespace
+        else:
+            log.warning("Ignoring unsafe DB namespace=%r; using %s", namespace, table_name)
+
     report_url = "" if findings.get("pdf_skipped_low_risk") else _make_report_url(findings, chinese_reports_dir, namespace=namespace)
 
     row = {
@@ -237,7 +244,7 @@ def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: 
     }
 
     if overall["level"] == "低风险":
-        sql_update = """UPDATE yujing_quanliang SET
+        sql_update = f"""UPDATE {table_name} SET
             title=%(title)s, author=%(author)s, author_type=%(author_type)s,
             department=%(department)s, author_all=%(author_all)s, department_all=%(department_all)s,
             journal=%(journal)s, page=%(page)s, pic_num=%(pic_num)s, data_num=%(data_num)s, ref_num=%(ref_num)s,
@@ -249,7 +256,7 @@ def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: 
             review_result=NULL, review_report_url=NULL, review_time=NULL
         WHERE doi=%(doi)s"""
     else:
-        sql_update = """UPDATE yujing_quanliang SET
+        sql_update = f"""UPDATE {table_name} SET
             title=%(title)s, author=%(author)s, author_type=%(author_type)s,
             department=%(department)s, author_all=%(author_all)s, department_all=%(department_all)s,
             journal=%(journal)s, page=%(page)s, pic_num=%(pic_num)s, data_num=%(data_num)s, ref_num=%(ref_num)s,
@@ -260,7 +267,7 @@ def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: 
             report_url=%(report_url)s, generation_time=%(generation_time)s
         WHERE doi=%(doi)s"""
 
-    sql_insert = """INSERT INTO yujing_quanliang (
+    sql_insert = f"""INSERT INTO {table_name} (
         title, author, author_type, department, author_all, department_all,
         journal, doi, page, pic_num, data_num, ref_num,
         total_score, risk_level, pic_score, pic_risk_level,
@@ -277,7 +284,7 @@ def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: 
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT risk_level, review_result FROM yujing_quanliang WHERE doi=%(doi)s", row)
+        cursor.execute(f"SELECT risk_level, review_result FROM {table_name} WHERE doi=%(doi)s", row)
         existing = cursor.fetchone()
         if existing:
             protected_snapshot = Path(__file__).resolve().parent.parent / "data" / "protected_snapshot_2054.json"
@@ -290,11 +297,11 @@ def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: 
                     return
             cursor.execute(sql_update, row)
             conn.commit()
-            log.info("Updated in DB: DOI=%s, score=%s/%s", row["doi"], row["total_score"], row["risk_level"])
+            log.info("Updated in DB %s: DOI=%s, score=%s/%s", table_name, row["doi"], row["total_score"], row["risk_level"])
         else:
             cursor.execute(sql_insert, row)
             conn.commit()
-            log.info("Inserted into DB: DOI=%s, score=%s/%s", row["doi"], row["total_score"], row["risk_level"])
+            log.info("Inserted into DB %s: DOI=%s, score=%s/%s", table_name, row["doi"], row["total_score"], row["risk_level"])
     except Exception as e:
         log.error("Failed to insert into DB (DOI=%s): %s", row["doi"], e)
         try:

@@ -26,8 +26,8 @@ AUDIT_DIR = OUTPUT / "migration_audit"
 TABLE = "yujing"
 NAMESPACE = "yujing"
 
-CHINESE_BASE = "http://10.119.9.99/chinese_reports"
-REVIEW_BASE = "http://10.119.9.99/review_reports"
+CHINESE_BASE = "http://202.120.57.100/chinese_reports"
+REVIEW_BASE = "http://202.120.57.100/review_reports"
 
 DB_CONFIG = {
     "server": "10.119.5.44",

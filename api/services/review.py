@@ -15,18 +15,18 @@ from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
 
-from api.config import REVIEW_TIMEOUT_SECONDS
+from api.config import BASE_DIR, REVIEW_DIR, REVIEW_SKILL_SCRIPTS, REVIEW_TIMEOUT_SECONDS
 from modules.doi_utils import normalize_doi
 
 log = logging.getLogger(__name__)
 
-_SKILL_SCRIPTS = "/home/library/.claude/skills/paper-batch-review/scripts"
+_SKILL_SCRIPTS = str(REVIEW_SKILL_SCRIPTS)
 
 MAX_RETRIES = 2
-STATE_VERSION = 2
+STATE_VERSION = 3
 REVIEW_STATE_DIR = Path(os.environ.get(
     "REVIEW_STATE_DIR",
-    "/home/sjtu/paper-integrity-checker/data/output/review_v2/state",
+    str(REVIEW_DIR / "state"),
 ))
 EVIDENCE_TIMEOUT_SECONDS = int(os.environ.get("REVIEW_COVERAGE_TIMEOUT_SECONDS", "6000"))
 EVIDENCE_MEMORY_MB = int(os.environ.get("REVIEW_COVERAGE_MEMORY_MB", "2048"))
@@ -38,9 +38,9 @@ JUDGE_MAX_TURNS = int(os.environ.get("REVIEW_JUDGE_MAX_TURNS", "60"))
 DETERMINISTIC_FASTPATH_ENABLED = os.environ.get("REVIEW_DETERMINISTIC_FASTPATH", "1") != "0"
 DETERMINISTIC_FASTPATH_MIN_POINTS = int(os.environ.get("REVIEW_DETERMINISTIC_FASTPATH_MIN_POINTS", "1000"))
 DETERMINISTIC_FASTPATH_SAMPLE_LIMIT = int(os.environ.get("REVIEW_DETERMINISTIC_SAMPLE_LIMIT", "10"))
-DETERMINISTIC_FASTPATH_VERSION = "7"
+DETERMINISTIC_FASTPATH_VERSION = "8"
 REVIEW_RESUME_RESULTS = os.environ.get("REVIEW_RESUME_RESULTS", "0") == "1"
-_SUMMARY_CODE_VERSION = "2"
+_SUMMARY_CODE_VERSION = "3"
 
 
 def _review_subprocess_timeout_seconds() -> int | None:
@@ -68,7 +68,9 @@ PROMPT_HEADER = """你是一位学术论文诚信检测复核专家。请对以�
 - 原始数据目录: {input_dir}
 - 复核证据包(确定性预处理清单,务必先读): {evidence_path}
 
-证据包(review_evidence.json)已由确定性脚本预先生成,包含:源数据各sheet列的预分类(自变量/统计输出/标准差/测量值)、确定性发现(重复列对/跨表复用/小数精度不一致)、必须逐一查看的主图清单、以及每条HIGH发现。其中 coverage_manifest.must_address 列出本次复核**必须逐项给出结论**的条目。请在文字中留下明确核查痕迹；覆盖率校验会记录遗漏提醒，但不会把单纯格式留痕不足直接等同于论文高风险。请先读证据包,再展开复核。
+证据包(review_evidence.json)已由确定性脚本预先生成,包含:源数据各sheet列的预分类(自变量/统计输出/标准差/测量值)、确定性发现(重复列对/跨表复用/小数精度不一致)、CIF晶体结构文件及其异常指标、必须逐一查看的主图清单、以及每条HIGH发现。其中 coverage_manifest.must_address 列出本次复核**必须逐项给出结论**的条目。请在文字中留下明确核查痕迹；覆盖率校验会记录遗漏提醒，但不会把单纯格式留痕不足直接等同于论文高风险。请先读证据包,再展开复核。
+
+若证据包包含 deterministic_findings.cif_review，必须打开对应 CIF 核验告警字段，并与论文正文或补充材料中的化学式、空间群、晶胞参数、Z值、密度、R1/wR2和CCDC编号逐项对照。高R因子或缺失字段本身只代表结构质量或规范性线索；只有文件不可解析、结构参数自相矛盾、占位率/坐标明显不可能，或与论文报告实质不一致时，才可作为高风险依据。
 
 {soft_explain_guardrails}
 
@@ -190,6 +192,7 @@ COMPACT_REVIEW_RULES = """### 复核核心规则
 3. 对分组告警按代表样例和最高风险样例核查；同一类原因覆盖整组即可，不要逐条写 50 段。
 4. 小数精度、CV=0、恒等依赖、末位数字异常只有在列名和上下文不支持正常解释时才支持高风险。
 5. 图文一致性核查（必须执行，不可跳过）：用 fitz.open() 渲染论文 PDF 中至少 2-3 张主图页面为 PNG，用 Read 查看渲染图像；同时读取对应 xlsx sheet 数据，核对关键数值（柱高、峰位、曲线趋势、量级、数据点数）。在 data_review 中写明每张图的比对结论。仅看 annotation 标注图不算完成此步骤。
+6. 若存在 CIF：打开文件核验晶胞、空间群、化学式、占位率、位移参数、密度和精修指标，并与论文正文或补充材料逐项对照；高R因子等质量指标不能脱离结构矛盾单独判高风险。
 
 图像复核：真实跨页图像重复、相同实验图像复用、明确拼接不连续支持高风险；坐标轴模板、示意图、PDF提取伪影、同图不同嵌入版本通常是假阳性，但需说明依据。
 若核查后仅剩少量图像重复线索，且未发现数据、图文一致性、参考文献或方法学独立问题，必须从严视觉确认其是否为真实实验图像复用；不能仅凭自动匹配或少量可解释的版式/模板相似轻易升级为高风险。
@@ -197,7 +200,7 @@ COMPACT_REVIEW_RULES = """### 复核核心规则
 参考文献复核：CrossRef 超时/低置信度/解析碎片不构成引用异常；只有完整可读条目的 DOI、题名、作者或期刊实质不一致才支持高风险。
 
 判定：
-- 建议高风险：确认存在真实图像重复/拼接、不同实验测量值逐值复用、主图样本量不符、图文/标签矛盾、同类测量强精度异常且无法解释、完整引用实质不一致等任一问题。
+- 建议高风险：确认存在真实图像重复/拼接、不同实验测量值逐值复用、主图样本量不符、图文/标签矛盾、同类测量强精度异常且无法解释、CIF结构参数自相矛盾或与论文实质不一致、完整引用实质不一致等任一问题。
 - 建议低风险：所有高价值告警均被代表样例或分组核查覆盖，且有具体、可验证的正常解释。
 
 写法：每个确认问题写清位置、现象、为什么重要、核查依据。低风险也要说明核查了哪些分组和代表样例。禁止使用”造假、篡改、伪造、编造、不端、欺诈、操纵”。
@@ -296,6 +299,7 @@ LOWRISK_VERIFIER_PROMPT_TEMPLATE = """你是一位学术论文诚信检测低风
 1. **图文一致性（必须执行）**：用 fitz.open() 渲染论文 PDF 中至少 2-3 张主图页面为 PNG，用 Read 工具查看渲染图像，再从对应 xlsx sheet 读取数据，逐图比对关键数值（柱高、峰位、曲线趋势、量级、坐标轴范围）。在 data_review 中写明每张图的比对结论。**如果未执行渲染和源数据对比，不能维持低风险结论。** 仅查看 annotation 标注图不算完成此步骤——必须对比论文渲染图像与源数据数值。
 2. **跨图标签矛盾**：同一数据列在不同图中是否使用了矛盾的样品/条件标签？
 3. **末位数字 / SD 规律性**：首轮是否运行了 forensic_checks.py scan-digits？若未运行，你来运行并检查结果。
+4. **CIF结构一致性**：若证据包列出 CIF，打开文件复算关键参数，并核对论文中的化学式、空间群、晶胞、Z、密度、R1/wR2及CCDC编号；不得只复述初审告警。
 
 ### D. 判定
 - **改判高风险**（任一成立）：
@@ -543,7 +547,7 @@ def _evidence_bundle_path(doi: str, report_json_path: str, input_dir: str, artif
     # New API/review calls pass artifacts_dir=output_dir/review_artifacts.
     # The legacy review_v2 root is kept only for old scripts/tests that do not
     # know a per-paper output_dir.
-    base = artifacts_dir or Path("/home/sjtu/paper-integrity-checker/data/output/review_v2")
+    base = artifacts_dir or REVIEW_DIR
     return base / f"{doi.replace('/', '_')}_{digest}_evidence.json"
 
 
@@ -556,10 +560,11 @@ def _ensure_evidence_bundle(doi, report_json_path, input_dir, artifacts_dir: Pat
     artifacts = Path(artifacts_dir) if artifacts_dir else None
     if artifacts:
         artifacts.mkdir(parents=True, exist_ok=True)
-    legacy_dir = Path("/home/sjtu/paper-integrity-checker/data/output/review_v2")
+    legacy_dir = REVIEW_DIR
     legacy_dir.mkdir(parents=True, exist_ok=True)
     out_path = _evidence_bundle_path(doi, report_json_path, input_dir, artifacts)
     if out_path.exists():
+        _augment_evidence_bundle(out_path, doi, report_json_path, input_dir)
         return str(out_path)
 
     legacy_path = _evidence_bundle_path(doi, report_json_path, input_dir, None)
@@ -568,10 +573,13 @@ def _ensure_evidence_bundle(doi, report_json_path, input_dir, artifacts_dir: Pat
         for candidate in (legacy_path, relocated):
             if candidate.exists():
                 shutil.copy2(candidate, out_path)
+                _augment_evidence_bundle(out_path, doi, report_json_path, input_dir)
                 return str(out_path)
     elif legacy_path.exists():
+        _augment_evidence_bundle(legacy_path, doi, report_json_path, input_dir)
         return str(legacy_path)
     elif relocated.exists():
+        _augment_evidence_bundle(relocated, doi, report_json_path, input_dir)
         return str(relocated)
 
     def limit_child_memory():
@@ -597,7 +605,7 @@ def _ensure_evidence_bundle(doi, report_json_path, input_dir, artifacts_dir: Pat
             cmd.extend(["--report-json", report_json_path])
         env = os.environ.copy()
         env["PYTHONPATH"] = os.pathsep.join(
-            p for p in ("/home/sjtu/paper-integrity-checker", _SKILL_SCRIPTS, env.get("PYTHONPATH", ""))
+            p for p in (str(BASE_DIR), _SKILL_SCRIPTS, env.get("PYTHONPATH", ""))
             if p
         )
         completed = subprocess.run(
@@ -605,7 +613,7 @@ def _ensure_evidence_bundle(doi, report_json_path, input_dir, artifacts_dir: Pat
             text=True,
             capture_output=True,
             timeout=EVIDENCE_TIMEOUT_SECONDS,
-            cwd="/home/sjtu/paper-integrity-checker",
+            cwd=str(BASE_DIR),
             env=env,
             preexec_fn=limit_child_memory if os.name == "posix" else None,
         )
@@ -614,14 +622,264 @@ def _ensure_evidence_bundle(doi, report_json_path, input_dir, artifacts_dir: Pat
                 "DOI=%s evidence bundle generation failed: returncode=%s stderr=%s",
                 doi, completed.returncode, completed.stderr[-1000:],
             )
-            return ""
+            return _source_data_audit_fallback_evidence(
+                out_path, doi, report_json_path, input_dir, "review_evidence failed"
+            )
+        _augment_evidence_bundle(out_path, doi, report_json_path, input_dir)
         return str(out_path)
     except subprocess.TimeoutExpired:
         log.error("DOI=%s evidence bundle generation timed out after %ss", doi, EVIDENCE_TIMEOUT_SECONDS)
-        return ""
+        return _source_data_audit_fallback_evidence(
+            out_path, doi, report_json_path, input_dir, "review_evidence timed out"
+        )
     except Exception as e:
         log.error("DOI=%s evidence bundle generation failed: %s", doi, e)
+        return _source_data_audit_fallback_evidence(
+            out_path, doi, report_json_path, input_dir, f"review_evidence exception: {e}"
+        )
+
+
+def _source_data_audit_fallback_evidence(
+    out_path: Path,
+    doi: str,
+    report_json_path: str,
+    input_dir: str,
+    reason: str,
+) -> str:
+    try:
+        from api.services.source_data_audit import audit_source_data
+
+        audit = audit_source_data(input_dir, doi=doi)
+    except Exception as e:
+        log.error("DOI=%s source-data audit fallback failed after evidence error: %s", doi, e)
         return ""
+
+    high = [
+        {
+            "dim": "data",
+            "test": item.get("test"),
+            "location": item.get("location", ""),
+            "source": "source_data_audit",
+            "severity": "high",
+        }
+        for item in audit.get("high_findings") or []
+    ]
+    must = [
+        f"source_data_audit::{item.get('test')}::{idx}"
+        for idx, item in enumerate(audit.get("high_findings") or [])
+    ]
+    bundle = {
+        "doi": doi,
+        "input_dir": input_dir,
+        "report_json": report_json_path,
+        "paper": {},
+        "summary": {},
+        "data_files": [],
+        "inventory": [],
+        "main_figures": [],
+        "high_findings": high,
+        "deterministic_findings": {
+            "duplicate_column_pairs": [],
+            "cross_sheet_reuse": [],
+            "cross_sheet_reuse_groups": [],
+            "decimal_precision_mismatch": [],
+            "source_data_audit": audit,
+        },
+        "review_guidance": {
+            "fallback": (
+                f"Full review_evidence bundle unavailable: {reason}. "
+                "Source data audit still ran and must be used for risk judgement."
+            )
+        },
+        "coverage_manifest": {
+            "must_address": must,
+            "counts": {
+                "high_findings": len(high),
+                "main_figures": 0,
+                "duplicate_column_pairs": 0,
+                "cross_sheet_reuse": 0,
+                "cross_sheet_reuse_groups": 0,
+                "cross_sheet_reuse_representatives": 0,
+                "decimal_precision_mismatch": 0,
+                "source_data_audit_high": len(audit.get("high_findings") or []),
+                "source_data_matrix_reuse": len(audit.get("rectangular_matrix_reuse") or []),
+                "source_data_n_mismatch": len(audit.get("figure_n_mismatch") or []),
+                "total_must_address": len(must),
+            },
+        },
+        "_fallback_reason": reason,
+    }
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+        _augment_evidence_with_cif_findings(out_path, report_json_path, input_dir)
+        log.warning("DOI=%s wrote source-data-audit fallback evidence: %s high=%d", doi, out_path, len(high))
+        return str(out_path)
+    except Exception as e:
+        log.error("DOI=%s could not write source-data-audit fallback evidence: %s", doi, e)
+        return ""
+
+
+def _augment_evidence_with_source_data_audit(evidence_path: Path, doi: str, input_dir: str) -> None:
+    """Add local source-data audit findings to the deterministic evidence bundle.
+
+    review_evidence.py is shared legacy code; keeping the new audit as an
+    augmentation here lets API/batch review use it without changing unrelated
+    detector behavior.
+    """
+    try:
+        bundle = json.loads(Path(evidence_path).read_text(encoding="utf-8"))
+    except Exception as e:
+        log.warning("DOI=%s could not read evidence before source-data audit: %s", doi, e)
+        return
+    try:
+        from api.services.source_data_audit import AUDIT_VERSION, audit_source_data
+
+        existing = ((bundle.get("deterministic_findings") or {}).get("source_data_audit") or {})
+        if existing.get("version") == AUDIT_VERSION:
+            return
+
+        audit = audit_source_data(input_dir, doi=doi)
+    except Exception as e:
+        log.warning("DOI=%s source-data audit failed: %s", doi, e)
+        return
+
+    det = bundle.setdefault("deterministic_findings", {})
+    det["source_data_audit"] = audit
+
+    for item in audit.get("high_findings") or []:
+        bundle.setdefault("high_findings", []).append({
+            "dim": "data",
+            "test": item.get("test"),
+            "location": item.get("location", ""),
+            "source": "source_data_audit",
+            "severity": "high",
+        })
+
+    manifest = bundle.setdefault("coverage_manifest", {})
+    must = manifest.setdefault("must_address", [])
+    for idx, item in enumerate(audit.get("high_findings") or []):
+        must.append(f"source_data_audit::{item.get('test')}::{idx}")
+    counts = manifest.setdefault("counts", {})
+    counts["source_data_audit_high"] = len(audit.get("high_findings") or [])
+    counts["source_data_matrix_reuse"] = len(audit.get("rectangular_matrix_reuse") or [])
+    counts["source_data_n_mismatch"] = len(audit.get("figure_n_mismatch") or [])
+    counts["high_findings"] = len(bundle.get("high_findings") or [])
+    counts["total_must_address"] = len(must)
+
+    try:
+        Path(evidence_path).write_text(json.dumps(bundle, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+        log.info(
+            "DOI=%s source-data audit added to evidence: high=%d matrix=%d n_mismatch=%d",
+            doi,
+            counts["source_data_audit_high"],
+            counts["source_data_matrix_reuse"],
+            counts["source_data_n_mismatch"],
+        )
+    except Exception as e:
+        log.warning("DOI=%s could not write augmented evidence: %s", doi, e)
+
+
+def _augment_evidence_bundle(
+    evidence_path: Path,
+    doi: str,
+    report_json_path: str,
+    input_dir: str,
+) -> None:
+    _augment_evidence_with_source_data_audit(evidence_path, doi, input_dir)
+    _augment_evidence_with_cif_findings(evidence_path, report_json_path, input_dir)
+
+
+def _augment_evidence_with_cif_findings(
+    evidence_path: Path,
+    report_json_path: str,
+    input_dir: str,
+) -> None:
+    """Attach full CIF findings and file inventory to the deterministic review bundle."""
+    try:
+        bundle = json.loads(Path(evidence_path).read_text(encoding="utf-8"))
+    except Exception as e:
+        log.warning("Could not read evidence before CIF augmentation: %s", e)
+        return
+
+    report = {}
+    if report_json_path and Path(report_json_path).exists():
+        try:
+            report = json.loads(Path(report_json_path).read_text(encoding="utf-8"))
+        except Exception as e:
+            log.warning("Could not read report JSON before CIF augmentation: %s", e)
+
+    cif_findings = [
+        item for item in (report.get("data_anomalies") or [])
+        if str(item.get("test") or "").startswith("cif_")
+    ]
+    root = Path(input_dir)
+    cif_files = []
+    if root.exists():
+        for path in sorted(root.rglob("*")):
+            if path.is_file() and path.suffix.lower() == ".cif":
+                try:
+                    cif_files.append(path.relative_to(root).as_posix())
+                except ValueError:
+                    cif_files.append(str(path))
+    if not cif_files and not cif_findings:
+        return
+
+    deterministic = bundle.setdefault("deterministic_findings", {})
+    deterministic["cif_review"] = {
+        "files": cif_files,
+        "findings": cif_findings,
+    }
+
+    high_findings = bundle.setdefault("high_findings", [])
+    manifest = bundle.setdefault("coverage_manifest", {})
+    must_address = manifest.setdefault("must_address", [])
+    existing = {
+        (str(item.get("test") or ""), str(item.get("location") or ""))
+        for item in high_findings
+    }
+    for finding in cif_findings:
+        if finding.get("severity") != "high":
+            continue
+        key = (str(finding.get("test") or ""), str(finding.get("location") or ""))
+        if key in existing:
+            continue
+        high_index = len(high_findings)
+        high_findings.append({
+            "dim": "data",
+            "test": finding.get("test"),
+            "location": finding.get("location", ""),
+            "source": "cif_checker",
+            "severity": "high",
+        })
+        must_address.append(f"high::data::{high_index}")
+        existing.add(key)
+
+    counts = manifest.setdefault("counts", {})
+    counts["cif_files"] = len(cif_files)
+    counts["cif_findings"] = len(cif_findings)
+    counts["cif_high"] = sum(1 for item in cif_findings if item.get("severity") == "high")
+    counts["high_findings"] = len(high_findings)
+    counts["total_must_address"] = len(must_address)
+    bundle.setdefault("review_guidance", {})["cif"] = (
+        "Open each listed CIF and verify detector fields against the manuscript: formula, space group, "
+        "unit cell, Z, density, R1/wR2, and CCDC identifier. Treat poor refinement alone as a quality "
+        "signal; require a concrete structural contradiction or manuscript mismatch for high risk."
+    )
+
+    try:
+        Path(evidence_path).write_text(
+            json.dumps(bundle, ensure_ascii=False, indent=1, default=str),
+            encoding="utf-8",
+        )
+        log.info(
+            "CIF review evidence added: files=%d findings=%d high=%d",
+            len(cif_files),
+            len(cif_findings),
+            counts["cif_high"],
+        )
+    except Exception as e:
+        log.warning("Could not write CIF-augmented evidence: %s", e)
 
 
 def _short_text(value, limit: int = 500):
@@ -760,6 +1018,8 @@ def _build_llm_evidence_summary(evidence: dict, full_evidence_path: str) -> dict
     dup_groups = _compact_duplicate_column_pairs(det.get("duplicate_column_pairs") or [])
     reuse_groups = _compact_cross_sheet_groups(det.get("cross_sheet_reuse_groups") or [])
     decimal = det.get("decimal_precision_mismatch") or []
+    source_audit = det.get("source_data_audit") or {}
+    cif_review = det.get("cif_review") or {}
 
     summary = {
         "doi": (evidence or {}).get("doi"),
@@ -787,12 +1047,26 @@ def _build_llm_evidence_summary(evidence: dict, full_evidence_path: str) -> dict
             "duplicate_column_pair_groups": dup_groups,
             "cross_sheet_reuse_groups": reuse_groups,
             "decimal_precision_mismatch": decimal[:10],
+            "source_data_audit": _compact_source_data_audit(source_audit),
+            "cif_review": cif_review,
         },
         "main_figures": ((evidence or {}).get("main_figures") or [])[:20],
         "data_files": ((evidence or {}).get("data_files") or [])[:20],
         "review_guidance": (evidence or {}).get("review_guidance") or {},
     }
     return summary
+
+
+def _compact_source_data_audit(audit: dict) -> dict:
+    if not audit:
+        return {}
+    return {
+        "version": audit.get("version"),
+        "data_file_count": audit.get("data_file_count"),
+        "high_findings": (audit.get("high_findings") or [])[:10],
+        "rectangular_matrix_reuse": (audit.get("rectangular_matrix_reuse") or [])[:10],
+        "figure_n_mismatch": (audit.get("figure_n_mismatch") or [])[:10],
+    }
 
 
 def _ensure_llm_evidence_bundle(doi: str, full_evidence_path: str) -> str:
@@ -974,6 +1248,9 @@ def _find_any_completed_state_for_doi(doi: str) -> dict | None:
             state = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
+        identity = state.get("identity") or {}
+        if identity.get("version") != STATE_VERSION:
+            continue
         final = (state.get("stages") or {}).get("final")
         if not isinstance(final, dict) or final.get("result") not in ("高风险", "低风险"):
             continue
@@ -1064,6 +1341,9 @@ def _evidence_counts(evidence: dict) -> dict:
         "cross_sheet_reuse_groups": int(counts.get("cross_sheet_reuse_groups") or 0),
         "cross_sheet_reuse_representatives": int(counts.get("cross_sheet_reuse_representatives") or 0),
         "decimal_precision_mismatch": int(counts.get("decimal_precision_mismatch") or 0),
+        "source_data_audit_high": int(counts.get("source_data_audit_high") or 0),
+        "source_data_matrix_reuse": int(counts.get("source_data_matrix_reuse") or 0),
+        "source_data_n_mismatch": int(counts.get("source_data_n_mismatch") or 0),
         "total_must_address": int(counts.get("total_must_address") or 0),
     }
 
@@ -1075,6 +1355,9 @@ def _has_strong_deterministic_evidence(evidence: dict) -> bool:
     if det.get("decimal_precision_mismatch"):
         return True
     if det.get("duplicate_column_pairs"):
+        return True
+    source_audit = det.get("source_data_audit") or {}
+    if source_audit.get("high_findings"):
         return True
 
     reuse_groups = det.get("cross_sheet_reuse_groups") or []
@@ -1504,6 +1787,93 @@ def _build_deterministic_agent_prompt(
     )
 
 
+def _source_data_audit_highrisk_review_result(doi: str, evidence: dict) -> dict | None:
+    audit = ((evidence or {}).get("deterministic_findings") or {}).get("source_data_audit") or {}
+    high = audit.get("high_findings") or []
+    if not high:
+        return None
+
+    matrix_items = [
+        item for item in audit.get("rectangular_matrix_reuse") or []
+        if item.get("severity") == "high"
+    ]
+    n_items = [
+        item for item in audit.get("figure_n_mismatch") or []
+        if item.get("severity") == "high"
+    ]
+    data_parts = []
+    reason_parts = []
+
+    for item in matrix_items[:3]:
+        sample = _sample_text(item.get("sample") or [])
+        description = str(item.get("description") or "").rstrip("。")
+        data_parts.append(
+            f"问题位置：{item.get('location')}。"
+            f"发现：{description}。"
+            "为什么重要：不同图号或不同源数据文件中，整块测量值逐格完全相同，"
+            "不能用共享横轴、坐标模板或少量公共基线解释。"
+            + (f"核查依据：示例数值为 {sample}。" if sample else "")
+        )
+    if matrix_items:
+        strongest = matrix_items[0]
+        reason_parts.append(
+            f"数据维度：确认跨图/跨文件数值矩阵复用；{strongest.get('location')} "
+            f"共有 {strongest.get('n_values')} 个测量值逐格一致。"
+        )
+
+    for item in n_items[:3]:
+        description = str(item.get("description") or "").rstrip("。")
+        data_parts.append(
+            f"问题位置：{item.get('location')}。"
+            f"发现：{description}。"
+            "为什么重要：样本量是统计检验和误差线解释的基础，图注声明的 n "
+            "与源数据中可见重复列数不一致，会直接影响图文一致性和统计独立性判断。"
+        )
+    if n_items:
+        strongest = n_items[0]
+        reason_parts.append(
+            f"方法学/统计核查：确认图注 n 值与源数据重复列数不一致；"
+            f"{strongest.get('location')} 声明 n={strongest.get('declared_n')}，"
+            f"源数据为 {strongest.get('source_n')} 列。"
+        )
+
+    reason_parts.append(
+        "图像维度：图像线索不是本次自动直达高风险的主要依据。"
+    )
+    reason_parts.append(
+        "参考文献维度：本次自动直达高风险不依赖参考文献异常。"
+    )
+    reason_parts.append(
+        "最终判定：源数据确定性审计已发现可复核的硬证据，建议高风险。"
+    )
+
+    trigger_types = sorted({item.get("test") for item in high if item.get("test")})
+    return {
+        "doi": doi,
+        "result": "高风险",
+        "trigger": "源数据确定性审计：" + "、".join(trigger_types),
+        "image_review": (
+            "图像复核：本次结论主要依据源数据确定性审计结果；"
+            "图像相似性线索未作为自动高风险判定的主要依据。"
+        ),
+        "data_review": "\n".join(data_parts),
+        "ref_review": "参考文献复核：未作为本次自动高风险判定的主要依据。",
+        "methodology_review": "\n".join(
+            part for part in reason_parts if part.startswith("方法学/统计核查")
+        ),
+        "verdict": "建议高风险",
+        "reason": "\n".join(reason_parts),
+        "dimension_verdicts": {
+            "image": "建议低风险",
+            "data": "建议高风险",
+            "ref": "建议低风险",
+            "methodology": "建议高风险" if n_items else "建议低风险",
+        },
+        "_source_data_audit_version": audit.get("version"),
+        "_fastpath_version": DETERMINISTIC_FASTPATH_VERSION,
+    }
+
+
 def _deterministic_highrisk_review_result(doi: str, evidence: dict) -> dict | None:
     """Create a substantive high-risk review when deterministic evidence is already
     strong enough to avoid another tool-heavy LLM pass.
@@ -1924,7 +2294,13 @@ async def run_review_single(
 
     evidence_path = _get_stage(state, "evidence_path")
     if not evidence_path or not Path(evidence_path).exists():
-        evidence_path = _ensure_evidence_bundle(doi, report_json_path, input_dir, artifacts_dir)
+        evidence_path = await asyncio.to_thread(
+            _ensure_evidence_bundle,
+            doi,
+            report_json_path,
+            input_dir,
+            artifacts_dir,
+        )
         _store_stage(state_path, state, "evidence_path", evidence_path)
     else:
         localized = _localize_artifact(evidence_path, artifacts_dir)
@@ -1935,6 +2311,17 @@ async def run_review_single(
     evidence = _load_json_file(evidence_path)
     if evidence:
         _store_stage(state_path, state, "evidence_counts", _evidence_counts(evidence))
+
+    source_audit_final = _source_data_audit_highrisk_review_result(doi, evidence)
+    if _usable_cached_review_result(source_audit_final):
+        final = _clean_internal_references(source_audit_final)
+        _store_stage(state_path, state, "decision", {
+            "flow": "source_data_audit_fastpath",
+            "reason": "源数据确定性审计确认跨图数值矩阵复用或图注 n 值矛盾。",
+        })
+        _store_stage(state_path, state, "final", final)
+        log.info("DOI=%s final verdict=%s via source-data audit", doi, final.get("result"))
+        return final
 
     llm_evidence_path = _get_stage(state, "llm_evidence_path")
     if evidence_path and (not llm_evidence_path or not Path(llm_evidence_path).exists()):
@@ -2174,7 +2561,7 @@ async def _run_judge(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd="/home/sjtu/paper-integrity-checker",
+        cwd=str(BASE_DIR),
     )
 
     try:
@@ -2454,7 +2841,7 @@ async def _run_claude_prompt(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd="/home/sjtu/paper-integrity-checker",
+        cwd=str(BASE_DIR),
     )
 
     try:

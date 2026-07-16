@@ -32,7 +32,7 @@ DB_CONFIG = {
     "password": "fengxian_YJ514", "database": "lunwenyujing", "charset": "utf8",
 }
 TABLE = "yujing_wanbin"
-REPORT_BASE_URL = "http://10.119.9.99/chinese_reports"
+REPORT_BASE_URL = "http://202.120.57.100/chinese_reports"
 
 
 def get_supp_dirs():

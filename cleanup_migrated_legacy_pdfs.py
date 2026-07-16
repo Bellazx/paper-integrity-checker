@@ -62,7 +62,7 @@ def _load_manifest_candidates() -> dict[str, dict]:
             filename = new_url.rsplit("/", 1)[-1]
             src = str(OUTPUT_DIR / "review_v2" / filename)
             dst = str(OUTPUT_DIR / "review_v2" / "yujing_quanliang" / filename)
-            old_url = f"http://10.119.9.99/review_reports/{filename}"
+            old_url = f"http://202.120.57.100/review_reports/{filename}"
             by_src.setdefault(src, {"src": src, "old_urls": set(), "dests": set(), "kinds": set()})
             by_src[src]["old_urls"].add(old_url)
             by_src[src]["dests"].add(dst)

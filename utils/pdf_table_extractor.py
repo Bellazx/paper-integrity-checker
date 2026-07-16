@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import csv
 import logging
+import multiprocessing as mp
+import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -28,6 +31,10 @@ MIN_COLS = 3
 MIN_CELL_RATIO = 0.4
 MIN_NUMERIC_RATIO = 0.2
 MAX_TABLES_PER_PDF = 50  # safety cap
+PAGE_STRATEGY_TIMEOUT_SECONDS = max(
+    1, int(os.getenv("PDF_TABLE_PAGE_TIMEOUT_SECONDS", "30"))
+)
+PAGE_STRATEGY_WORKERS = max(1, int(os.getenv("PDF_TABLE_PAGE_WORKERS", "12")))
 
 
 def _is_numeric_cell(s: str) -> bool:
@@ -86,14 +93,155 @@ _STRATEGIES = [
 ]
 
 
-def _extract_with_strategy(pdf, settings, min_rows: int, min_cols: int) -> list[list[list[str]]]:
+def _extract_page_worker(pdf_path: str, page_index: int, settings: dict, connection) -> None:
+    """Extract one page in an isolated process so pathological geometry can be killed."""
+    try:
+        import pdfplumber
+
+        with pdfplumber.open(pdf_path) as pdf:
+            tables = pdf.pages[page_index].extract_tables(table_settings=settings) or []
+        connection.send(("ok", tables))
+    except BaseException as exc:
+        connection.send(("error", f"{type(exc).__name__}: {exc}"))
+    finally:
+        connection.close()
+
+
+def _extract_page_fitz_worker(
+    pdf_path: str,
+    page_index: int,
+    strategy_name: str,
+    connection,
+) -> None:
+    """Fallback table extraction using MuPDF's independent table engine."""
+    try:
+        import fitz
+
+        document = fitz.open(pdf_path)
+        try:
+            finder = document[page_index].find_tables(strategy=strategy_name)
+            tables = [table.extract() for table in finder.tables]
+        finally:
+            document.close()
+        connection.send(("ok", tables))
+    except BaseException as exc:
+        connection.send(("error", f"{type(exc).__name__}: {exc}"))
+    finally:
+        connection.close()
+
+
+def _run_page_worker_with_timeout(
+    worker,
+    args: tuple,
+    timeout_seconds: int,
+) -> tuple[str, list[list[list[str]]] | str]:
+    context = mp.get_context("spawn")
+    parent_conn, child_conn = context.Pipe(duplex=False)
+    process = context.Process(
+        target=worker,
+        args=(*args, child_conn),
+        daemon=True,
+    )
+    process.start()
+    child_conn.close()
+
+    try:
+        if parent_conn.poll(timeout_seconds):
+            try:
+                status, payload = parent_conn.recv()
+            except EOFError:
+                status, payload = "error", "worker exited without returning a result"
+        else:
+            status, payload = "timeout", f"exceeded {timeout_seconds}s"
+    finally:
+        parent_conn.close()
+
+    if process.is_alive():
+        process.terminate()
+        process.join(3)
+    if process.is_alive():
+        process.kill()
+    process.join()
+    return status, payload
+
+
+def _extract_page_with_timeout(
+    pdf_path: Path,
+    page_index: int,
+    settings: dict,
+    timeout_seconds: int,
+) -> tuple[str, list[list[list[str]]] | str]:
+    return _run_page_worker_with_timeout(
+        _extract_page_worker,
+        (str(pdf_path), page_index, settings),
+        timeout_seconds,
+    )
+
+
+def _extract_page_fitz_with_timeout(
+    pdf_path: Path,
+    page_index: int,
+    strategy_name: str,
+    timeout_seconds: int,
+) -> tuple[str, list[list[list[str]]] | str]:
+    return _run_page_worker_with_timeout(
+        _extract_page_fitz_worker,
+        (str(pdf_path), page_index, strategy_name),
+        timeout_seconds,
+    )
+
+
+def _extract_with_strategy(
+    pdf_path: Path,
+    page_count: int,
+    strategy_name: str,
+    settings: dict,
+    min_rows: int,
+    min_cols: int,
+    timeout_seconds: int,
+    max_workers: int,
+) -> list[list[list[str]]]:
     accepted: list[list[list[str]]] = []
     seen_table_fps: set = set()
-    for page_num, page in enumerate(pdf.pages, start=1):
-        try:
-            tables = page.extract_tables(table_settings=settings) or []
-        except Exception:
+
+    def extract_page(page_index: int):
+        status, payload = _extract_page_with_timeout(pdf_path, page_index, settings, timeout_seconds)
+        if status == "timeout":
+            log.warning(
+                "PDF table extraction timed out: %s page=%d strategy=%s (%s)",
+                pdf_path, page_index + 1, strategy_name, payload,
+            )
+            status, payload = _extract_page_fitz_with_timeout(
+                pdf_path, page_index, strategy_name, timeout_seconds
+            )
+            if status == "ok":
+                log.info(
+                    "PDF table fallback completed: %s page=%d strategy=%s engine=PyMuPDF",
+                    pdf_path, page_index + 1, strategy_name,
+                )
+            else:
+                log.warning(
+                    "PDF table fallback failed: %s page=%d strategy=%s (%s: %s)",
+                    pdf_path, page_index + 1, strategy_name, status, payload,
+                )
+        return page_index, status, payload
+
+    page_results = []
+    with ThreadPoolExecutor(max_workers=min(max_workers, page_count)) as executor:
+        futures = [executor.submit(extract_page, page_index) for page_index in range(page_count)]
+        for future in as_completed(futures):
+            page_results.append(future.result())
+
+    for page_index, status, payload in sorted(page_results):
+        if status == "error":
+            log.warning(
+                "PDF table extraction failed: %s page=%d strategy=%s (%s)",
+                pdf_path, page_index + 1, strategy_name, payload,
+            )
             continue
+        if status != "ok":
+            continue
+        tables = payload
         for t in tables:
             if not t:
                 continue
@@ -129,7 +277,9 @@ def _extract_with_strategy(pdf, settings, min_rows: int, min_cols: int) -> list[
 
 def extract_tables_from_pdf(pdf_path: str, output_dir: str, *,
                              min_rows: int = MIN_ROWS,
-                             min_cols: int = MIN_COLS) -> list[Path]:
+                             min_cols: int = MIN_COLS,
+                             page_strategy_timeout_seconds: int = PAGE_STRATEGY_TIMEOUT_SECONDS,
+                             page_strategy_workers: int = PAGE_STRATEGY_WORKERS) -> list[Path]:
     """Extract tables from one PDF and write them as CSVs under
     `<output_dir>/data_tables/`. Returns the list of written CSV files.
     """
@@ -149,19 +299,29 @@ def extract_tables_from_pdf(pdf_path: str, output_dir: str, *,
 
     try:
         with pdfplumber.open(str(pdf_path)) as pdf:
-            for strat_name, settings in _STRATEGIES:
-                tables = _extract_with_strategy(pdf, settings, min_rows, min_cols)
-                for t_idx, rows in enumerate(tables, start=1):
-                    out_name = f"{pdf_stem}__{strat_name}_table_{t_idx:03d}.csv"
-                    out_path = target_dir / out_name
-                    try:
-                        with open(out_path, "w", encoding="utf-8", newline="") as f:
-                            w = csv.writer(f)
-                            for r in rows:
-                                w.writerow([(c or "").strip() for c in r])
-                        written.append(out_path)
-                    except OSError as e:
-                        log.warning("Failed to write %s: %s", out_path, e)
+            page_count = len(pdf.pages)
+        for strat_name, settings in _STRATEGIES:
+            tables = _extract_with_strategy(
+                pdf_path,
+                page_count,
+                strat_name,
+                settings,
+                min_rows,
+                min_cols,
+                page_strategy_timeout_seconds,
+                page_strategy_workers,
+            )
+            for t_idx, rows in enumerate(tables, start=1):
+                out_name = f"{pdf_stem}__{strat_name}_table_{t_idx:03d}.csv"
+                out_path = target_dir / out_name
+                try:
+                    with open(out_path, "w", encoding="utf-8", newline="") as f:
+                        w = csv.writer(f)
+                        for r in rows:
+                            w.writerow([(c or "").strip() for c in r])
+                    written.append(out_path)
+                except OSError as e:
+                    log.warning("Failed to write %s: %s", out_path, e)
     except Exception as e:
         log.warning("pdfplumber failed to open %s: %s", pdf_path, e)
     if written:

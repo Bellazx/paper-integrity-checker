@@ -19,6 +19,14 @@ from utils.visualization import draw_duplicate_annotation
 log = logging.getLogger(__name__)
 
 MAX_DIMENSION = 1500
+FULL_COPY_SIZE = 256
+FULL_COPY_ASPECT_TOLERANCE = 0.02
+FULL_COPY_PIXEL_CORRELATION = 0.96
+FULL_COPY_EDGE_CORRELATION = 0.88
+FULL_COPY_REGION_COVERAGE = 0.80
+SIFT_MIN_HULL_AREA = SIFT_MIN_REGION_AREA
+TEMPLATE_EDGE_MATCH_THRESHOLD = 0.65
+TEMPLATE_MIN_EDGE_PIXELS = 80
 
 
 @dataclass
@@ -34,6 +42,9 @@ class DuplicateMatch:
     annotation_path: str = ""
     severity: str = "medium"
     details: str = ""
+    source_a: str = ""
+    source_b: str = ""
+    risk_evidence: bool = True
 
 
 def _resize_for_analysis(img: np.ndarray) -> np.ndarray:
@@ -81,48 +92,104 @@ def _same_image_source(a: ExtractedImage, b: ExtractedImage) -> bool:
     return False
 
 
-def _stage1_phash(images: list[ExtractedImage], output_dir: str) -> tuple[list[DuplicateMatch], set[tuple[int, int]]]:
-    """Stage 1: Perceptual hash for near-full duplicates."""
+def _normalized_correlation(a: np.ndarray, b: np.ndarray) -> float:
+    """Compare two same-sized arrays without being affected by brightness scale."""
+    a32 = a.astype(np.float32).ravel()
+    b32 = b.astype(np.float32).ravel()
+    a32 -= a32.mean()
+    b32 -= b32.mean()
+    denom = float(np.linalg.norm(a32) * np.linalg.norm(b32))
+    if denom < 1e-6:
+        return 1.0 if np.allclose(a, b, atol=2) else 0.0
+    return float(np.dot(a32, b32) / denom)
+
+
+def _is_full_image_copy(a: ExtractedImage, b: ExtractedImage) -> bool:
+    """Confirm that two files are alternate renderings of the same complete image.
+
+    PHash alone is intentionally insufficient here because unrelated charts can
+    share a low hash distance. Aspect ratio plus pixel and edge correlation is
+    stable across PDF extraction, resizing, and ordinary image recompression.
+    """
+    ah, aw = a.array.shape[:2]
+    bh, bw = b.array.shape[:2]
+    if min(ah, aw, bh, bw) <= 0:
+        return False
+
+    aspect_a = aw / ah
+    aspect_b = bw / bh
+    if abs(aspect_a - aspect_b) / max(aspect_a, aspect_b) > FULL_COPY_ASPECT_TOLERANCE:
+        return False
+
+    size = (FULL_COPY_SIZE, FULL_COPY_SIZE)
+    gray_a = cv2.resize(_to_gray(a.array), size, interpolation=cv2.INTER_AREA)
+    gray_b = cv2.resize(_to_gray(b.array), size, interpolation=cv2.INTER_AREA)
+    pixel_corr = _normalized_correlation(gray_a, gray_b)
+    if pixel_corr < FULL_COPY_PIXEL_CORRELATION:
+        return False
+
+    edge_a = cv2.Laplacian(gray_a, cv2.CV_32F)
+    edge_b = cv2.Laplacian(gray_b, cv2.CV_32F)
+    edge_corr = _normalized_correlation(edge_a, edge_b)
+    return edge_corr >= FULL_COPY_EDGE_CORRELATION
+
+
+def _regions_cover_both_images(
+    region_a: tuple[int, int, int, int],
+    region_b: tuple[int, int, int, int],
+    image_a: np.ndarray,
+    image_b: np.ndarray,
+) -> bool:
+    """Return True only when a geometric match represents both complete images."""
+    ah, aw = image_a.shape[:2]
+    bh, bw = image_b.shape[:2]
+    if min(ah, aw, bh, bw) <= 0:
+        return False
+
+    _, _, rw_a, rh_a = region_a
+    _, _, rw_b, rh_b = region_b
+    return (
+        rw_a / aw >= FULL_COPY_REGION_COVERAGE
+        and rh_a / ah >= FULL_COPY_REGION_COVERAGE
+        and rw_b / bw >= FULL_COPY_REGION_COVERAGE
+        and rh_b / bh >= FULL_COPY_REGION_COVERAGE
+    )
+
+
+def _content_edges(gray: np.ndarray) -> np.ndarray:
+    """Keep local visual structure while removing long chart axes and borders."""
+    edges = cv2.Canny(gray, 50, 150)
+    horizontal = cv2.morphologyEx(
+        edges,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (max(15, gray.shape[1] // 8), 1)),
+    )
+    vertical = cv2.morphologyEx(
+        edges,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(15, gray.shape[0] // 8))),
+    )
+    return cv2.subtract(edges, cv2.bitwise_or(horizontal, vertical))
+
+
+def _stage1_phash(images: list[ExtractedImage]) -> set[tuple[int, int]]:
+    """Identify confirmed whole-image copies that must not count as risk."""
     hashes = _compute_phashes(images)
     hasher = cv2.img_hash.PHash_create()
-    matches = []
-    matched_pairs = set()
+    equivalent_pairs = set()
 
     for i, j in combinations(range(len(images)), 2):
         if _same_image_source(images[i], images[j]):
             log.debug("Skipping self image comparison: %s", images[i].filepath)
             continue
         dist = hasher.compare(hashes[i], hashes[j])
-        if dist <= PHASH_THRESHOLD:
-            similarity = 1.0 - dist / 64.0
-            severity = "high" if dist <= 5 else "medium"
-
-            ann_path = f"{output_dir}/annotations/phash_pair_{i:03d}_{j:03d}.png"
-            draw_duplicate_annotation(
-                images[i].array, images[j].array,
-                None, None,
-                f"Page {images[i].page_num} img {images[i].img_index}",
-                f"Page {images[j].page_num} img {images[j].img_index}",
-                similarity, "full_duplicate", ann_path,
-            )
-
-            matches.append(DuplicateMatch(
-                image_a_path=images[i].filepath,
-                image_b_path=images[j].filepath,
-                page_a=images[i].page_num,
-                page_b=images[j].page_num,
-                match_type="full_duplicate",
-                similarity_score=similarity,
-                annotation_path=ann_path,
-                severity=severity,
-                details=f"PHash Hamming distance: {dist}",
-            ))
-            matched_pairs.add((i, j))
-            log.info("PHash match: page %d img %d <-> page %d img %d (dist=%d)",
+        if dist <= PHASH_THRESHOLD and _is_full_image_copy(images[i], images[j]):
+            equivalent_pairs.add((i, j))
+            log.info("Ignoring same complete image: page %d img %d <-> page %d img %d (phash=%.0f)",
                      images[i].page_num, images[i].img_index,
                      images[j].page_num, images[j].img_index, dist)
 
-    return matches, matched_pairs
+    return equivalent_pairs
 
 
 def _stage2_sift(images: list[ExtractedImage], skip_pairs: set[tuple[int, int]], output_dir: str) -> tuple[list[DuplicateMatch], list[tuple[int, int, tuple, tuple]]]:
@@ -144,7 +211,6 @@ def _stage2_sift(images: list[ExtractedImage], skip_pairs: set[tuple[int, int]],
 
     matches = []
     region_candidates = []
-
     for i, j in combinations(range(len(images)), 2):
         if _same_image_source(images[i], images[j]):
             continue
@@ -188,6 +254,15 @@ def _stage2_sift(images: list[ExtractedImage], skip_pairs: set[tuple[int, int]],
         inlier_pts_a = pts_a[mask.ravel() == 1].reshape(-1, 2)
         inlier_pts_b = pts_b[mask.ravel() == 1].reshape(-1, 2)
 
+        hull_area_a = cv2.contourArea(cv2.convexHull(inlier_pts_a.astype(np.float32)))
+        hull_area_b = cv2.contourArea(cv2.convexHull(inlier_pts_b.astype(np.float32)))
+        analysis_area_a = resized[i].shape[0] * resized[i].shape[1]
+        analysis_area_b = resized[j].shape[0] * resized[j].shape[1]
+        has_2d_support = (
+            hull_area_a >= SIFT_MIN_HULL_AREA * analysis_area_a
+            and hull_area_b >= SIFT_MIN_HULL_AREA * analysis_area_b
+        )
+
         x1a, y1a = inlier_pts_a.min(axis=0).astype(int)
         x2a, y2a = inlier_pts_a.max(axis=0).astype(int)
         x1b, y1b = inlier_pts_b.min(axis=0).astype(int)
@@ -196,11 +271,17 @@ def _stage2_sift(images: list[ExtractedImage], skip_pairs: set[tuple[int, int]],
         region_a = (int(x1a), int(y1a), int(x2a - x1a), int(y2a - y1a))
         region_b = (int(x1b), int(y1b), int(x2b - x1b), int(y2b - y1b))
 
+        if min(region_a[2], region_a[3], region_b[2], region_b[3]) <= 0:
+            continue
         area_a = region_a[2] * region_a[3]
         area_b = region_b[2] * region_b[3]
-        img_area = resized[i].shape[0] * resized[i].shape[1]
+        img_area_a = resized[i].shape[0] * resized[i].shape[1]
+        img_area_b = resized[j].shape[0] * resized[j].shape[1]
 
-        if area_a < SIFT_MIN_REGION_AREA * img_area and area_b < SIFT_MIN_REGION_AREA * img_area:
+        if not has_2d_support or (
+            area_a < SIFT_MIN_REGION_AREA * img_area_a
+            or area_b < SIFT_MIN_REGION_AREA * img_area_b
+        ):
             continue
 
         similarity = inliers / len(good)
@@ -217,6 +298,16 @@ def _stage2_sift(images: list[ExtractedImage], skip_pairs: set[tuple[int, int]],
         orig_region_b = (int(region_b[0] * sx_b), int(region_b[1] * sy_b),
                          int(region_b[2] * sx_b), int(region_b[3] * sy_b))
 
+        if _regions_cover_both_images(
+            orig_region_a, orig_region_b, images[i].array, images[j].array
+        ):
+            log.info(
+                "Ignoring same complete image confirmed by SIFT: page %d img %d <-> page %d img %d",
+                images[i].page_num, images[i].img_index,
+                images[j].page_num, images[j].img_index,
+            )
+            continue
+
         ann_path = f"{output_dir}/annotations/sift_pair_{i:03d}_{j:03d}.png"
         draw_duplicate_annotation(
             images[i].array, images[j].array,
@@ -225,11 +316,6 @@ def _stage2_sift(images: list[ExtractedImage], skip_pairs: set[tuple[int, int]],
             f"Page {images[j].page_num} img {images[j].img_index}",
             similarity, "partial_region", ann_path,
         )
-
-        if inliers >= 40:
-            sev = "high"
-        else:
-            sev = "medium"
 
         matches.append(DuplicateMatch(
             image_a_path=images[i].filepath,
@@ -241,10 +327,13 @@ def _stage2_sift(images: list[ExtractedImage], skip_pairs: set[tuple[int, int]],
             region_a=orig_region_a,
             region_b=orig_region_b,
             annotation_path=ann_path,
-            severity=sev,
-            details=f"SIFT inliers: {inliers}/{len(good)}",
+            severity="medium",
+            details=f"SIFT candidate: inliers={inliers}/{len(good)}; awaiting template confirmation",
+            source_a=images[i].source_id,
+            source_b=images[j].source_id,
+            risk_evidence=False,
         ))
-        region_candidates.append((i, j, orig_region_a, orig_region_b))
+        region_candidates.append((len(matches) - 1, i, j, orig_region_a, orig_region_b))
 
         log.info("SIFT match: page %d img %d <-> page %d img %d (inliers=%d/%d)",
                  images[i].page_num, images[i].img_index,
@@ -254,11 +343,11 @@ def _stage2_sift(images: list[ExtractedImage], skip_pairs: set[tuple[int, int]],
     return matches, region_candidates
 
 
-def _stage3_template_verify(images: list[ExtractedImage], candidates: list[tuple[int, int, tuple, tuple]], output_dir: str) -> list[DuplicateMatch]:
-    """Stage 3: Multi-scale template matching to verify suspicious regions."""
-    verified = []
+def _stage3_template_verify(images: list[ExtractedImage], candidates: list[tuple[int, int, int, tuple, tuple]], output_dir: str) -> dict[int, DuplicateMatch]:
+    """Verify SIFT candidates, keyed by their existing result index."""
+    verified = {}
 
-    for idx, (i, j, region_a, region_b) in enumerate(candidates):
+    for idx, (match_index, i, j, region_a, region_b) in enumerate(candidates):
         x, y, w, h = region_a
         if w < 20 or h < 20:
             continue
@@ -275,21 +364,28 @@ def _stage3_template_verify(images: list[ExtractedImage], candidates: list[tuple
 
         target_gray = _to_gray(images[j].array)
         template_gray = _to_gray(template)
+        target_content = _content_edges(target_gray)
+        template_content = _content_edges(template_gray)
+        if (
+            cv2.countNonZero(target_content) < TEMPLATE_MIN_EDGE_PIXELS
+            or cv2.countNonZero(template_content) < TEMPLATE_MIN_EDGE_PIXELS
+        ):
+            continue
 
         best_val = -1
         best_scale = 1.0
         best_loc = (0, 0)
 
         for scale in TEMPLATE_SCALES:
-            tw = int(template_gray.shape[1] * scale)
-            th = int(template_gray.shape[0] * scale)
+            tw = int(template_content.shape[1] * scale)
+            th = int(template_content.shape[0] * scale)
             if tw < 10 or th < 10:
                 continue
-            if tw >= target_gray.shape[1] or th >= target_gray.shape[0]:
+            if tw >= target_content.shape[1] or th >= target_content.shape[0]:
                 continue
 
-            scaled_tmpl = cv2.resize(template_gray, (tw, th))
-            result = cv2.matchTemplate(target_gray, scaled_tmpl, cv2.TM_CCOEFF_NORMED)
+            scaled_tmpl = cv2.resize(template_content, (tw, th), interpolation=cv2.INTER_NEAREST)
+            result = cv2.matchTemplate(target_content, scaled_tmpl, cv2.TM_CCOEFF_NORMED)
             _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
             if max_val > best_val:
@@ -297,9 +393,9 @@ def _stage3_template_verify(images: list[ExtractedImage], candidates: list[tuple
                 best_scale = scale
                 best_loc = max_loc
 
-        if best_val >= TEMPLATE_MATCH_THRESHOLD:
-            tw = int(template_gray.shape[1] * best_scale)
-            th = int(template_gray.shape[0] * best_scale)
+        if best_val >= TEMPLATE_EDGE_MATCH_THRESHOLD:
+            tw = int(template_content.shape[1] * best_scale)
+            th = int(template_content.shape[0] * best_scale)
             verified_region_b = (best_loc[0], best_loc[1], tw, th)
 
             ann_path = f"{output_dir}/annotations/template_verified_{idx:03d}.png"
@@ -311,7 +407,7 @@ def _stage3_template_verify(images: list[ExtractedImage], candidates: list[tuple
                 best_val, "template_verified", ann_path,
             )
 
-            verified.append(DuplicateMatch(
+            verified[match_index] = DuplicateMatch(
                 image_a_path=images[i].filepath,
                 image_b_path=images[j].filepath,
                 page_a=images[i].page_num,
@@ -323,7 +419,9 @@ def _stage3_template_verify(images: list[ExtractedImage], candidates: list[tuple
                 annotation_path=ann_path,
                 severity="high",
                 details=f"Template match: score={best_val:.4f}, scale={best_scale:.2f}",
-            ))
+                source_a=images[i].source_id,
+                source_b=images[j].source_id,
+            )
             log.info("Template verified: page %d <-> page %d (score=%.4f, scale=%.2f)",
                      images[i].page_num, images[j].page_num, best_val, best_scale)
 
@@ -344,15 +442,26 @@ def check_image_duplicates(images: list[ExtractedImage], output_dir: str) -> lis
     same_page_pairs = sum(c * (c - 1) // 2 for c in page_counts.values())
 
     log.info("Stage 1: PHash screening (%d images, %d same-page pairs)", len(images), same_page_pairs)
-    phash_matches, phash_pairs = _stage1_phash(images, output_dir)
+    equivalent_pairs = _stage1_phash(images)
 
     log.info("Stage 2: SIFT partial region matching")
-    sift_matches, sift_candidates = _stage2_sift(images, phash_pairs, output_dir)
+    sift_matches, sift_candidates = _stage2_sift(images, equivalent_pairs, output_dir)
 
     log.info("Stage 3: Template matching verification (%d candidates)", len(sift_candidates))
     template_matches = _stage3_template_verify(images, sift_candidates, output_dir)
 
-    all_matches = phash_matches + sift_matches + template_matches
+    for match_index, verification in template_matches.items():
+        match = sift_matches[match_index]
+        same_document = bool(match.source_a and match.source_a == match.source_b)
+        if same_document and match.page_a == match.page_b and match.page_a > 0:
+            continue
+        match.severity = "high"
+        match.similarity_score = max(match.similarity_score, verification.similarity_score)
+        match.annotation_path = verification.annotation_path
+        match.details = f"SIFT inliers confirmed; {verification.details}"
+        match.risk_evidence = True
+
+    all_matches = sift_matches
 
     results = []
     for m in all_matches:
@@ -368,8 +477,11 @@ def check_image_duplicates(images: list[ExtractedImage], output_dir: str) -> lis
             "annotation_path": m.annotation_path,
             "severity": m.severity,
             "details": m.details,
+            "source_a": m.source_a,
+            "source_b": m.source_b,
+            "risk_evidence": m.risk_evidence,
         })
 
-    log.info("Total suspicious image pairs: %d (phash=%d, sift=%d, template=%d)",
-             len(results), len(phash_matches), len(sift_matches), len(template_matches))
+    log.info("Total suspicious image pairs: %d (whole-image copies ignored=%d, sift=%d, template=%d)",
+             len(results), len(equivalent_pairs), len(sift_matches), len(template_matches))
     return results

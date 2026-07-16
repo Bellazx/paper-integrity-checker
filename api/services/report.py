@@ -9,7 +9,7 @@ import signal
 from pathlib import Path
 
 from api.config import (
-    PYTHON, REVIEW_REPORT_SCRIPT, REVIEW_DIR,
+    BASE_DIR, PYTHON, REVIEW_REPORT_SCRIPT, REVIEW_DIR,
     DEFAULT_TABLE, REPORT_TIMEOUT_SECONDS, sanitize_report_namespace,
 )
 from modules.chinese_report_generator import doi_to_slug
@@ -104,7 +104,8 @@ async def generate_reports(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd="/home/sjtu/paper-integrity-checker",
+        cwd=str(BASE_DIR),
+        env={**os.environ, "PAPER_INTEGRITY_ROOT": str(BASE_DIR)},
         start_new_session=True,
     )
 

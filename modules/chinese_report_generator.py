@@ -34,7 +34,7 @@ METHODS_HTML = """
 <p style="font-size:9.5pt; color:#333; margin-bottom:8pt;"><b>第三步"精确验证"：</b>对第二步标记的可疑区域，在多种缩放比例下进行逐像素比对确认，最终判定是否存在真实的图像重复。</p>
 
 <p style="font-size:10pt; font-weight:bold; color:#1a1a1a; margin-top:10pt; margin-bottom:4pt;">2. 数据异常检测</p>
-<p style="font-size:9.5pt; color:#333; margin-bottom:3pt;">本系统对论文附带的源数据文件（Excel/CSV/DOCX/FCS/SAV/PDB）进行检查；其中表格类数据进行统计异常检验，PDB结构文件进行坐标记录完整性核查：</p>
+<p style="font-size:9.5pt; color:#333; margin-bottom:3pt;">本系统对论文附带的源数据文件（Excel/CSV/DOCX/FCS/SAV/PDB/CIF）进行检查；其中表格类数据进行统计异常检验，PDB与CIF结构文件进行晶体或分子结构完整性核查：</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>变异系数检验：</b>计算每组数据的离散程度。真实的实验测量数据天然存在波动，若一组重复测量值完全相同（变异系数为0）或极度接近，则高度可疑。</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>等差/等比数列检验：</b>检查数据值是否排列成完美的数学数列。真实实验数据不可能呈现完美的等差或等比规律，出现此类模式提示数据可能非自然生成。</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>本福特定律检验：</b>自然产生的数值数据中，首位数字"1"出现的频率远高于"9"。人为构造的数据往往不符合这一规律，通过统计检验可以识别出偏离自然分布的数据集。</p>
@@ -42,6 +42,7 @@ METHODS_HTML = """
 <p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>跨列线性依赖检验：</b>对同一数据表中的各组数据列进行两两线性回归分析，检测是否存在近乎完美的线性关系（y = a×x + b, R²≥0.9999）。若两条本应独立采集的实验曲线之间R²接近1.0，尤其当斜率恰好为整数倍（如2、5、10）时，强烈提示其中一条曲线可能是通过对另一条曲线进行数学缩放/平移生成的，而非真实独立测量所得。</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:8pt;"><b>数值合理性检验：</b>对测量数据的末位数字分布、标准差列的取值规律等进行核查。真实测量数据的末位数字通常较为均匀，标准差也极少全为整数或完全相同的精度；若出现明显偏离，提示相关数值可能并非自然测量所得。</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:8pt;"><b>PDB结构文件核查：</b>解析ATOM/HETATM坐标记录，检查重复原子身份、重复坐标、异常occupancy/B-factor、零坐标和格式无法解析等可直接核实的问题。</p>
+<p style="font-size:9.5pt; color:#333; margin-bottom:8pt;"><b>CIF晶体结构文件核查：</b>使用晶体学解析器检查文件语法、数据块、晶胞与空间群、原子坐标、占位率、位移参数、异常短接触、化学式量、密度及精修质量指标；检测结果属于风险线索，需结合论文正文和领域专家意见复核。</p>
 
 <p style="font-size:10pt; font-weight:bold; color:#1a1a1a; margin-top:10pt; margin-bottom:4pt;">3. 参考文献核验</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:8pt;">通过DOI（数字对象标识符）向CrossRef国际学术数据库查询每条参考文献的真实性，验证其是否真实存在、标题与作者是否匹配。</p>
@@ -477,11 +478,15 @@ def _is_cross_image_duplicate(issue: dict) -> bool:
     """True for duplicate evidence across distinct images/pages; false for same-page layout echoes."""
     if not isinstance(issue, dict):
         return False
+    if issue.get("risk_evidence") is False:
+        return False
     a, b = issue.get("image_a", ""), issue.get("image_b", "")
     pa, pb = issue.get("page_a", 0), issue.get("page_b", 0)
+    source_a, source_b = issue.get("source_a", ""), issue.get("source_b", "")
     if a and b and a == b:
         return False
-    if pa == pb and pa > 0:
+    same_document = source_a == source_b if source_a and source_b else True
+    if same_document and pa == pb and pa > 0:
         return False
     return True
 
@@ -752,7 +757,8 @@ def _compute_overall_risk(findings: dict) -> dict:
         # 2026-06-07: 漏判修复 — 18篇确认高风险论文因单一维度高分但组合条件
         # 不满足而被判低风险。新增独立触发条件：
         or image_risk["score"] >= 80     # 图像维度极高（如 sciimmunol.adh1306 pic=100）
-        or data_risk["score"] >= 20      # 数据维度中高（如 41467-025-62951-z data=37）
+        or (data_risk["high"] >= 1 and data_risk["score"] >= 20)  # 数据维度需有 high 证据
+        or (data_risk["score"] >= 45 and data_risk["medium"] >= 8)  # 大量中等数据信号
         or (ref_risk["score"] >= 40 and data_risk["score"] >= 15)  # 引用+数据组合
         or score >= 56                   # 总分接近阈值（如 41587-020-00781-8 total=56）
         # 2026-06-24: 漏判修复 — fcimb 2025.1559182 图像 1 high + 数据 1 high 但被 image<30 拦在门外
@@ -783,7 +789,9 @@ def _compute_overall_risk(findings: dict) -> dict:
         # 2026-06-07 新增触发条件的维度追踪
         if image_risk["score"] >= 80:
             high_dims.add("image")
-        if data_risk["score"] >= 20:
+        if data_risk["high"] >= 1 and data_risk["score"] >= 20:
+            high_dims.add("data")
+        if data_risk["score"] >= 45 and data_risk["medium"] >= 8:
             high_dims.add("data")
         if ref_risk["score"] >= 40 and data_risk["score"] >= 15:
             high_dims.add("reference")
@@ -979,7 +987,7 @@ def _build_full_html(findings: dict, analysis_html: str) -> str:
     disclaimer = DISCLAIMER_HTML.format(date=today)
 
     full_html = f"""
-<body style="font-family: {FONT_REGULAR};">
+<body style='font-family: {FONT_REGULAR};'>
 {header_html}
 {risk_score_html}
 {analysis_html}

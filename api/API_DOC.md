@@ -4,7 +4,7 @@
 
 ## 基本信息
 
-- 服务根地址：`http://10.119.9.99/paper-api`
+- 服务根地址：`http://202.120.57.100/paper-api`
 - FastAPI 内部前缀：`/api`
 - 前端推荐流程：`POST /api/upload` -> `POST /api/detection/submit` -> `GET /api/task/{task_id}`
 - 开发者写入 `yujing_*` 表流程：`POST /api/upload` -> `POST /api/task/submit` -> `GET /api/task/{task_id}`
@@ -17,9 +17,9 @@
 完整外部 URL 示例：
 
 ```text
-http://10.119.9.99/paper-api/api/upload
-http://10.119.9.99/paper-api/api/detection/submit
-http://10.119.9.99/paper-api/api/task/{task_id}
+http://202.120.57.100/paper-api/api/upload
+http://202.120.57.100/paper-api/api/detection/submit
+http://202.120.57.100/paper-api/api/task/{task_id}
 ```
 
 ## 接口总览
@@ -130,7 +130,7 @@ Content-Type: multipart/form-data
 示例：
 
 ```bash
-curl -X POST "http://10.119.9.99/paper-api/api/upload" \
+curl -X POST "http://202.120.57.100/paper-api/api/upload" \
   -F "file=@paper.zip" \
   -F "username=frontend_user"
 ```
@@ -209,7 +209,7 @@ Content-Type: application/json
 单篇示例：
 
 ```bash
-curl -X POST "http://10.119.9.99/paper-api/api/detection/submit" \
+curl -X POST "http://202.120.57.100/paper-api/api/detection/submit" \
   -H "Content-Type: application/json" \
   -d '{
     "file_id": "20260602103015_frontend_user",
@@ -223,7 +223,7 @@ curl -X POST "http://10.119.9.99/paper-api/api/detection/submit" \
 批量示例：
 
 ```bash
-curl -X POST "http://10.119.9.99/paper-api/api/detection/submit" \
+curl -X POST "http://202.120.57.100/paper-api/api/detection/submit" \
   -H "Content-Type: application/json" \
   -d '{
     "file_id": "20260602104520_frontend_user",
@@ -287,7 +287,7 @@ Content-Type: application/json
 示例：
 
 ```bash
-curl -X POST "http://10.119.9.99/paper-api/api/task/submit" \
+curl -X POST "http://202.120.57.100/paper-api/api/task/submit" \
   -H "Content-Type: application/json" \
   -d '{
     "file_id": "20260602103015_dev",
@@ -313,7 +313,7 @@ GET /api/task/{task_id}
 示例：
 
 ```bash
-curl "http://10.119.9.99/paper-api/api/task/20260602-a1b2c3d4"
+curl "http://202.120.57.100/paper-api/api/task/20260602-a1b2c3d4"
 ```
 
 处理中响应示例：
@@ -376,9 +376,9 @@ curl "http://10.119.9.99/paper-api/api/task/20260602-a1b2c3d4"
         "fold_name": null,
         "doi": "10.3389/fcimb.2021.649067",
         "chushen_result": "高风险",
-        "chushen_report_url": "http://10.119.9.99/chinese_reports/detection_reports/10.3389_fcimb.2021.649067_xxx.pdf",
+        "chushen_report_url": "http://202.120.57.100/chinese_reports/detection_reports/10.3389_fcimb.2021.649067_xxx.pdf",
         "review_result": "低风险",
-        "review_report_url": "http://10.119.9.99/review_reports/detection_reports/review_10.3389_fcimb.2021.649067.pdf",
+        "review_report_url": "http://202.120.57.100/review_reports/detection_reports/review_10.3389_fcimb.2021.649067.pdf",
         "status": 2,
         "review_error": null
       }
@@ -484,7 +484,7 @@ DELETE /api/task/{task_id}
 基础健康检查：
 
 ```bash
-curl "http://10.119.9.99/paper-api/api/health"
+curl "http://202.120.57.100/paper-api/api/health"
 ```
 
 响应：
@@ -500,7 +500,7 @@ curl "http://10.119.9.99/paper-api/api/health"
 详细健康检查：
 
 ```bash
-curl "http://10.119.9.99/paper-api/api/health/detailed"
+curl "http://202.120.57.100/paper-api/api/health/detailed"
 ```
 
 响应：
@@ -538,7 +538,7 @@ Accept: application/x-ndjson
 示例：
 
 ```bash
-curl -N -X POST "http://10.119.9.99/paper-api/api/run" \
+curl -N -X POST "http://202.120.57.100/paper-api/api/run" \
   -F "file=@paper.zip" \
   -F "mode=single" \
   -F "doi=10.1038/s41586-024-00123-4" \
@@ -599,13 +599,13 @@ Content-Type: multipart/form-data
 初审中文报告：
 
 ```text
-http://10.119.9.99/chinese_reports/{namespace}/{filename}.pdf
+http://202.120.57.100/chinese_reports/{namespace}/{filename}.pdf
 ```
 
 AI 复核报告：
 
 ```text
-http://10.119.9.99/review_reports/{namespace}/review_{doi_slug}.pdf
+http://202.120.57.100/review_reports/{namespace}/review_{doi_slug}.pdf
 ```
 
 `doi_slug` 规则与代码中的 `doi_to_slug()` 一致，通常是把 DOI 中的 `/` 等特殊字符替换成 `_`：

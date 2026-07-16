@@ -33,7 +33,7 @@ DB_CONFIG = {
     "charset": "utf8",
 }
 
-REPORT_BASE_URL = "http://10.119.9.99/chinese_reports"
+REPORT_BASE_URL = "http://202.120.57.100/chinese_reports"
 
 SJTU_KEYWORDS = [
     "Shanghai Jiao Tong", "Shanghai Jiaotong", "Jiaotong University",
