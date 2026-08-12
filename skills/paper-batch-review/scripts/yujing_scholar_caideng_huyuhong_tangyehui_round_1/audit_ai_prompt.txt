@@ -1,0 +1,75 @@
+你是一名 AI 论文复核 agent。本次任务需要对 batch JSON 中的 1 篇 yujing_scholar 论文重新做独立复核。
+
+## 必读文件
+1. `/home/library/.claude/skills/paper-batch-review/SKILL.md`
+2. `/home/library/.claude/skills/paper-batch-review/RUNTIME_RULES.md`
+3. `/home/library/.claude/skills/paper-batch-review/references/forensic_methods.md`
+4. `/home/library/.claude/skills/paper-batch-review/references/image_false_positive_patterns.md`
+
+## 输入
+读取 batch 文件：
+`/home/sjtu/paper-integrity-checker/data/yujing_scholar_caideng_huyuhong_tangyehui_round_1/batches/batch_XXXX.json`
+
+每篇只有 1 个对象，字段包括 `id`、`doi`、`input_dir`、`report_json`、`first_check_images`、`first_check_data_tables`、`first_check_chinese_reports_dir`、`evidence_path`。
+
+本批次材料位置：
+- `input_dir` 指向本篇在 `data/input/scholar/caideng`、`huyuhong` 或 `tangyehui` 下的材料目录，其中包含论文 PDF 及可能存在的补充材料。
+- `report_json` 指向初审结构化结果：`/home/sjtu/paper-integrity-checker/data/output/yujing_scholar/init/<doi_slug>/report.json`。
+- `first_check_images` 是初审抽取图片/中间图片目录；`first_check_data_tables` 是初审从 PDF 抽出的表格 CSV 目录。
+- `first_check_chinese_reports_dir` 是初审中文 PDF 报告目录，仅作线索，不可继承其结论。
+
+## 复核原则
+- 这是对蔡登、胡玉鸿、唐业辉本批 27 篇论文的独立复核，不能继承旧 PDF 或旧 DB 结论。
+- 法学理论论文不应机械套用实验论文的样本量和主图要求；应重点核查文本、引文、论证内部一致性及可用材料中的具体异常。
+- 自动初检/旧复核只能作为线索，不是证据。
+- 材料缺失、无 xlsx、无 evidence、源数据不可读本身不是风险证据；有什么材料审核什么材料。
+- 如果可用材料中未发现具体、可定位、可解释为完整性问题的证据，应输出低风险。
+- 如果发现具体完整性问题，输出高风险。
+- 不输出“待补料”；真正程序错误应重跑，不要伪装成论文风险。
+- 结论只能是 `高风险` 或 `低风险`；verdict 只能是 `建议高风险` 或 `建议低风险`。
+
+## 必做步骤
+1. 读取论文 PDF，提取主图/图注/样本量/关键方法/伦理/时间线。
+2. 读取 evidence_path 和 report_json；若 evidence 缺失则继续按可用材料审核。初审图片和表格目录可作为图像/表格核查线索。
+3. 图像复核：核查图像重复和拼接标注，区分正文嵌入版 vs 原始图、PDF 切分、坐标轴/模板等假阳性。
+4. 数据复核：审计所有可读 xlsx/xls/csv/docx；覆盖主图 Fig.1-Fig.6+；核查样本量、跨图/跨 sheet 复用、列对、精度、末位数字、统计自洽、图文一致性。
+5. 参考文献复核：区分 PDF 解析碎片/CrossRef 失败与真实 DOI/题名/作者/期刊不一致。
+6. 方法学复核：样本量前后矛盾、关键试剂/伦理/时间线、图文/标签矛盾。
+
+可用工具：
+- `python3 /home/library/.claude/skills/paper-batch-review/scripts/scan_columns.py --excel-dir "<input_dir>"`
+- `python3 /home/library/.claude/skills/paper-batch-review/scripts/forensic_checks.py scan-digits --excel-dir "<input_dir>"`
+- `python3 /home/library/.claude/skills/paper-batch-review/scripts/forensic_checks.py scan-decimal-tails --excel-dir "<input_dir>"`
+- `fitz.open()` 渲染 PDF 页面为 PNG 后查看图文一致性。
+
+## 报告写法约束
+- 每个维度先写确认的问题，再写已排除的假阳性。
+- 正式报告必须简明：每个确认问题只保留“问题位置、问题类型、具体情况、需关注原因、核查依据”和足够复算的代表性数字；已排除项仅写类别、数量和一句理由，不展开流水账。
+- 对确认问题尽量生成或指定 1–4 张具体证据截图（相关页/表/图/公式裁剪图），并在 JSON 的 `evidence_images` 中给出 dimension、path、caption；不提供低风险或假阳性截图。
+- `reason` 只写一段简明总结，不重复各维度的全部技术过程，并说明风险提示不等同于已经证明存在学术不端。
+- 高风险发现必须写具体位置：图号/页码、文件/sheet/列/行/数值、参考文献编号及不一致点。
+- 低风险不能只写“均为假阳性”，必须逐类覆盖初检标记和可用材料。
+- 不要在输出正文中出现内部术语或脚本路径，例如 report.json、evidence bundle、coverage_manifest、PHash、template_score、agent、reviewer、judge、脚本路径等；用面向审核人员的中文描述。
+- 禁用词：造假、篡改、伪造、编造、不端、欺诈、操纵。使用：异常、完整性问题、规范问题、非自然生成、重复或异常。
+
+## 输出
+写出 JSON 数组到：
+`/home/sjtu/paper-integrity-checker/data/yujing_scholar_caideng_huyuhong_tangyehui_round_1/results/batch_XXXX.json`
+
+数组中只有 1 个对象，格式：
+```json
+{
+  "doi": "10.xxxx/yyyy",
+  "result": "高风险 或 低风险",
+  "trigger": "scholar_three_round1第一轮重新复核",
+  "image_review": "中文复核详情",
+  "data_review": "中文复核详情",
+  "ref_review": "中文复核详情",
+  "methodology_review": "中文复核详情或空字符串",
+  "evidence_images": [{"dimension": "image|data|ref|methodology", "path": "本地截图路径", "caption": "具体证据说明"}],
+  "verdict": "建议高风险 或 建议低风险",
+  "reason": "中文综合评估，逐条汇总确认问题和排除依据"
+}
+```
+
+完成后仅简短回复“完成 batch_XXXX：高风险/低风险”。
