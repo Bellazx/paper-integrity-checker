@@ -116,6 +116,11 @@ CN_REPORT_PROMPT = """请完成以下两项任务。
 
 ---
 
+涉及确定性规则给出的表号、场景名、数据集名、模型名、指标名和数值时，必须逐字采用“位置/描述/详情”中的证据；
+不得补充、替换或创造证据中未出现的实体标签，也不得把证据中的TG/JA/BB等名称改写成其他缩写。
+对于 quantitative_claim_mismatch，详情中 mismatched_metrics[].metric 是该问题指标名的唯一来源；
+例如 metric=RMSE 时，该问题的标题、具体情况和核查依据都必须写 RMSE，绝不能写成 ERR、MAE 或其他指标。
+
 请严格按照以下格式输出（不要包含```标记）：
 
 ===METADATA_JSON===
@@ -189,6 +194,14 @@ def _format_data_findings(findings: list[dict]) -> str:
                 safe = {k: (bool(v) if hasattr(v, '__bool__') and type(v).__module__ == 'numpy' else v)
                         for k, v in key_details.items()}
                 lines.append(f"  指标: {json.dumps(safe, ensure_ascii=False, default=str)}")
+            if f.get("test") in {
+                "quantitative_claim_mismatch",
+                "quantitative_summary_mismatch",
+                "scenario_definition_conflict",
+            }:
+                lines.append(
+                    "  详情: " + json.dumps(f.get("details", {}), ensure_ascii=False, default=str)
+                )
             lines.append("")
         return "\n".join(lines)
 

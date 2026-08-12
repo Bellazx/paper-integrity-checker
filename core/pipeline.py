@@ -518,6 +518,19 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
     ref_count = 0
     text_pages = extract_text(pdf_path)
     full_text = "\n".join(p["text"] for p in text_pages)
+
+    # Check contradictions that live inside the manuscript rather than in
+    # attached source-data files: equations, tables, quantitative claims, and
+    # cross-table scenario definitions.
+    try:
+        from modules.manuscript_consistency_checker import check_manuscript_consistency
+        consistency_issues = check_manuscript_consistency(pdf_path, full_text)
+        data_results.extend(consistency_issues)
+        if consistency_issues:
+            log.info("Manuscript consistency checks: %d finding(s)", len(consistency_issues))
+    except Exception as exc:
+        log.warning("Manuscript consistency checks failed (continuing): %s", exc)
+
     ref_match = re.search(r'(?:References|REFERENCES|Bibliography)', full_text)
     if ref_match:
         ref_section = full_text[ref_match.end():]
