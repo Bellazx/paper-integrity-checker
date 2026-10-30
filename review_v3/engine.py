@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -342,7 +343,7 @@ class Review:
     async def calibrate(self, finals: dict) -> dict:
         """Second look at the severity of every confirmed issue (both directions)."""
         issues = [r for r in finals.values() if r.get("status") == "issue"]
-        if not any(r.get("severity") == "substantive" for r in issues):
+        if not issues:
             return finals
         path = self.ledger_path("cal", "all")
         ledger.create(path, {"shard": "calibrate", "role": "calibrator", "allow_new": False},
@@ -446,18 +447,17 @@ class Review:
                                                              draft if gaps else None),
                                        max_chunks=1, chunk_turns=config.WRITER_TURNS, deadline=self.deadline)
             outcome = await session.run(spec)
-            parsed = _extract_json_from_text(outcome.text or "")
-            if not isinstance(parsed, dict):
+            parsed = _review_json(outcome.text or "") or _extract_json_from_text(outcome.text or "")
+            if not isinstance(parsed, dict) or not any(parsed.get(f) for f in REVIEW_FIELDS):
                 gaps = ["输出不是有效 JSON 对象，请只输出 JSON"] + (
                     [f"写作阶段模型服务异常：{outcome.error}"] if outcome.error else [])
                 continue
             result = _normalize_review_result(parsed)
             result.update(doi=self.doi, **verdicts)
-            images = [ev for dim in DIMENSIONS for ev in evidence[dim]]
-            result["evidence_images"] = images
             for field in ("image_review", "data_review", "ref_review", "methodology_review", "reason", "trigger"):
                 if not isinstance(result.get(field), str):
                     result[field] = "" if result.get(field) is None else json.dumps(result[field], ensure_ascii=False)
+            result["evidence_images"] = _bind_evidence(result, evidence)
             result = _clean_internal_references(result)
             checked, gaps = validate(result, self.evidence)
             _write_json(self.run_dir / f"writer_{attempt}.json", {"result": result, "gaps": gaps})
@@ -466,6 +466,47 @@ class Review:
             draft = {k: result.get(k) for k in ("image_review", "data_review", "ref_review", "methodology_review",
                                                  "reason", "trigger")}
         return None, gaps
+
+
+REVIEW_FIELDS = ("image_review", "data_review", "ref_review", "methodology_review", "reason")
+DIMENSION_FIELD = {"image": "image_review", "data": "data_review", "ref": "ref_review", "methodology": "methodology_review"}
+ISSUE_HEAD = re.compile(r"(?<!\n)[ \t]*([（(]\d+[）)][ \t]*问题位置[：:])")
+
+
+def _review_json(text: str) -> dict | None:
+    """The JSON object in the writer's reply that actually holds the review."""
+    decoder, best, best_score = json.JSONDecoder(), None, 0
+    for start in [i for i, ch in enumerate(text) if ch == "{"][:200]:
+        try:
+            value, _ = decoder.raw_decode(text[start:])
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            score = sum(1 for f in REVIEW_FIELDS if isinstance(value.get(f), str) and value.get(f))
+            if score > best_score:
+                best, best_score = value, score
+    return best
+
+
+def _bind_evidence(result: dict, evidence: dict) -> list[dict]:
+    """Put every numbered issue on its own line, then keep only screenshots
+    whose issue number exists in that dimension's text (the layout binds by
+    number; a dangling number would block publication)."""
+    from modules.review_report_layout import split_review_issues
+    images = []
+    for dim, field in DIMENSION_FIELD.items():
+        text = ISSUE_HEAD.sub(lambda m: "\n\n" + m.group(1), result.get(field) or "")
+        result[field] = text
+        try:
+            numbers = {index for index, _ in split_review_issues(text)[1]}
+        except ValueError:
+            numbers = set()
+        kept = [ev for ev in evidence.get(dim, []) if ev.get("issue_index") in numbers]
+        if len(kept) < len(evidence.get(dim, [])):
+            log.warning("writer numbering left %d %s screenshots unbound; dropped",
+                        len(evidence.get(dim, [])) - len(kept), dim)
+        images.extend(kept)
+    return images
 
 
 # ------------------------------------------------------------------ entry

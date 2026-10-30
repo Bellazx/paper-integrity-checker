@@ -273,7 +273,8 @@ def test_engine_dispute_goes_to_arbitration_and_records_lesson(tmp_path, fake_cl
 
 def test_engine_minor_issue_does_not_raise_risk(tmp_path, fake_cli, monkeypatch):
     configure, _ = fake_cli
-    configure(investigator={"issue": {"high::data::0": "minor"}}, challenger={"issue": {"high::data::0": "minor"}})
+    configure(investigator={"issue": {"high::data::0": "minor"}}, challenger={"issue": {"high::data::0": "minor"}},
+              calibrator={"issue": {"high::data::0": "minor"}})
     paper = _make_paper(tmp_path)
     result = _run(paper, tmp_path, monkeypatch)
     assert result["result"] == "低风险" and "问题位置" in result["data_review"]
@@ -469,3 +470,18 @@ def test_stalled_session_gets_a_wrapup_that_keeps_its_findings(tmp_path, fake_cl
     assert outcome.status == "done"  # the wrap-up closed every item
     assert ledger.load(path)["items"]["i"]["status"] == "cleared"
     assert calls()[-1]["turns"] == str(config.WRAPUP_TURNS)
+
+
+def test_writer_output_normalization(tmp_path):
+    text = ('先调用工具 {"command": "ls"} 然后输出：\n'
+            '{"doi": "x", "data_review": "（1）问题位置：Fig. 1。发现：a。（2）问题位置：Table 2。发现：b", '
+            '"image_review": "核查了全部图像", "ref_review": "r", "methodology_review": "m", "reason": "z"}')
+    parsed = engine._review_json(text)
+    assert parsed["doi"] == "x"
+    shot = tmp_path / "s.png"
+    shot.write_bytes(b"x")
+    evidence = {"data": [{"path": str(shot), "dimension": "data", "issue_index": 2},
+                         {"path": str(shot), "dimension": "data", "issue_index": 5}]}
+    images = engine._bind_evidence(parsed, evidence)
+    assert "\n\n（2）问题位置" in parsed["data_review"]
+    assert [i["issue_index"] for i in images] == [2]

@@ -240,6 +240,7 @@ async def _with_signals(coro):
     try:
         return await task
     except asyncio.CancelledError:
+        await asyncio.sleep(1)  # let killed sessions' pipes close inside the loop
         log.warning("cancelled; model sessions terminated, progress saved")
 
 
