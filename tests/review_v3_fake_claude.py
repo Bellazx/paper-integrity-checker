@@ -79,6 +79,8 @@ def main():
         write_report(prompt)
         return
     behaviour = scenario.get(actor, scenario.get(role, "clear_all"))
+    if "收尾" in prompt and scenario.get("wrapup"):
+        behaviour = scenario["wrapup"]
     data = json.loads(Path(os.environ["PV3_LEDGER"]).read_text())
     open_items = [i for i in data["items"].values() if i.get("status", "open") == "open"]
     if behaviour == "noop" or not open_items:

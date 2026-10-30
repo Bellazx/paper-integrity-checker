@@ -494,11 +494,15 @@ def cmd_refcheck(args):
             print("未定位到参考文献段，无法逐条核验；用 pv3 find 'References' 查找后人工核查")
         return
     report = json.loads(path.read_text(encoding="utf-8"))
-    out = [f"共解析 {report['entries']} 条；结果统计 {report['counts']}（ok=题名与权威记录一致）",
-           "说明：lookup_failed 是网络/接口问题，不是引用异常；weak_match/no_match 多为无 DOI 条目检索不到，需看原文判断。"]
-    for row in report["results"]:
-        if not args.all and row["status"] == "ok":
-            continue
+    priority = {"doi_not_found": 0, "doi_mismatch": 0, "no_match": 1, "weak_match": 2,
+                "unmatched_non_journal": 3, "lookup_failed": 4}
+    out = [f"共解析 {report['entries']} 条；结果统计 {report['counts']}",
+           "说明：ok=题名与权威记录一致；not_indexed_type=网页/预印本，CrossRef 不收录，不作为问题；"
+           "unmatched_non_journal=会议/图书检索不到，低优先级；lookup_failed=网络问题，不是引用异常。"
+           "需要判断的是 doi_not_found、doi_mismatch，其次 no_match（期刊条目查不到）。"]
+    rows = [r for r in report["results"] if args.all or r["status"] in priority]
+    rows.sort(key=lambda r: (priority.get(r["status"], 9), r["num"]))
+    for row in rows:
         record = row.get("record") or {}
         out.append(f"[{row['num']}] {row['status']} 相似度={row.get('title_similarity')} {row.get('note', '')}\n"
                    f"   原文：{row['text'][:260]}\n"

@@ -425,3 +425,47 @@ def test_batch_manifest_review_and_resume(tmp_path, fake_cli, monkeypatch):
     count = len(calls())
     asyncio.run(batch.run(args))  # a finished paper is not reviewed again
     assert len(calls()) == count
+
+
+# ------------------------------------------------------------------ reference precheck
+
+def test_refcheck_types_and_split_dois(tmp_path, monkeypatch):
+    from review_v3 import refcheck
+    text = "\n".join([
+        "References",
+        "1. [n. d.]. ACM Digital Library. Retrieved November 1, 2025 from https://dl.acm.org/",
+        "2. A. Author. 2024. A model. arXiv:2401.00001",
+        "3. B. Author. 2025. Split title. IEEE Trans. 1, 2 (2025). DOI:https://doi.org/10.1109/TSE.",
+        "2025.3564599",
+        "4. C. Author. 2014. Guidelines. DOI:https://doi.org/10.1145/2601248.2601268 ACM Comput. Surv., Vol. 58",
+        "Supplementary data",
+        "5. not a reference",
+    ])
+    calls = []
+
+    def fake_get(url, cache_dir):
+        calls.append(url)
+        if url.endswith("10.1109/TSE.2025.3564599") or url.endswith("10.1145/2601248.2601268"):
+            title = "Split title" if "TSE" in url else "Guidelines"
+            return {"DOI": "x", "title": [title], "author": [{"family": "Author"}]}, "ok"
+        return None, "not_found"
+    monkeypatch.setattr(refcheck, "_get", fake_get)
+    report = refcheck.run(text, tmp_path / "r.json")
+    by_num = {r["num"]: r for r in report["results"]}
+    assert report["entries"] == 4  # parsing stops at the supplementary section
+    assert by_num[1]["status"] == by_num[2]["status"] == "not_indexed_type"
+    assert by_num[3]["status"] == "ok" and by_num[3]["doi"] == "10.1109/TSE.2025.3564599"
+    assert by_num[4]["status"] == "ok"  # page header after the DOI is not glued on
+
+
+def test_stalled_session_gets_a_wrapup_that_keeps_its_findings(tmp_path, fake_cli):
+    configure, calls = fake_cli
+    configure(investigator="noop", wrapup="clear_all")
+    path = tmp_path / "l.json"
+    ledger.create(path, {}, [{"id": "i", "title": "t"}])
+    spec = _spec(tmp_path, path)
+    spec.wrapup_prompt = lambda state: "收尾"
+    outcome = asyncio.run(session.run(spec))
+    assert outcome.status == "done"  # the wrap-up closed every item
+    assert ledger.load(path)["items"]["i"]["status"] == "cleared"
+    assert calls()[-1]["turns"] == str(config.WRAPUP_TURNS)

@@ -1,6 +1,7 @@
 # 参考文献维度规则
 
-- 先运行 `pv3 refcheck`：全部条目已逐条与 CrossRef 比对，只需对其中标记的条目（doi_not_found、doi_mismatch、no_match、weak_match）逐条判断；不要自己写循环批量查询。
+- 先运行 `pv3 refcheck`：全部条目已逐条与 CrossRef 比对。优先判断 doi_not_found、doi_mismatch，其次期刊条目的 no_match；网页/预印本（not_indexed_type）与会议/图书检索不到（unmatched_non_journal）不作为问题。不要自己写循环批量查询。
+- 需判断的条目超过 10 条时，按类型分组，每组抽查 2–3 个代表样例（`pv3 crossref --query`），据此给整组下结论；**先把分组结论写入台账，再决定是否扩展核查**。不要试图逐条查完全部条目。
 - 再看初检提示（`pv3 alerts ref`），必要时读参考文献段（`pv3 refs`，或 `pv3 refs 12 15` 查看指定条目）。
 - 区分解析/查询问题与真实著录异常：
   - 乱码、断行、单词碎片、双栏拼接、缺 DOI 但著录完整、CrossRef 低置信匹配、超时/限流/500 错误，都不是引用异常。初检提示全部或大部分是 doi_unverified / lookup_failed / low_match_score 时，按题名逐条抽查后通常判为无问题。

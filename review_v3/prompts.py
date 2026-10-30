@@ -97,13 +97,18 @@ def investigator(shard: dict, dossier: dict, memory_hints: str) -> str:
 
 def investigator_continue(state: dict, open_ids: list[str]) -> str:
     shown = "、".join(open_ids[:40]) + ("…" if len(open_ids) > 40 else "")
+    if state.get("no_progress") or (state.get("chunks", 0) >= 2 and state.get("metrics")
+                                    and not any(m.get("closed") for m in state["metrics"])):
+        return (f"上一段没有写入任何结论，台账仍有 {len(open_ids)} 项未处理：{shown}。"
+                "现在先用 `pv3 ledger update` 写入你已经核查到的结论（可以先写部分条目，"
+                "或按类写整组结论；证据不足的写 unresolved 并说明缺什么），然后再继续核查剩余条目。")
     return (f"继续。台账还有 {len(open_ids)} 项未处理：{shown}。"
             "已写入的条目不要重复核查；逐项完成并及时写入台账。完成后运行 `pv3 ledger show --open` 确认。")
 
 
 def wrapup(open_ids: list[str]) -> str:
     shown = "、".join(open_ids[:40]) + ("…" if len(open_ids) > 40 else "")
-    return ("本阶段时间已到。不要再开始新的核查或运行新的计算。"
+    return ("现在需要收尾（本阶段时间已到或长时间没有写入结论）。不要再开始新的核查或运行新的计算。"
             f"立即用 1–3 次 `pv3 ledger update` 为所有未处理条目写入结论（{shown or '无'}）："
             "已有足够证据的写 issue/cleared/not_applicable 并给出依据；证据确实不足的写 unresolved，"
             "并在 note 中写明已核查到哪一步、还缺什么。写完即结束。")

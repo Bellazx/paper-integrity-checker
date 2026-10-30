@@ -89,14 +89,44 @@ def _describe(work: dict) -> dict:
             "authors": authors, "volume": work.get("volume"), "page": work.get("page")}
 
 
+WEB_RE = re.compile(r"\[n\.?\s*d\.?\]|Retrieved\b|Accessed\b|accessed on|访问|(?:^|\s)URL\b", re.I)
+PREPRINT_RE = re.compile(r"arXiv|CoRR|preprint|bioRxiv|medRxiv|ChemRxiv|SSRN|openreview|Research Square", re.I)
+NON_JOURNAL_RE = re.compile(r"\bIn\s+(?:Proceedings|Proc\.|Advances|International|Conference|Workshop|IEEE|ACM)|"
+                            r"Proceedings of|Conference on|Symposium|Workshop|\bPress\b|\bed(?:s|itors?)?\.|"
+                            r"Thesis|Dissertation|Technical Report|Patent|Standard|标准|专利", re.I)
+
+
+def entry_type(text: str) -> str:
+    if PREPRINT_RE.search(text):
+        return "preprint"
+    if WEB_RE.search(text) or (re.search(r"https?://", text) and not DOI_RE.search(text)):
+        return "web"
+    if NON_JOURNAL_RE.search(text):
+        return "conference_or_book"
+    return "journal"
+
+
 def check_entry(entry: dict, cache_dir: Path) -> dict:
     text = entry["text"]
-    out = {"num": entry["num"], "text": text[:400]}
-    doi_match = DOI_RE.search(text.replace(" ", ""))
+    kind = entry_type(text)
+    out = {"num": entry["num"], "text": text[:400], "type": kind}
+    if kind in ("web", "preprint") and not DOI_RE.search(text):
+        # Not reliably indexed by CrossRef; a miss here says nothing about the citation.
+        out["status"] = "not_indexed_type"
+        return out
+    doi_match = DOI_RE.search(text)
     if doi_match:
-        doi = doi_match.group(0).rstrip(".")
+        doi = doi_match.group(0).rstrip(".,;)]")
         out["doi"] = doi
         work, status = _get("https://api.crossref.org/works/" + urllib.parse.quote(doi), cache_dir)
+        tail = re.match(r"\s+([.\d][\w.\-/()]*\d)", text[doi_match.end():])
+        if status == "not_found" and tail:
+            # A DOI broken across lines continues in the next token.
+            joined = (doi_match.group(0) + tail.group(1)).rstrip(".,;)]")
+            work, status = _get("https://api.crossref.org/works/" + urllib.parse.quote(joined), cache_dir)
+            if work:
+                out["doi"] = doi = joined
+                out["note"] = "DOI 跨行断开，拼接后可解析"
         if status == "not_found":
             # A DOI split across lines often swallows trailing page digits.
             trimmed = re.sub(r"\d{1,4}$", "", doi)
@@ -123,8 +153,10 @@ def check_entry(entry: dict, cache_dir: Path) -> dict:
         score = similarity(record["title"], text)
         if score > best_score:
             best, best_score = record, score
-    out.update(record=best, title_similarity=round(best_score, 2),
-               status="ok" if best_score >= 0.8 else ("weak_match" if best_score >= 0.5 else "no_match"))
+    status = "ok" if best_score >= 0.8 else ("weak_match" if best_score >= 0.5 else "no_match")
+    if status != "ok" and kind == "conference_or_book":
+        status = "unmatched_non_journal"  # low priority: proceedings/books are indexed unevenly
+    out.update(record=best, title_similarity=round(best_score, 2), status=status)
     return out
 
 

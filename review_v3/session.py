@@ -256,20 +256,24 @@ async def run(spec: SessionSpec) -> SessionOutcome:
             if spec.ledger_path and _all_closed(spec) and state["chunks"] > 0:
                 state["status"] = "done"
                 break
-            if state["chunks"] >= spec.max_chunks:
-                state["status"] = "exhausted"
-                break
-            if state["no_progress"] >= config.NO_PROGRESS_CHUNKS:
-                state["status"] = "stalled"
-                break
             if spec.deadline is not None and time.monotonic() >= spec.deadline:
                 state["status"] = "deadline"
                 break
+            stop = None
+            if state["chunks"] >= spec.max_chunks:
+                stop = "exhausted"
+            elif state["no_progress"] >= config.NO_PROGRESS_CHUNKS:
+                stop = "stalled"
+            elif spec.soft_deadline is not None and time.monotonic() >= spec.soft_deadline:
+                stop = "wrapped" if state["started"] else "timeboxed"
             wrapping = False
-            if spec.soft_deadline is not None and time.monotonic() >= spec.soft_deadline:
-                if state.get("wrapped") or not spec.wrapup_prompt or not state["started"]:
-                    state["status"] = "wrapped" if state.get("wrapped") else "timeboxed"
+            if stop:
+                # Before giving up, one short chunk records what the session
+                # already verified; otherwise that work is lost.
+                if state.get("wrapped") or not spec.wrapup_prompt or not state["started"] or not spec.ledger_path:
+                    state["status"] = state.get("stop_reason") or stop
                     break
+                state["stop_reason"] = stop
                 wrapping = True
             if wrapping:
                 message = spec.wrapup_prompt(state)
