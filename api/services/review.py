@@ -3471,6 +3471,10 @@ async def run_review_single(
     its path prevents the report renderer from rebuilding large workbooks a
     second time, which was the source of recurring coverage timeouts.
     """
+    if os.environ.get("REVIEW_ENGINE", "v2").strip().lower() == "v3":
+        # Shared engine for API and batch review; see review_v3/DESIGN.md.
+        from review_v3.engine import run_review
+        return await run_review(doi, report_json_path, input_dir, output_dir, resume=resume)
     from api.services.review_lock import exclusive_review
     artifacts_dir = _review_artifacts_dir(output_dir)
     lock_path = _review_state_path(doi, report_json_path, input_dir, artifacts_dir).with_suffix(".lock")

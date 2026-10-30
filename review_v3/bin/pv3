@@ -1,0 +1,4 @@
+#!/bin/sh
+# Dossier tool for review sessions; see review_v3/tools/pv3.py.
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+exec "${PAPER_CHECKER_PYTHON:-$ROOT/venv/bin/python}" -I "$ROOT/review_v3/tools/pv3.py" "$@"
