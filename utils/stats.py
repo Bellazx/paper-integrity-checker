@@ -611,7 +611,9 @@ def check_passage_offset_pattern(
     last_col_idx = num_df.shape[1] - 1
     last_col_name = str(num_df.columns[last_col_idx])
     rows = num_df.to_numpy(dtype=float)
-    pairs: list[tuple[int, int, float]] = []
+    pair_samples: list[tuple[int, int, float]] = []
+    n_exact_matches = 0
+    n_integer_offsets = 0
 
     # Only rows with matching leading values can satisfy the pattern. Grouping
     # candidates first avoids an O(n^2) full-table scan on large measurement
@@ -624,47 +626,94 @@ def check_passage_offset_pattern(
         key = tuple(np.round(first, decimals=12))
         candidate_groups.setdefault(key, []).append(i)
 
+    # Count qualifying pairs without materializing every pair. A large source
+    # table can contain tens of thousands of rows with identical leading
+    # fields. The former nested loop then became O(n^2) and appended millions
+    # of tuples even though the caller only retained ten examples.
+    from bisect import bisect_left
+    from collections import defaultdict
+
     for indices in candidate_groups.values():
         if len(indices) < 2:
             continue
-        for pos, i in enumerate(indices):
-            for j in indices[pos + 1:]:
-                a, b = rows[i], rows[j]
-                first_a, first_b = a[:K], b[:K]
-                if not np.allclose(first_a, first_b, atol=1e-12, rtol=0):
-                    continue
-                offset = float(b[last_col_idx] - a[last_col_idx])
-                offset_abs = abs(offset)
-                if offset_abs < 1e-12:
-                    pairs.append((i, j, 0.0))  # exact match — Passage 5↔17 style
-                elif offset_abs >= 0.5 and abs(offset - round(offset, 1)) < 1e-9:
-                    # half-step (0.5/1.0/1.5/2.0/...) — human-edited offset
-                    pairs.append((i, j, offset))
 
-    if len(pairs) < min_pairs:
+        exact_groups: dict[float, list[int]] = defaultdict(list)
+        residual_groups: dict[float, dict[int, list[int]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
+        for i in indices:
+            value = float(rows[i, last_col_idx])
+            exact_groups[round(value, 12)].append(i)
+
+            # Two values differ by an exact 0.1 step iff they have the same
+            # residual after subtracting their nearest tenth. Grouping by that
+            # residual lets us count all >=0.5 offsets with a sorted sweep.
+            tenth = int(round(value * 10))
+            residual = round(value - tenth / 10.0, 9)
+            residual_groups[residual][tenth].append(i)
+
+        for same_value_indices in exact_groups.values():
+            count = len(same_value_indices)
+            if count < 2:
+                continue
+            n_exact_matches += count * (count - 1) // 2
+            if len(pair_samples) < 10:
+                pair_samples.append(
+                    (same_value_indices[0], same_value_indices[1], 0.0)
+                )
+
+        for tenth_groups in residual_groups.values():
+            tenths = sorted(tenth_groups)
+            if len(tenths) < 2:
+                continue
+            counts = [len(tenth_groups[tenth]) for tenth in tenths]
+            suffix_counts = [0] * (len(counts) + 1)
+            for pos in range(len(counts) - 1, -1, -1):
+                suffix_counts[pos] = suffix_counts[pos + 1] + counts[pos]
+
+            for pos, tenth in enumerate(tenths):
+                other_pos = bisect_left(tenths, tenth + 5, lo=pos + 1)
+                if other_pos >= len(tenths):
+                    continue
+                n_integer_offsets += counts[pos] * suffix_counts[other_pos]
+
+                if len(pair_samples) < 10:
+                    for other_tenth in tenths[other_pos:]:
+                        i = tenth_groups[tenth][0]
+                        j = tenth_groups[other_tenth][0]
+                        if i > j:
+                            i, j = j, i
+                        offset = float(rows[j, last_col_idx] - rows[i, last_col_idx])
+                        pair_samples.append((i, j, offset))
+                        if len(pair_samples) >= 10:
+                            break
+
+    n_pairs = n_exact_matches + n_integer_offsets
+    if n_pairs < min_pairs:
         return results
 
-    offsets = [p[2] for p in pairs]
-    exact_matches = [o for o in offsets if abs(o) < 1e-12]
-    integer_offsets = [o for o in offsets if abs(o) > 0 and abs(o - round(o, 1)) < 1e-9]
     # "Strong" means >= 2 exact copies OR >= 2 integer-offset copies OR one of each.
-    if len(exact_matches) >= 2 or len(integer_offsets) >= 2 or (exact_matches and integer_offsets):
+    if (
+        n_exact_matches >= 2
+        or n_integer_offsets >= 2
+        or (n_exact_matches and n_integer_offsets)
+    ):
         severity = "high"
     else:
         severity = "medium"
 
     pair_records = [{"row_a": int(p[0]), "row_b": int(p[1]), "offset": float(p[2])}
-                    for p in pairs[:10]]
+                    for p in pair_samples]
     results.append({
         "testable": True,
         "flagged": True,
         "severity": severity,
-        "n_pairs": int(len(pairs)),
-        "n_exact_matches": int(len(exact_matches)),
-        "n_integer_offsets": int(len(integer_offsets)),
+        "n_pairs": int(n_pairs),
+        "n_exact_matches": int(n_exact_matches),
+        "n_integer_offsets": int(n_integer_offsets),
         "n_first_cols": int(K),
         "last_col": last_col_name,
         "pairs": pair_records,
-        "pairs_truncated": len(pairs) > 10,
+        "pairs_truncated": n_pairs > len(pair_records),
     })
     return results

@@ -120,6 +120,16 @@ def main() -> int:
         log(f"starting shard ({reason})")
         log(f"cmd: {' '.join(cmd)}")
         log_f = log_path.open("a", encoding="utf-8")
+        worker_env = os.environ.copy()
+        worker_env.update({
+            "OMP_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "NUMEXPR_NUM_THREADS": "1",
+            "BLIS_NUM_THREADS": "1",
+            "VECLIB_MAXIMUM_THREADS": "1",
+            "OPENCV_FOR_THREADS_NUM": "1",
+        })
         proc = subprocess.Popen(
             cmd,
             cwd=str(BASE),
@@ -127,6 +137,7 @@ def main() -> int:
             stdout=log_f,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=worker_env,
         )
         pid_path.write_text(str(proc.pid), encoding="utf-8")
         log(f"started pid={proc.pid}")

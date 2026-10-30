@@ -1,0 +1,18 @@
+[Unit]
+Description=Read-only paper task progress dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=library
+Group=library
+WorkingDirectory=/home/sjtu/paper-integrity-checker
+ExecStart=/usr/bin/bash -lc 'exec /home/sjtu/paper-integrity-checker/venv/bin/python -m uvicorn api.progress_app:app --host 127.0.0.1 --port 8013'
+Environment="PAPER_INTEGRITY_ROOT=/home/sjtu/paper-integrity-checker"
+Environment="OPENBLAS_NUM_THREADS=1"
+Restart=on-failure
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

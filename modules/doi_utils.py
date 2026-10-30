@@ -110,7 +110,10 @@ def normalize_doi(value: str) -> str:
         return ""
     value = value.replace("doi:", "").replace("DOI:", "").strip()
     value = value.replace("https://doi.org/", "").replace("http://doi.org/", "").strip()
-    found = re.search(r"10\.\d{4,9}/[^\s,;\]]+", value)
+    # Semicolons are valid DOI characters in legacy Wiley identifiers such as
+    # ``10.1002/...3.0.co;2-p``. Commas and closing square brackets remain
+    # delimiters because they commonly terminate DOI citations in prose.
+    found = re.search(r"10\.\d{4,9}/[^\s,\]]+", value)
     if found:
         doi = found.group(0).rstrip(".")
         # Parentheses are valid inside DOIs, especially Elsevier/Lancet IDs
@@ -118,9 +121,11 @@ def normalize_doi(value: str) -> str:
         # it is clearly punctuation outside the DOI.
         while doi.endswith(")") and doi.count(")") > doi.count("("):
             doi = doi[:-1].rstrip(".")
-        # Several publisher folder names encode an additional DOI slash as an
-        # underscore, e.g. 10.1210/clinem_dgac577 or 10.1088/1361-6560_ab9f60.
-        doi = re.sub(r"^(10\.\d{4,9}/[^/_\s]+)_([A-Za-z0-9][A-Za-z0-9.-]*)$", r"\1/\2", doi)
+        # A few known folder-name formats encode an additional slash as an
+        # underscore. Do not rewrite arbitrary underscores: they are valid DOI
+        # characters, as in Springer chapter DOI 10.1007/978-...-2_3.
+        doi = re.sub(r"^(10\.1210/clinem)_([A-Za-z0-9][A-Za-z0-9.-]*)$", r"\1/\2", doi)
+        doi = re.sub(r"^(10\.1088/\d{4}-\d{4})_([A-Za-z0-9][A-Za-z0-9.-]*)$", r"\1/\2", doi)
         return doi
     missing_slash = re.match(r"^(10\.\d{4,})(?!/)(.+)$", value)
     if missing_slash:

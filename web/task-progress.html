@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>论文检测进度</title>
+<style>
+:root{font:16px/1.6 system-ui,sans-serif;color:#26364a;background:#f3f6fa}body{max-width:1000px;margin:36px auto;padding:0 20px}h1{font-size:26px;margin-bottom:4px}p{margin:6px 0;color:#627186}form{display:flex;gap:10px;margin:24px 0}input{flex:1;min-width:0;padding:12px;border:1px solid #c4cedb;border-radius:8px;font:inherit}button{border:0;border-radius:8px;background:#2364ce;color:white;padding:10px 20px;font:inherit;cursor:pointer}.card{background:white;border:1px solid #e2e8f0;border-radius:14px;padding:24px;margin:16px 0}.top{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}.id{font-weight:650}.badge{color:#205cbc;background:#edf4ff;padding:3px 12px;border-radius:20px}.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:24px 0 18px}.segment{height:8px;background:#e6eaf0;border-radius:5px;overflow:hidden}.step span{display:block;font-size:13px;margin-top:8px;color:#627186}.completed .segment{background:#25815d}.completed span{color:#25815d}.skipped .segment{background:repeating-linear-gradient(45deg,#c5d4cc,#c5d4cc 4px,#e5ede8 4px,#e5ede8 8px)}.active .segment{background:#dbe9ff}.active .segment:after{content:'';display:block;width:40%;height:100%;background:#3778dd;animation:slide 2s ease-in-out infinite}.active span{color:#205cbc;font-weight:600}.stopped .segment{background:#b37a42}.activity{border-top:1px solid #eef1f5;margin-top:14px;padding-top:14px}.small{font-size:13px;color:#738196}.warning{color:#9a5c12}.error{color:#b03737}.stale{border-color:#cc9a57}.foot{margin:25px 0;font-size:13px}code{overflow-wrap:anywhere}@keyframes slide{from{transform:translateX(-100%)}to{transform:translateX(350%)}}@media(prefers-reduced-motion:reduce){.active .segment:after{animation:none}}@media(max-width:600px){body{margin-top:20px}.card{padding:16px}form{flex-wrap:wrap}input{flex-basis:100%}.step span{font-size:12px}}
+</style>
+<h1>论文检测进度</h1>
+<p>查看已完成阶段、当前复审轮次与最近核查活动。</p>
+<form id="form"><input id="ids" aria-label="任务号" placeholder="输入任务号，多个任务用逗号分隔"><button>查看进度</button></form>
+<div id="notice" role="status"></div>
+<main id="cards" aria-live="polite"></main>
+<p class="foot">每 15 秒自动更新。进度条表示流程阶段，不代表剩余耗时；暂无新工具活动也可能是在等待模型响应。重启前未保存的轮次可能重跑。</p>
+<script>
+const $ = s => document.querySelector(s);
+let ids = [], timer, generation = 0;
+const terminal = new Set(['completed','failed','superseded']);
+const labels = {completed:'已完成',active:'进行中',pending:'待执行',skipped:'无需复审',stopped:'已停止'};
+const node = (tag, text, cls) => {const e=document.createElement(tag);if(text)e.textContent=text;if(cls)e.className=cls;return e;};
+const clock = value => value ? new Date(value).toLocaleString('zh-CN',{hour12:false}) : '暂无记录';
+function draw(data) {
+ const card=node('article',null,'card');card.dataset.id=data.task_id;
+ const top=node('div',null,'top');top.append(node('code',data.task_id,'id'),node('span',data.label,'badge'));card.append(top);
+ card.append(node('p',`累计耗时 ${Math.floor(data.elapsed_seconds/60)} 分钟（包含此前等待和恢复）`,'small'));
+ const steps=node('div',null,'steps');steps.setAttribute('aria-label','检测阶段');
+ for(const step of data.steps){const e=node('div',null,'step '+step.state);e.append(node('div',null,'segment'),node('span',step.label+' · '+labels[step.state]));steps.append(e);}card.append(steps);
+ for(const paper of data.papers){const e=node('div',null,'activity');e.append(node('div',paper.doi || paper.fold_name || '论文'));
+  if(paper.review_stage)e.append(node('div',paper.review_stage));
+  if(!terminal.has(data.status)){
+   e.append(node('p',paper.activity_text));
+   e.append(node('p','最近工具活动：'+clock(paper.last_activity_at),'small'));
+   if(paper.activity_state==='quiet')e.append(node('p','暂无新的工具活动，可能正在等待响应；仅凭此不能判断卡死。','warning small'));
+  }
+  card.append(e);
+ }
+ if(data.error)card.append(node('p',data.error,'error'));
+ card.append(node('p','本次读取：'+clock(data.observed_at),'small'));
+ return card;
+}
+async function refresh(myGeneration){
+ const results=await Promise.all(ids.map(async id=>{
+  try {const response=await fetch(`api/task/${encodeURIComponent(id)}/progress`,{cache:'no-store',signal:AbortSignal.timeout(12000)});if(!response.ok)throw new Error('HTTP '+response.status);return {id,data:await response.json()};}
+  catch(error){return {id,error:String(error)};}
+ }));
+ if(myGeneration!==generation)return;
+ for(const result of results){const old=[...$('#cards').children].find(e=>e.dataset.id===result.id);
+  if(result.data){const fresh=draw(result.data);old?old.replaceWith(fresh):$('#cards').append(fresh);}
+  else{const card=old||node('article',null,'card');card.dataset.id=result.id;card.classList.add('stale');card.querySelector('.fetch-error')?.remove();if(!old)card.append(node('code',result.id));card.append(node('p','进度更新失败，当前内容可能已过期；稍后自动重试。','fetch-error error'));if(!old)$('#cards').append(card);}
+ }
+ $('#notice').textContent='';
+ if(results.some(r=>r.error||!terminal.has(r.data.status)))timer=setTimeout(()=>refresh(myGeneration),15000);
+}
+function start(value){
+ clearTimeout(timer);generation++;
+ ids=[...new Set(value.split(/[\s,，]+/).filter(Boolean))].slice(0,20);
+ if(!ids.length||ids.some(id=>!/^\d{8}-[a-f0-9]{8}$/.test(id))){$('#notice').textContent='请输入正确的任务号，例如 20260928-b040bd2c。';return;}
+ $('#cards').replaceChildren();$('#notice').textContent='正在读取进度…';
+ history.replaceState(null,'','?tasks='+ids.join(','));refresh(generation);
+}
+$('#form').addEventListener('submit',e=>{e.preventDefault();start($('#ids').value);});
+const initial=new URLSearchParams(location.search).get('tasks');
+if(initial){$('#ids').value=initial;start(initial);}
+</script>
+</html>

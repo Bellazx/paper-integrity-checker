@@ -1,4 +1,5 @@
 import logging
+import os
 from dataclasses import dataclass, field
 from itertools import combinations
 from pathlib import Path
@@ -19,6 +20,14 @@ from utils.visualization import draw_duplicate_annotation
 log = logging.getLogger(__name__)
 
 MAX_DIMENSION = 1500
+# Keep the expensive pairwise stages bounded for papers containing hundreds of
+# extracted panels.  The lightweight hash pass still sees every image; SIFT is
+# reserved for same-page and perceptually-near pairs.
+MAX_SIFT_PAIR_COMPARISONS = int(os.getenv("PAPER_MAX_SIFT_PAIRS", "12000"))
+MAX_TEMPLATE_CANDIDATES = int(os.getenv("PAPER_MAX_TEMPLATE_CANDIDATES", "1500"))
+MAX_SIFT_FEATURES = int(os.getenv("PAPER_MAX_SIFT_FEATURES", "1500"))
+MAX_HASH_PAIR_COMPARISONS = int(os.getenv("PAPER_MAX_HASH_PAIRS", "40000"))
+NEAREST_HASH_NEIGHBORS = int(os.getenv("PAPER_NEAREST_HASH_NEIGHBORS", "24"))
 FULL_COPY_SIZE = 256
 FULL_COPY_ASPECT_TOLERANCE = 0.02
 FULL_COPY_PIXEL_CORRELATION = 0.96
@@ -47,11 +56,12 @@ class DuplicateMatch:
     risk_evidence: bool = True
 
 
-def _resize_for_analysis(img: np.ndarray) -> np.ndarray:
+def _resize_for_analysis(img: np.ndarray, max_dimension: int | None = None) -> np.ndarray:
     h, w = img.shape[:2]
-    if max(h, w) <= MAX_DIMENSION:
+    max_dimension = max_dimension or MAX_DIMENSION
+    if max(h, w) <= max_dimension:
         return img
-    scale = MAX_DIMENSION / max(h, w)
+    scale = max_dimension / max(h, w)
     return cv2.resize(img, None, fx=scale, fy=scale)
 
 
@@ -76,6 +86,68 @@ def _compute_phashes(images: list[ExtractedImage]) -> list[np.ndarray]:
         h = hasher.compute(gray)
         hashes.append(h)
     return hashes
+
+
+def _hash_distance(a: np.ndarray, b: np.ndarray) -> int:
+    """Return a cheap Hamming distance for OpenCV's 8-byte pHash output."""
+    return int(np.unpackbits(np.bitwise_xor(a.reshape(-1), b.reshape(-1))).sum())
+
+
+def _bounded_hash_pairs(
+    images: list[ExtractedImage],
+    hashes: list[np.ndarray],
+    max_pairs: int,
+    same_page_first: bool = True,
+) -> list[tuple[int, int]]:
+    """Choose deterministic pairs when all-pairs comparison is too expensive.
+
+    Same-page pairs are retained first because panel-to-panel reuse commonly
+    occurs there.  For cross-page reuse, each image contributes its nearest
+    pHash neighbours, which keeps the candidate set bounded without allocating
+    an O(n^2) list.
+    """
+    n = len(images)
+    total = n * (n - 1) // 2
+    if total <= max_pairs:
+        return list(combinations(range(n), 2))
+
+    selected: set[tuple[int, int]] = set()
+    same_page: list[tuple[int, int, int]] = []
+    for i, j in combinations(range(n), 2):
+        if images[i].page_num == images[j].page_num:
+            same_page.append((_hash_distance(hashes[i], hashes[j]), i, j))
+    same_page.sort()
+    for _, i, j in same_page[:max_pairs]:
+        selected.add((i, j))
+
+    remaining = max_pairs - len(selected)
+    if remaining <= 0:
+        return sorted(selected)
+
+    nearest: set[tuple[int, int]] = set()
+    neighbour_count = max(1, NEAREST_HASH_NEIGHBORS)
+    for i in range(n):
+        ranked = []
+        for j in range(n):
+            if i == j:
+                continue
+            ranked.append((_hash_distance(hashes[i], hashes[j]), j))
+        ranked.sort(key=lambda item: (item[0], item[1]))
+        for _, j in ranked[:neighbour_count]:
+            pair = (i, j) if i < j else (j, i)
+            if pair not in selected:
+                nearest.add(pair)
+
+    nearest_ranked = sorted(
+        nearest,
+        key=lambda pair: (
+            0 if same_page_first and images[pair[0]].page_num == images[pair[1]].page_num else 1,
+            _hash_distance(hashes[pair[0]], hashes[pair[1]]),
+            pair,
+        ),
+    )
+    selected.update(nearest_ranked[:remaining])
+    return sorted(selected)
 
 
 def _same_image_source(a: ExtractedImage, b: ExtractedImage) -> bool:
@@ -178,7 +250,14 @@ def _stage1_phash(images: list[ExtractedImage]) -> set[tuple[int, int]]:
     hasher = cv2.img_hash.PHash_create()
     equivalent_pairs = set()
 
-    for i, j in combinations(range(len(images)), 2):
+    pairs = _bounded_hash_pairs(images, hashes, MAX_HASH_PAIR_COMPARISONS)
+    if len(pairs) < len(images) * (len(images) - 1) // 2:
+        log.warning(
+            "Large image set (%d); bounded pHash comparisons to %d pairs",
+            len(images), len(pairs),
+        )
+
+    for i, j in pairs:
         if _same_image_source(images[i], images[j]):
             log.debug("Skipping self image comparison: %s", images[i].filepath)
             continue
@@ -194,15 +273,27 @@ def _stage1_phash(images: list[ExtractedImage]) -> set[tuple[int, int]]:
 
 def _stage2_sift(images: list[ExtractedImage], skip_pairs: set[tuple[int, int]], output_dir: str) -> tuple[list[DuplicateMatch], list[tuple[int, int, tuple, tuple]]]:
     """Stage 2: SIFT feature matching for partial region duplicates."""
-    sift = cv2.SIFT_create()
+    sift = cv2.SIFT_create(nfeatures=max(0, MAX_SIFT_FEATURES))
     flann = cv2.FlannBasedMatcher({"algorithm": 1, "trees": 5}, {"checks": 50})
+
+    analysis_dimension = 1000 if len(images) > 200 else MAX_DIMENSION
+    hashes = _compute_phashes(images)
+    candidate_pairs = _bounded_hash_pairs(
+        images, hashes, MAX_SIFT_PAIR_COMPARISONS,
+    )
+    all_pairs = len(images) * (len(images) - 1) // 2
+    if len(candidate_pairs) < all_pairs:
+        log.warning(
+            "Complex image set (%d images); bounded SIFT comparisons to %d/%d pairs",
+            len(images), len(candidate_pairs), all_pairs,
+        )
 
     descriptors = []
     keypoints_list = []
     resized = []
 
     for img in images:
-        small = _resize_for_analysis(img.array)
+        small = _resize_for_analysis(img.array, analysis_dimension)
         gray = _to_gray(small)
         resized.append(small)
         kp, des = sift.detectAndCompute(gray, None)
@@ -211,7 +302,7 @@ def _stage2_sift(images: list[ExtractedImage], skip_pairs: set[tuple[int, int]],
 
     matches = []
     region_candidates = []
-    for i, j in combinations(range(len(images)), 2):
+    for i, j in candidate_pairs:
         if _same_image_source(images[i], images[j]):
             continue
         if (i, j) in skip_pairs:
@@ -346,6 +437,17 @@ def _stage2_sift(images: list[ExtractedImage], skip_pairs: set[tuple[int, int]],
 def _stage3_template_verify(images: list[ExtractedImage], candidates: list[tuple[int, int, int, tuple, tuple]], output_dir: str) -> dict[int, DuplicateMatch]:
     """Verify SIFT candidates, keyed by their existing result index."""
     verified = {}
+
+    if len(candidates) > MAX_TEMPLATE_CANDIDATES:
+        log.warning(
+            "Bounding template verification to %d/%d SIFT candidates",
+            MAX_TEMPLATE_CANDIDATES, len(candidates),
+        )
+        candidates = sorted(
+            candidates,
+            key=lambda item: images[item[1]].page_num == images[item[2]].page_num,
+            reverse=True,
+        )[:MAX_TEMPLATE_CANDIDATES]
 
     for idx, (match_index, i, j, region_a, region_b) in enumerate(candidates):
         x, y, w, h = region_a

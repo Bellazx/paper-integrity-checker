@@ -11,7 +11,8 @@
 - 支持压缩包：`.zip`、`.rar`
 - 上传大小上限：`2GB`（2048MB）
 - 批量论文上限：`10` 篇
-- 未完成任务上限：`30` 个；超过后提交接口返回 `503`
+- 用户 API 同时执行上限：`120` 个任务，全体批量/单篇共享 `120` 个检测、复审或报告生成工作位
+- 未完成任务上限：`240` 个（含运行和排队）；超过后提交接口返回 `503`
 - `/api/run` 流式接口保留给管理员调试，跨请求最多 `1` 个同时运行；超出返回 `429`
 
 完整外部 URL 示例：
@@ -59,17 +60,27 @@ http://202.120.57.100/paper-api/api/task/{task_id}
 系统有两层保护：
 
 - nginx 入口限流：上传、提交、轮询、`/api/run` 分别限制 QPS/连接数，超限返回 `429`。
-- 应用层队列保护：异步任务路径最多保留 `30` 个未完成任务，超过后 `POST /api/detection/submit` 和 `POST /api/task/submit` 返回 `503`，并带 `Retry-After: 60`。
+- 应用层队列保护：异步任务路径最多保留 `240` 个未完成任务，超过后 `POST /api/detection/submit` 和 `POST /api/task/submit` 返回 `503`，并带 `Retry-After: 60`。
 
 当前异步任务执行上限：
 
 | 项目 | 上限 |
 |---|---|
-| 全局异步任务并行数 | `3` |
+| 用户 `/api/detection/submit` 任务并行数 | `120` |
+| 用户 API 跨任务、跨批次重型工作位总数 | `120` |
+| 开发者 `/api/task/submit` 任务并行数 | `3` |
 | 每批论文数 | `10` |
-| 初审检测子进程并发 | `2` |
-| AI 复核并发 | `4` |
+| 开发者单任务初审检测并发 | `2` |
+| 每个批次 AI 复核并发 | `4`，用户入口仍受全局 `120` 工作位约束 |
 | `/api/run` 跨请求并发 | `1` |
+
+`GET /api/health` 的 `api_capacity` 返回已加载的任务/工作位上限、当前
+`active_paper_stages` 与 `waiting_paper_stages`。120 是并发工作位数，
+不是包含所有工具子进程和线程的操作系统进程总数。
+
+本机部署配置见 `deployment/paper-api-priority.conf`：用户 API 使用独立并发预算，
+CPU shares 为 `8192`（默认 `1024`），nice 为 `-5`，I/O best-effort 优先级为 `0`。
+这些是资源争用时的相对优先级，不会为闲置任务预留 CPU。
 
 调用方处理建议：
 
@@ -264,6 +275,20 @@ curl -X POST "http://202.120.57.100/paper-api/api/detection/submit" \
 - 如果 AI 复核进程超时、解析失败或重试耗尽，不会生成最终复核 PDF，也不会把流程错误写成 `review_result=高风险`；该记录保留 `status=0`、复审字段为空，任务返回 `status=failed`
 - 同一个 `file_id + fold_name` 重复提交时会更新原记录，并重置旧复审字段
 
+注意：`detection_reports.status` 是数据库生命周期码，不是成功/失败码。`status=0`
+对初审低风险论文是正常的“初审已完成、无需复审”状态；不能因为
+`review_result` 或 `review_report_url` 为空就显示失败。接口返回的
+`result.detection_reports[]`（以及对应任务的 `papers[]`）还提供语义字段：
+
+- `processing_status=completed_initial`：检测完成（初审低风险）
+- `processing_status=completed_review`：检测完成（已复审）
+- `processing_status=review_pending`：初审完成，等待复审
+- `processing_status=review_failed`：复审失败/待重试
+- `processing_status=failed`：检测失败
+
+页面应优先使用 `processing_status` 和顶层任务 `status` 判断是否失败，不要直接把
+数据库 `status=0` 映射为失败。
+
 ## 3. 开发者提交任务
 
 开发者接口用于写入 `yujing_*` 表，不建议普通前端调用。
@@ -423,7 +448,14 @@ curl "http://202.120.57.100/paper-api/api/task/20260602-a1b2c3d4"
 - 单篇任务通常需要 `20-40` 分钟，建议每 `20-30` 秒轮询一次
 - 批量任务耗时更长，建议每 `30-60` 秒轮询一次
 - 当 `status` 为 `completed` 或 `failed` 时停止轮询
-- 前端展示进度时优先使用 `status` 和 `progress.current / progress.total`
+- `progress.current / progress.total` 是当前阶段完成的论文数，不是单篇任务的耗时百分比；单篇复审期间显示 `0/1` 属于正常情况。
+
+需要阶段进度条和复审活动时，使用只读接口
+`GET /paper-progress/api/task/{task_id}/progress`（注意前缀为 `/paper-progress`，不叠加 `/paper-api`）。
+页面地址为 `/paper-progress/?tasks=<task_id>,<task_id>`，每 15 秒自动刷新。
+该接口提供文件准备、初审、复审、报告确认的阶段状态，以及当前复审轮次和最近工具活动时间。
+仅任务完成时返回 `percent=100`，运行中为 `null`；前端显示阶段进度及当前阶段动画，不按已耗时虚构百分比。
+字段和接入说明见 [任务进度展示](../docs/task-progress.md)。
 
 ## 5. 查询任务列表
 
@@ -628,11 +660,15 @@ http://202.120.57.100/review_reports/{namespace}/review_{doi_slug}.pdf
 4. `status=completed` 时读取：
    - `result.detection_reports[].chushen_report_url`
    - `result.detection_reports[].review_report_url`
+   - `result.detection_reports[].english_chushen_report_url`
+   - `result.detection_reports[].english_review_report_url`
    - `result.detection_reports[].chushen_result`
    - `result.detection_reports[].review_result`
 5. `status=failed` 时展示 `error`。如果 `result.detection_reports[].review_error` 有值，表示初审已完成但 AI 复核进程失败，前端应展示为“复核失败/待重试”，不要展示为复核高风险。
 
 前端不要根据任务是否有 `review_report_url` 判断初审是否成功。低风险论文不会进入 AI 复核，因此可能只有 `chushen_report_url`，没有 `review_report_url`。
+
+提交检测时可在 JSON 中传 `language`：`zh`（仅中文）、`en`（仅英文链接）、`both`（默认，中文和英文均生成）。英文报告地址分别通过 `english_chushen_report_url` 和 `english_review_report_url` 返回；英文生成失败不会覆盖中文报告，具体原因会放在 `english_report_error`。
 
 ## 12. 常见问题
 
@@ -648,10 +684,42 @@ http://202.120.57.100/review_reports/{namespace}/review_{doi_slug}.pdf
 
 可以。上传目录会保留，允许同一个 `file_id` 重复提交。前端用户流程写入 `detection_reports` 时，同一个 `submission_no + fold_name` 会更新已有记录。
 
+`file_id` 标识一次上传保存的文件，重复提交检测时不变；`task_id` 标识每次检测任务。
+如果重新调用上传接口，即使文件内容相同，也会得到新的 `file_id`；当前上传接口不按内容去重。
+
+每次明确提交都会创建新的任务号，按提交到达时的状态决定执行策略：
+
+- 同一 `file_id` 的论文仍在处理中（批量模式还须 `fold_name` 一致）：新任务替代旧任务。正文、源数据、检测配置和规则版本完全一致时，沿用已完成的初审及复审检查点；未保存的轮次重新执行。存在差异或缺少历史指纹时重新检测，不沿用旧结论。
+- 同一 `file_id` 的旧任务已经完成或对应论文已有最终风险结论：新任务从初审重新执行正常流程，不复用旧任务的结果；初审低风险直接完成，高风险进入复审。
+- 不同 `file_id` 始终独立处理，即使上传用户、DOI 和文件内容完全相同，也不替代或复用对方的任务。
+- 被整体替代的旧任务返回 `status=superseded`、`superseded_by=<新任务号>`。前端应显示“已被新提交替代”，停止轮询旧任务，并转到新任务号；不得将其显示为检测失败。
+- 批量任务仅替代匹配论文，其他论文继续执行。每篇的 `superseded_by`、`reused_from_task_id`、`submission_decision` 可在任务查询接口读取。
+- 新任务提交完成时即更新数据库 `task_id` 并清空旧结论字段，初审完成后才填入新的初审结果。旧报告文件保留，不能用它表示新任务已完成。
+
+`submission_decision` 为 `fresh`、`fresh_after_terminal`、`replace_unfinished` 或
+`resume_unfinished`，分别表示首次独立处理、结束后重检、替代但不能复用、替代并续用检查点。
+
 ### 服务重启后任务会怎样？
 
-任务状态持久化在 `data/tasks/{task_id}/status.json`。服务启动时会加载历史任务；如果发现任务在服务重启前未完成，会标记为 `failed`，错误为 `Server restarted during processing`。
+任务状态持久化在 `data/tasks/{task_id}/status.json`。服务启动时会检查未完成任务：如果解压后的论文输入仍在磁盘，会自动重新排队并继续处理；只有在解压尚未完成或输入文件已不存在时，才会标记为 `failed`，错误为 `Server restarted during processing (task inputs unavailable)`。
 
 ### 报告生成失败时前端看哪里？
 
 轮询结果中的顶层 `error` 会包含错误摘要，例如 `Report generation failed: ...`。如果是单篇检测失败，则对应论文的 `papers[].error` 会有具体原因。
+
+
+### 复核恢复与时间预算（2026-10-28）
+
+- `run_review_single(..., resume=True)` / `run_reviews(..., resume=True)` 用于中断恢复，复用同一输入的综合草稿和 CLI 断点；默认 `resume=False` 表示显式重新复核，独立保存阶段历史。
+- 第一轮、第二轮或综合阶段返回 `review_error` 后终止该篇，保留检查记录，不再把错误占位交给后续专家继续跑。
+- CLI 研究、恢复和最终整理不再使用独立的阶段时间预算；三者共享单篇论文的唯一总时限。达到首轮轮数上限时，只有已有完整草稿且剩余问题属于格式校验，才直接进入无工具整理；没有草稿或存在事实/证据覆盖缺口时，先执行一次最多 `REVIEW_CLI_RECOVERY_MAX_TURNS` 轮的定向补查，禁止重复全表扫描。到达总时限时回收当前 CLI 进程并保留断点，后续可从同一会话恢复；轮数上限仍可用 `REVIEW_MAX_TURNS`、`REVIEW_CLI_RECOVERY_MAX_TURNS` 和 `REVIEW_CLI_FINAL_MAX_TURNS` 调整。事实与证据缺口仍必须核查，不能放宽发布校验。超时或输出错误不作为论文风险证据。
+- 首轮会根据确定性证据包选择自适应核查计划：无主图且已有强源数据证据时只读取证据和必要位置，禁止重复全表扫描；有图像或未决线索时保留 Bash/Read 定向核查；证据干净时使用只读覆盖检查。计划只减少重复工作，不跳过四个维度的发布校验。
+- `REVIEW_PAPER_TIMEOUT_SECONDS` 是单次整篇调用的总时限，默认 5400 秒（90 分钟）；到期取消并回收当前 CLI 进程组，保存失败状态和已有断点。强确定性数据证据在首轮后只进入定向覆盖修复，不再自动重复第二次整篇调查。
+- 显式设置 `REVIEW_PAPER_TIMEOUT_SECONDS=0`（或 `none` / `unlimited`）可取消该进程的整篇限时；未设置时采用 5400 秒（90 分钟）。英文结果标签 `low_risk` / `high_risk` 会转换为中文枚举，维度缺项和证据覆盖校验仍必须通过。
+- 复核阶段的 Claude CLI 默认通过 `--settings /home/library/.claude/settings-mm.json` 启动；可用 `REVIEW_CLAUDE_SETTINGS_FILE` 指定其他配置文件。该设置只作用于复核子进程。
+- 默认初轮最多 24 轮，低风险核验/综合阶段最多 12 轮，覆盖修复最多 8 轮；证据包无高风险线索且首轮覆盖校验通过的低风险论文默认直接闭环，不再重复启动第二个完整 CLI 会话；存在任何可疑线索时仍保留二次核验。所有阶段只受同一个整篇总时限约束。
+- `REVIEW_FAST_CLEAN_LOWRISK=0` 可恢复所有低风险结果都进行二次核验；默认值 `1` 只对“证据包无 HIGH/确定性异常且首轮覆盖校验通过”的干净论文启用快速闭环。
+- 直接调用 `review_cli.run` 的独立脚本必须由调用方提供总时限。已经运行的 Python 进程不会热加载此修改，仍使用启动时的超时策略。
+- 相同输入的论文状态用进程锁保护；Phillip 恢复脚本还持有覆盖复核和发布的批次锁。重复启动立即报 already running。
+- 批量任务逐篇原子保存结果；错误结果不参与发布。Phillip 恢复脚本有未完成论文时退出码为 2，发布清单使用独立文件，保留失败详情。
+- 发布校验将各维度已明确给出的等价风险标签统一为内部枚举，并识别中英文图号；不从总风险推导缺失的维度结论。截图仍必须对应具体编号问题。

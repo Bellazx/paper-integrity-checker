@@ -397,13 +397,12 @@ def _review_evidence_images(info: dict, findings: dict | None, scratch_dir: Path
             if not copied:
                 continue
             items.append({
+                **{key: item[key] for key in ("issue_index", "max_height", "start_on_new_page") if key in item},
                 "dimension": item.get("dimension"),
                 "path": copied,
                 "caption": str(item.get("caption") or "复核确认的证据截图"),
             })
             next_index += 1
-            if len(items) >= 4:
-                return items
 
     excel_regions = info.get("excel_evidence_regions") or []
     if "data" in high_dims and isinstance(excel_regions, list):
@@ -416,13 +415,15 @@ def _review_evidence_images(info: dict, findings: dict | None, scratch_dir: Path
             if not rendered:
                 continue
             items.append({
+                **{key: item[key] for key in ("issue_index", "max_height", "start_on_new_page") if key in item},
                 "dimension": "data",
                 "path": rendered,
                 "caption": str(item.get("caption") or "Excel源数据证据截图"),
             })
             next_index += 1
-            if len(items) >= 4:
-                return items
+
+    if items:
+        return items
 
     report = findings or {}
     if "image" in high_dims:
@@ -2335,6 +2336,15 @@ def _compact_overall_reason(info: dict, reason: str) -> str:
 
 
 def _analysis_html(info: dict, evidence_images: list[dict] | None = None) -> str:
+    from modules.review_report_layout import issue_evidence_html
+    evidence_by_dimension = {}
+    for item in evidence_images or []:
+        evidence_by_dimension.setdefault(item.get("dimension"), []).append(item)
+
+    def compact(text, verdict, dimension):
+        # Never truncate numbered issues that carry attached evidence.
+        return text if evidence_by_dimension.get(dimension) else _compact_section_text(text, verdict)
+
     verdict = info["verdict"]
     display_verdict = _display_review_verdict(info)
     image_section_verdict = _dimension_verdict(info, "image")
@@ -2349,9 +2359,9 @@ def _analysis_html(info: dict, evidence_images: list[dict] | None = None) -> str
     ref_review = _humanize_internal_terms(_prepend_section_verdict_for_dimension(
         info.get("ref_review", "无参考文献异常发现。"), verdict, "ref", ref_section_verdict
     ))
-    image_review = _compact_section_text(image_review, image_section_verdict)
-    data_review = _compact_section_text(data_review, data_section_verdict)
-    ref_review = _compact_section_text(ref_review, ref_section_verdict)
+    image_review = compact(image_review, image_section_verdict, "image")
+    data_review = compact(data_review, data_section_verdict, "data")
+    ref_review = compact(ref_review, ref_section_verdict, "ref")
     # 主结论=高风险时, 把单项 detail header 里的"建议低风险"强制改成"建议高风险"
     image_review = _enforce_overall_consistency_in_detail(image_review, info)
     data_review = _enforce_overall_consistency_in_detail(data_review, info)
@@ -2370,16 +2380,13 @@ def _analysis_html(info: dict, evidence_images: list[dict] | None = None) -> str
     manual_note = ""
 
     structure = _compact_structure_section_html if COMPACT_REVIEW_REPORT else _structure_section_html
-    image_html = structure(image_review, image_section_verdict)
-    data_html = structure(data_review, data_section_verdict)
-    ref_html = structure(ref_review, ref_section_verdict)
-    evidence_by_dimension = {}
-    for item in evidence_images or []:
-        evidence_by_dimension.setdefault(item.get("dimension"), []).append(item)
-    image_evidence_html = _evidence_images_html(evidence_by_dimension.get("image", []))
-    data_evidence_html = _evidence_images_html(evidence_by_dimension.get("data", []))
-    ref_evidence_html = _evidence_images_html(evidence_by_dimension.get("ref", []))
-    methodology_evidence_html = _evidence_images_html(evidence_by_dimension.get("methodology", []))
+    def section(text, verdict, dimension):
+        return issue_evidence_html(text, evidence_by_dimension.get(dimension, []),
+                                   lambda body: structure(body, verdict))
+
+    image_html = section(image_review, image_section_verdict, "image")
+    data_html = section(data_review, data_section_verdict, "data")
+    ref_html = section(ref_review, ref_section_verdict, "ref")
     if "高风险" in f"{verdict}{info.get('result', '')}":
         summary_lead_html = ""
         reason_html = _highrisk_reason_html(info, reason)
@@ -2414,12 +2421,12 @@ def _analysis_html(info: dict, evidence_images: list[dict] | None = None) -> str
     methodology_review = _humanize_internal_terms(_prepend_section_verdict_for_dimension(
         methodology_review, verdict, "methodology", methodology_section_verdict
     ))
-    methodology_review = _compact_section_text(methodology_review, methodology_section_verdict)
+    methodology_review = compact(methodology_review, methodology_section_verdict, "methodology")
     methodology_review = _enforce_overall_consistency_in_detail(methodology_review, info)
     methodology_block = (
         '\n<p style="font-size:11pt; font-weight:bold; color:#1a1a1a; '
         'margin-top:14pt; margin-bottom:6pt;">（四）研究设计与统计核查</p>\n'
-        + structure(methodology_review, methodology_section_verdict) + "\n"
+        + section(methodology_review, methodology_section_verdict, "methodology") + "\n"
     )
 
     return f"""
@@ -2427,17 +2434,13 @@ def _analysis_html(info: dict, evidence_images: list[dict] | None = None) -> str
 
 <p style="font-size:11pt; font-weight:bold; color:#1a1a1a; margin-top:14pt; margin-bottom:6pt;">（一）图像问题复核</p>
 {image_html}
-{image_evidence_html}
 
 <p style="font-size:11pt; font-weight:bold; color:#1a1a1a; margin-top:14pt; margin-bottom:6pt;">（二）数据异常检测复核</p>
 {data_html}
-{data_evidence_html}
 
 <p style="font-size:11pt; font-weight:bold; color:#1a1a1a; margin-top:14pt; margin-bottom:6pt;">（三）参考文献检测复核</p>
 {ref_html}
-{ref_evidence_html}
 {methodology_block}
-{methodology_evidence_html}
 <h2 style="font-size:13pt; color:#1a1a1a; margin-top:18pt; margin-bottom:6pt;">四、综合评估</h2>
 <p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>复核结论：</b><span style="color:{verdict_color}; font-weight:bold;">{display_verdict}</span></p>
 {summary_lead_html}
@@ -2988,6 +2991,8 @@ def main():
             # 修 source 错编码: e.g. EuBa2Cu3O7\x01d -> EuBa2Cu3O7δ
             # + 删 control chars (除 \t\n\r) 避免 PDF 渲染乱码
             paper = _sanitize_paper_dict_for_render(findings.get("paper", {}))
+            if info.get("_verified_paper_title"):
+                paper["title"] = _sanitize_paper_text_for_render(str(info["_verified_paper_title"]))
             findings["paper"] = paper
             header = _header_html(paper)
             risk_score = _review_overview_html(findings, info)

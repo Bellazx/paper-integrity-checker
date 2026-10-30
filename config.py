@@ -3,14 +3,15 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 
-# ---------- LLM (MiniMax M2.7) ----------
+# ---------- LLM (MiniMax M3.1 Flash, M3 timeout fallback) ----------
 MINIMAX_API_KEY = os.getenv(
     "MINIMAX_API_KEY",
     "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJHcm91cE5hbWUiOiJtaW5pbWF4IiwiVXNlck5hbWUiOiJtaW5pbWF4IiwiQWNjb3VudCI6IiIsIlN1YmplY3RJRCI6IjE3NTk0ODIxODAxMDAxNzAxODgiLCJQaG9uZSI6IjE3NTUxMDI3ODgzIiwiR3JvdXBJRCI6IjE3NTk0ODIxODAwOTU5NzU4ODQiLCJQYWdlTmFtZSI6IiIsIk1haWwiOiIiLCJDcmVhdGVUaW1lIjoiMjAyNS0xMi0xMCAxOToxMzo0MyIsIlRva2VuVHlwZSI6MSwiaXNzIjoibWluaW1heCJ9.vFoLedYwNyPdXmtLsU-3gMGRmCxszPIQUDrAzKFEA-WAW4yXEWlGidxDNQn2rSxD-4ex8ho6vrVu8d4Ch7_a9qepr2cXccVGlkdH0qSrsvPx59GfeulJVJc-vq9kLDpK1-3B7wBAxz9LHXObozpHZKP5OPGf6_nXq8McAKPyHiqTCdhCWJPvhceyUJtlM8q2hhqpcpoz9IJuVnsw16Sq57zrJkQxpcQLRBnDR4aiBcoglaQqnPffK9kIFv82EnU3p-6Gg7qiIjLhVPrjKkvvlPnax4mkTbjmo0PqnFIEAlzcaCKOhinLjnZrBEPJXAGJDi-idFzN4dI-LtZBsE_apQ",
 )
 MINIMAX_GROUP_ID = os.getenv("MINIMAX_GROUP_ID", "1759482180095975884")
 MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1")
-MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "MiniMax-M2.7")
+MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "MiniMax-M3.1-Flash")
+MINIMAX_FALLBACK_MODEL = os.getenv("MINIMAX_FALLBACK_MODEL", "MiniMax-M3")
 
 # ---------- External PDF Parser ----------
 PDF_PARSE_API_URL = "https://proddev.hailuoai.com/test/parse_pdf"
@@ -57,3 +58,4 @@ CROSSREF_RATE_LIMIT_DELAY = 0.15  # seconds between requests
 LLM_MAX_TOKENS = 16384
 LLM_TEMPERATURE = 0.3
 LLM_RETRY_ATTEMPTS = 3
+LLM_TIMEOUT_FALLBACK_THRESHOLD = 5

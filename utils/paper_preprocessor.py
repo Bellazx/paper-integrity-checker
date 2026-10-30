@@ -45,7 +45,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
 
 # Make the repo root importable so modules.* and api.* resolve when this file
 # is imported as `utils.paper_preprocessor` from inside the package AND when

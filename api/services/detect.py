@@ -4,6 +4,8 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+from api.services.report import _kill_process_group
+from api.services.submission_policy import blocking_write
 
 from api.config import (
     PYTHON, MAIN_PY, DEFAULT_TABLE, DETECT_TIMEOUT_SECONDS,
@@ -11,6 +13,25 @@ from api.config import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _output_signature(path: Path):
+    try:
+        stat = path.stat()
+        return stat.st_mtime_ns, stat.st_size, stat.st_ino
+    except FileNotFoundError:
+        return None
+
+
+def _read_fresh_output(path: Path, previous, *, findings=False):
+    if _output_signature(path) is None or _output_signature(path) == previous:
+        raise RuntimeError(f'Detection exited without a fresh {path.name}')
+    value = json.loads(path.read_text())
+    if not isinstance(value, dict) or value.get('error'):
+        raise RuntimeError(f'Detection produced an invalid {path.name}')
+    if findings and (not value.get('paper') or 'summary' not in value):
+        raise RuntimeError('Detection findings are missing paper metadata or summary')
+    return value
 
 
 async def run_detection_single(
@@ -28,6 +49,8 @@ async def run_detection_single(
     # table_name, so the yujing tables are never touched.
     no_db = (not write_db) or (table_name != DEFAULT_TABLE)
     output_dir_path = Path(output_dir)
+    report_json = output_dir_path / 'report.json'
+    previous_output = _output_signature(report_json)
     output_root = output_dir_path.parent
     cmd = [
         str(PYTHON), str(MAIN_PY),
@@ -54,39 +77,41 @@ async def run_detection_single(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=str(MAIN_PY.parent),
+        start_new_session=True,
     )
 
     try:
         stdout, stderr = await asyncio.wait_for(
             proc.communicate(), timeout=DETECT_TIMEOUT_SECONDS
         )
-    except asyncio.TimeoutError:
-        proc.kill()
+    except TimeoutError:
+        await _kill_process_group(proc)
         raise TimeoutError(f"Detection timed out after {DETECT_TIMEOUT_SECONDS}s")
+    except asyncio.CancelledError:
+        await _kill_process_group(proc)
+        raise
 
     if proc.returncode != 0:
         err = stderr.decode(errors="replace")
         log.error("Detection failed (rc=%d): %s", proc.returncode, err[-2000:])
         raise RuntimeError(f"Detection failed (rc={proc.returncode}): {err[-500:]}")
 
-    report_json = Path(output_dir) / "report.json"
-    if report_json.exists():
-        with open(report_json) as f:
-            findings = json.load(f)
+    findings = _read_fresh_output(report_json, previous_output, findings=True)
+    if findings:
 
         # This path runs main.py with --no-db, so main.py's own pdf_generated guard
         # never fires here — honor it before writing a record that would link to a
         # missing PDF.
         if write_db and table_name != DEFAULT_TABLE:
             if findings.get("pdf_generated", True) or findings.get("pdf_skipped_low_risk", False):
-                _insert_to_custom_table(findings, table_name, input_dir)
+                await blocking_write(_insert_to_custom_table, findings, table_name, input_dir, namespace)
             else:
                 log.warning("Skipping custom-table insert: PDF generation failed (DOI=%s)",
                             findings.get("paper", {}).get("doi", ""))
 
         return findings
 
-    return {"error": "report.json not generated", "stdout": stdout.decode(errors="replace")[-1000:]}
+    raise RuntimeError('Detection produced empty findings')
 
 
 async def run_detection_batch(
@@ -100,6 +125,8 @@ async def run_detection_batch(
     report_namespace: str | None = None,
 ) -> dict:
     no_db = (not write_db) or (table_name != DEFAULT_TABLE)
+    summary_path = Path(output_root) / 'batch_summary.json'
+    previous_output = _output_signature(summary_path)
     cmd = [
         str(PYTHON), str(MAIN_PY),
         "--batch", input_root,
@@ -122,23 +149,25 @@ async def run_detection_batch(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=str(MAIN_PY.parent),
+        start_new_session=True,
     )
 
     timeout = DETECT_TIMEOUT_SECONDS * max(1, max_workers)
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
+    except TimeoutError:
+        await _kill_process_group(proc)
         raise TimeoutError(f"Batch detection timed out after {timeout}s")
+    except asyncio.CancelledError:
+        await _kill_process_group(proc)
+        raise
 
     if proc.returncode != 0:
         err = stderr.decode(errors="replace")
         raise RuntimeError(f"Batch detection failed (rc={proc.returncode}): {err[-500:]}")
 
-    summary_path = Path(output_root) / "batch_summary.json"
-    if summary_path.exists():
-        with open(summary_path) as f:
-            summary = json.load(f)
+    summary = _read_fresh_output(summary_path, previous_output)
+    if summary:
 
         if write_db and table_name != DEFAULT_TABLE:
             for r in summary.get("results", []):
@@ -149,18 +178,20 @@ async def run_detection_batch(
                 if report_path.exists():
                     with open(report_path) as f:
                         findings = json.load(f)
-                    _insert_to_custom_table(findings, table_name, "")
+                    await blocking_write(_insert_to_custom_table, findings, table_name, "", namespace)
 
         return summary
 
-    return {"stdout": stdout.decode(errors="replace")[-2000:]}
+    raise RuntimeError('Detection produced an empty batch summary')
 
 
-def _insert_to_custom_table(findings: dict, table_name: str, input_dir: str):
+def _insert_to_custom_table(findings: dict, table_name: str, input_dir: str, report_namespace: str = ""):
     import sys
     sys.path.insert(0, str(MAIN_PY.parent))
     from modules.chinese_report_generator import (
-        _compute_dimension_risk, _compute_image_risk, _compute_overall_risk, _apply_data_caps,
+        _apply_data_caps, _apply_explainability_dimension_downgrade,
+        _compute_dimension_risk, _compute_image_risk, _compute_overall_risk,
+        _reconcile_risk_levels,
     )
     from utils.db import _make_report_url, build_paper_metadata
 
@@ -182,15 +213,8 @@ def _insert_to_custom_table(findings: dict, table_name: str, input_dir: str):
     data_risk = _compute_dimension_risk(capped_data)
     ref_risk = _compute_dimension_risk(findings.get("reference_issues", []))
     overall = _compute_overall_risk(findings)
-
-    if overall["level"] == "高风险":
-        for dim in overall.get("high_dimensions", []):
-            if dim == "data" and data_risk["level"] != "高风险":
-                data_risk["level"] = "高风险"
-                data_risk["color"] = "#c00"
-            elif dim == "image" and image_risk["level"] != "高风险":
-                image_risk["level"] = "高风险"
-                image_risk["color"] = "#c00"
+    _apply_explainability_dimension_downgrade(findings, image_risk, data_risk, ref_risk)
+    _reconcile_risk_levels(findings, overall, image_risk, data_risk, ref_risk)
 
     from datetime import datetime
 
@@ -225,7 +249,7 @@ def _insert_to_custom_table(findings: dict, table_name: str, input_dir: str):
         "report_url": (
             "" if findings.get("pdf_skipped_low_risk") else _make_report_url(
                 findings,
-                chinese_reports_dir=str(OUTPUT_DIR / "chinese_reports" / sanitize_report_namespace(table_name)),
+                chinese_reports_dir=str(OUTPUT_DIR / "chinese_reports" / sanitize_report_namespace(report_namespace or table_name)),
             )
         )[:500],
         "generation_time": datetime.now(),

@@ -56,8 +56,15 @@ async def _concurrent_stream(items, worker, limit):
             await worker(item, queue.put_nowait)
 
     async def _driver():
-        await asyncio.gather(*(_run_one(it) for it in items))
-        queue.put_nowait(_DONE)
+        jobs = [asyncio.create_task(_run_one(it)) for it in items]
+        try:
+            await asyncio.gather(*jobs)
+        finally:
+            for job in jobs:
+                if not job.done():
+                    job.cancel()
+            await asyncio.gather(*jobs, return_exceptions=True)
+            queue.put_nowait(_DONE)
 
     driver = asyncio.create_task(_driver())
     try:
@@ -67,7 +74,11 @@ async def _concurrent_stream(items, worker, limit):
                 break
             yield ev
     finally:
-        await driver
+        if not driver.done():
+            driver.cancel()
+            await asyncio.gather(driver, return_exceptions=True)
+        else:
+            await driver
 
 
 @router.post("/run")
@@ -180,7 +191,7 @@ async def _run_stream(
             return
 
         # --- Validate contents ---
-        validation = _validate_contents(archive_path, ext)
+        validation = await asyncio.to_thread(_validate_contents, archive_path, ext)
         if isinstance(validation, list):
             yield _event("error", f"校验失败: {'; '.join(validation)}", errors=validation)
             return
@@ -195,12 +206,13 @@ async def _run_stream(
 
         # --- Extract ---
         run_id = tmp_dir.name.replace("paper_run_", "")
+        report_namespace = f'{table_name}/run_{run_id}'
         if mode == "single":
-            papers = extract_single(archive_path, run_id)
+            papers = await asyncio.to_thread(extract_single, archive_path, run_id)
             if doi and papers:
                 apply_doi_override(papers[0], doi)
         else:
-            papers = extract_batch(archive_path, run_id)
+            papers = await asyncio.to_thread(extract_batch, archive_path, run_id)
 
         yield _event("extracting", f"解压完成，识别到 {len(papers)} 篇论文")
 
@@ -221,6 +233,7 @@ async def _run_stream(
                     author_type=author_type,
                     table_name=table_name,
                     doi=paper.doi,
+                    report_namespace=report_namespace,
                 )
 
                 report_json = Path(paper.output_dir) / "report.json"
@@ -312,13 +325,18 @@ async def _run_stream(
 
         # --- Generate reports ---
         report_count = 0
+        report_error = None
+        failed_reviews = [r for r in review_results if r.get('trigger') == 'review_error']
+        review_results = [r for r in review_results if r.get('trigger') != 'review_error']
         if review_results:
             yield _event("generating_report", "生成复核报告...")
             try:
-                report_paths = await generate_reports(review_results, tmp_dir, table_name)
+                report_paths = await generate_reports(review_results, tmp_dir, table_name,
+                                                      report_namespace=report_namespace)
                 report_count = len(report_paths)
                 yield _event("generating_report", f"生成 {report_count} 份复核报告")
             except Exception as e:
+                report_error = str(e)
                 yield _event("generating_report", f"报告生成失败: {e}")
 
         # --- Final result ---
@@ -331,6 +349,7 @@ async def _run_stream(
             "detected_fail": detect_errors,
             "high_risk_detected": len(high_risk_papers),
             "reviewed": len(review_results),
+            "review_failed": len(failed_reviews),
             "confirmed_high": confirmed_high,
             "downgraded": downgraded,
             "reports_generated": report_count,
@@ -341,7 +360,10 @@ async def _run_stream(
             for p in papers
         ]
 
-        yield _event("completed", "全部完成", result=result, papers=papers_summary)
+        failed = bool(detect_errors or failed_reviews or report_error or not papers)
+        yield _event('error' if failed else 'completed',
+                     '部分阶段失败，请查看各篇错误' if failed else '全部完成',
+                     result=result, papers=papers_summary, error=report_error)
 
     except Exception as e:
         log.exception("Run pipeline failed")

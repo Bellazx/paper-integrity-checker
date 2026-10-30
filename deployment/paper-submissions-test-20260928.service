@@ -1,0 +1,26 @@
+[Unit]
+Description=Offline full paper_submissions regression (no database access)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/sjtu/paper-integrity-checker/data/submission_tests/20260928-full-01/project
+ExecStart=/usr/bin/bash -lc 'exec /home/sjtu/paper-integrity-checker/venv/bin/python /home/sjtu/paper-integrity-checker/scripts/submission_test_network_guard.py run -- /home/sjtu/paper-integrity-checker/venv/bin/python -u /home/sjtu/paper-integrity-checker/data/submission_tests/20260928-full-01/project/scripts/test_paper_submissions.py run --run-dir /home/sjtu/paper-integrity-checker/data/submission_tests/20260928-full-01 --concurrency 54'
+ExecStopPost=/usr/bin/bash -lc 'exec /home/sjtu/paper-integrity-checker/venv/bin/python /home/sjtu/paper-integrity-checker/scripts/submission_test_network_guard.py cleanup'
+Environment=PAPER_INTEGRITY_ROOT=/home/sjtu/paper-integrity-checker/data/submission_tests/20260928-full-01/project
+Environment=PAPER_CHECKER_PYTHON=/home/sjtu/paper-integrity-checker/venv/bin/python
+Environment=PAPER_REVIEW_SKILL_SCRIPTS=/home/library/.claude/skills/paper-batch-review/scripts
+Environment=PATH=/home/sjtu/paper-integrity-checker/venv/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin
+Environment=REVIEW_COVERAGE_MEMORY_MB=8192
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=OMP_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=PAPER_CLEAN_JUNK=0
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+KillMode=control-group
+TimeoutStopSec=30
+Restart=no
+StandardOutput=journal
+StandardError=journal

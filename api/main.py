@@ -1,5 +1,6 @@
 import logging
 import sys
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -22,10 +23,26 @@ log = logging.getLogger("paper-api")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from api.services.runtime_tools import runtime_tool_status
+
+    tool_status = runtime_tool_status()
+    if tool_status["ok"]:
+        log.info("Runtime dependency check passed")
+    else:
+        log.error("Runtime dependency check failed: %s", tool_status)
     tm = TaskManager()
-    tm.load_from_disk()
+    recovered = tm.load_from_disk()
     tasks.set_task_manager(tm)
     log.info("Task manager loaded, %d existing tasks", len(tm._tasks))
+    # Requeue tasks whose extracted paper inputs survived the restart.  The
+    # workers use upserts/verified writes, so replaying the interrupted stage
+    # is preferable to manufacturing a paper-level failure.
+    for task in recovered:
+        if task.config.table_name == "detection_reports":
+            tm.start_detection_worker(task.task_id)
+        else:
+            tm.start_pipeline_worker(task.task_id)
+        log.info("Requeued interrupted task %s after restart", task.task_id)
     yield
     log.info("Shutting down paper-api")
 

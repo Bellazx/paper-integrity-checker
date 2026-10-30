@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import logging
 import secrets
 import shutil
@@ -19,6 +20,9 @@ from api.config import (
     upload_dir_for_file_id,
 )
 from api.models import FileInfo, UploadResponse
+from api.services.runtime_tools import require_rar_tool
+from api.services.zip_handler import validate_archive
+from api.services.submission_policy import blocking_write
 
 log = logging.getLogger(__name__)
 
@@ -63,8 +67,13 @@ async def upload_file(
     try:
         # 3. Save with size check
         size = 0
+        # Starlette's UploadFile is already backed by a spooled temporary file.
+        # Reading 8 KiB at a time caused ~1,200 await/context-switch cycles for a
+        # 10 MiB archive and made uploads take about 47 seconds on the public path.
+        # A 1 MiB chunk keeps memory bounded while making disk/network throughput
+        # comparable to the old deployment.
         with open(archive_path, "wb") as f:
-            while chunk := await file.read(8192):
+            while chunk := await file.read(1024 * 1024):
                 size += len(chunk)
                 if size > MAX_UPLOAD_SIZE_BYTES:
                     shutil.rmtree(upload_dir, ignore_errors=True)
@@ -72,7 +81,7 @@ async def upload_file(
                         f"文件大小已超过 {MAX_UPLOAD_SIZE_MB}MB 限制",
                         f"当前已读取 {size / 1024 / 1024:.1f}MB",
                     ])
-                f.write(chunk)
+                await blocking_write(f.write, chunk)
 
         # 4. Validate archive integrity
         if ext == ".zip" and not zipfile.is_zipfile(archive_path):
@@ -87,9 +96,14 @@ async def upload_file(
                 "RAR 压缩包已损坏或格式无效",
                 "请确认文件未在传输过程中损坏，或重新压缩后上传",
             ])
+        if ext == ".rar":
+            # rarfile can list headers without an extraction backend.  Verify the
+            # backend now so upload cannot succeed only for submit to fail later.
+            require_rar_tool()
 
         # 5. Deep validation — collect ALL issues
-        result = _validate_archive_contents(archive_path, ext)
+        await asyncio.to_thread(validate_archive, archive_path)
+        result = await asyncio.to_thread(_validate_archive_contents, archive_path, ext)
         if isinstance(result, list):
             shutil.rmtree(upload_dir, ignore_errors=True)
             return _error(400, f"压缩包内容校验失败，共 {len(result)} 个问题", result)
@@ -114,6 +128,9 @@ async def upload_file(
             file_info=file_info,
         )
 
+    except asyncio.CancelledError:
+        shutil.rmtree(upload_dir, ignore_errors=True)
+        raise
     except Exception as e:
         shutil.rmtree(upload_dir, ignore_errors=True)
         log.error("Upload validation failed: %s", e)

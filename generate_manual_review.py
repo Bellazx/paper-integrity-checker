@@ -59,8 +59,7 @@ def _header_html(paper: dict) -> str:
     stats_line = f'<p style="font-size:9.5pt; color:#333; margin-bottom:2pt;">{"　　".join(stats)}</p>' if stats else ""
 
     return f"""
-<h1 style="font-size:18pt; color:#1a1a1a; text-align:center; margin-bottom:4pt;">学术论文预警报告（人工复核版）</h1>
-<p style="font-size:9pt; color:#999; text-align:center; margin-bottom:16pt;">Academic Paper Risk Alert Report — Manual Review</p>
+<h1 style="font-size:18pt; color:#1a1a1a; text-align:center; margin-bottom:16pt;">Paper Pecker Risk Alert Report — Manual Review</h1>
 <hr style="border:none; border-top:1px solid #ccc; margin:10pt 0;">
 <h2 style="font-size:13pt; color:#1a1a1a; margin-top:14pt; margin-bottom:6pt;">一、论文基本信息</h2>
 <p style="font-size:9.5pt; color:#333; margin-bottom:2pt;"><b>论文标题：</b>{title}</p>

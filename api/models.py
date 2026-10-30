@@ -15,6 +15,7 @@ class TaskStatus(str, Enum):
     GENERATING_REPORT = "generating_report"
     COMPLETED = "completed"
     FAILED = "failed"
+    SUPERSEDED = "superseded"
 
 
 class TaskMode(str, Enum):
@@ -23,11 +24,14 @@ class TaskMode(str, Enum):
 
 
 class TaskConfig(BaseModel):
+    submission_no: str = ""
     table_name: str = "yujing_quanliang"
     skip_refs: bool = False
     author_type: str = ""
     skip_review: bool = False
     max_workers: int = 4
+    rules_fingerprint: str = ""
+    requested_doi: str = ""
 
 
 class PaperInfo(BaseModel):
@@ -40,6 +44,12 @@ class PaperInfo(BaseModel):
     error: str = ""
     fold_name: str = ""        # batch: source paper folder name; single: empty
     submission_no: str = ""    # detection_reports flow: = file_id
+    language: str = "both"
+    material_fingerprint: str = ""
+    reused_from_task_id: str = ""
+    initial_report_namespace: str = ""
+    superseded_by: str = ""
+    submission_decision: str = "fresh"
 
 
 class TaskRecord(BaseModel):
@@ -55,6 +65,9 @@ class TaskRecord(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
     completed_at: datetime | None = None
+    submission_history: list[dict[str, Any]] = []
+    submission_prepared: bool = True
+    superseded_by: str = ""
 
 
 class TaskCreatedResponse(BaseModel):
@@ -76,6 +89,7 @@ class TaskStatusResponse(BaseModel):
     result: dict[str, Any] | None = None
     error: str | None = None
     papers: list[dict[str, Any]] = []
+    superseded_by: str = ""
 
 
 class TaskSummary(BaseModel):
@@ -112,7 +126,7 @@ class UploadErrorResponse(BaseModel):
 
 
 class SubmitRequest(BaseModel):
-    file_id: str
+    file_id: str = Field(min_length=1, max_length=160, pattern=r'^[\w-]+$')
     mode: str = "single"
     doi: str = ""
     table_name: str = "yujing_quanliang"
@@ -123,8 +137,10 @@ class SubmitRequest(BaseModel):
 class DetectionSubmitRequest(BaseModel):
     """User-facing submit (writes to detection_reports). No table_name — the target
     table is fixed to detection_reports."""
-    file_id: str
+    file_id: str = Field(min_length=1, max_length=160, pattern=r'^[\w-]+$')
     mode: str = "single"
     doi: str = ""
     author_type: str = ""
     max_workers: int = 4
+    # zh: Chinese only, en: English only, both: generate both variants.
+    language: str = "both"

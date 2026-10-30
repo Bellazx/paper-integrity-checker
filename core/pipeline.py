@@ -25,12 +25,13 @@ class NumpyEncoder(json.JSONEncoder):
             return obj.tolist()
         return super().default(obj)
 
-from utils.pdf_utils import extract_images, extract_text
+from utils.pdf_utils import extract_full_text, extract_images, extract_text
 from modules.image_checker import check_image_duplicates
 from modules.splice_checker import check_splicing
 from modules.data_checker import DATA_FILE_EXTENSIONS, check_data_anomalies, is_metadata_data_file
 from modules.reference_checker import check_references
 from modules.chinese_report_generator import generate_chinese_pdf
+from modules.initial_content_screen import screen_manuscript
 
 log = logging.getLogger(__name__)
 
@@ -328,7 +329,7 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
     # A user-supplied DOI is authoritative: apply it before the doi.txt/folder-name
     # fallback, CrossRef enrichment, the reference self-DOI header filter, and DB metadata.
     if doi_override:
-        metadata["doi"] = normalize_doi(doi_override)
+        metadata["doi"] = normalize_doi(doi_override) or doi_override.strip()
 
     if not metadata.get("doi"):
         doi_file = Path(paper_dir) / "doi.txt"
@@ -409,7 +410,7 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
                     "Skipped %d standalone article figure images already represented in PDF",
                     skipped,
                 )
-        log.info("Found %d standalone images (TIF/JPEG/PNG)", len(standalone))
+        log.info("Found %d standalone images (TIF/JPEG/PNG/GIF)", len(standalone))
         images = images + standalone
 
     # Mine images from supplementary/figure PDFs (extended_data, supplementary,
@@ -475,23 +476,26 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
     # Extract tables from main PDF + supplementary PDFs → CSVs in
     # `<output_dir>/data_tables/`. data_checker picks them up via the
     # find_data_dir fallback below.
+    extraction_warnings = []
+    n_tables = 0
     try:
         from utils.pdf_table_extractor import extract_tables_from_pdf
-        n_tables = 0
         try:
             n_tables += len(extract_tables_from_pdf(pdf_path, output_dir))
         except Exception as _e:
+            extraction_warnings.append(f"正文PDF表格提取未完成: {_e}")
             log.warning("Table extraction from main PDF failed: %s", _e)
         for spdf in supp_pdfs:
             try:
                 n_tables += len(extract_tables_from_pdf(spdf, output_dir))
             except Exception as _e:
+                extraction_warnings.append(f"{Path(spdf).name}表格提取未完成: {_e}")
                 log.warning("Table extraction from supplementary PDF %s failed: %s", spdf, _e)
         if n_tables:
             log.info("Extracted %d table(s) total from PDFs into %s/data_tables/",
                      n_tables, output_dir)
     except ImportError:
-        pass  # pdfplumber not installed
+        extraction_warnings.append("PDF表格提取工具不可用，未完成结构化表格检查")
 
     log.info("[2/4] Checking image duplicates...")
     image_results = check_image_duplicates(images, output_dir)
@@ -506,7 +510,22 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
     tables_dir = Path(output_dir) / "data_tables"
     extra = [str(tables_dir)] if tables_dir.exists() and any(tables_dir.glob("*.csv")) else []
     data_dirs_for_check = [paper_dir] + extra if extra else paper_dir
-    data_results = check_data_anomalies(data_dirs_for_check)
+    from utils.safe_data_checker import check_data_anomalies_safe
+    data_results, data_warnings = check_data_anomalies_safe(data_dirs_for_check)
+    data_warnings.extend(extraction_warnings)
+    if data_warnings:
+        log.warning("Source-data screening warnings: %s", "; ".join(data_warnings))
+
+    # Shared by workflow and the API's main.py detection subprocess. This reads
+    # source material, never review results or an existing report.json.
+    try:
+        from modules.quantitative_consistency import check_quantitative_consistency
+        quantitative_issues, quantitative_warnings = check_quantitative_consistency(pdf_path, paper_dir)
+        data_results.extend(quantitative_issues)
+        data_warnings.extend(quantitative_warnings)
+    except Exception as exc:
+        data_warnings.append(f"数量一致性核查未完成: {type(exc).__name__}: {exc}")
+        log.exception("Quantitative consistency check failed")
 
     log.info("[4/4] Verifying references...")
     if skip_refs:
@@ -518,23 +537,99 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
     ref_count = 0
     text_pages = extract_text(pdf_path)
     full_text = "\n".join(p["text"] for p in text_pages)
+    from modules.reference_checker import _extract_references
+    reference_text = extract_full_text(pdf_path)
+    if not n_tables and re.search(r"(?i)\bTable\s+\d+|表\s*\d+", reference_text):
+        data_warnings.append("正文含表格引用，但未提取到结构化PDF表格；可识别的数量关系检查不代表已完成全部表格核验")
+    parsed_refs = _extract_references(reference_text, metadata.get("doi"))
+    numeric_ref_numbers = [
+        int(ref["number"])
+        for ref in parsed_refs
+        if str(ref.get("number", "")).isdigit()
+    ]
+    ref_count = max(numeric_ref_numbers, default=len(parsed_refs))
 
-    # Check contradictions that live inside the manuscript rather than in
-    # attached source-data files: equations, tables, quantitative claims, and
-    # cross-table scenario definitions.
+    # Check contradictions that live in the manuscript itself rather than in
+    # attached source-data files: broken constraints, missing result values,
+    # and figure-condition label ordering.
     try:
         from modules.manuscript_consistency_checker import check_manuscript_consistency
-        consistency_issues = check_manuscript_consistency(pdf_path, full_text)
+        consistency_issues = check_manuscript_consistency(pdf_path, reference_text)
         data_results.extend(consistency_issues)
         if consistency_issues:
             log.info("Manuscript consistency checks: %d finding(s)", len(consistency_issues))
     except Exception as exc:
         log.warning("Manuscript consistency checks failed (continuing): %s", exc)
 
-    ref_match = re.search(r'(?:References|REFERENCES|Bibliography)', full_text)
-    if ref_match:
-        ref_section = full_text[ref_match.end():]
-        ref_count = len(re.findall(r'^\s*\[?\d{1,3}\]?[.\s]', ref_section, re.MULTILINE))
+    # Cross-document checks must run in the initial screening itself.  They compare
+    # statements in the article with attached supplementary tables, so they cannot
+    # be recovered by scanning either file in isolation.
+    if supp_pdfs:
+        try:
+            from modules.supplementary_consistency_checker import check_supplementary_consistency
+            supplementary_issues = check_supplementary_consistency(pdf_path, supp_pdfs)
+            data_results.extend(supplementary_issues)
+            if supplementary_issues:
+                log.info(
+                    "Main/supplement consistency checks: %d finding(s)",
+                    len(supplementary_issues),
+                )
+        except Exception as exc:
+            log.warning("Main/supplement consistency checks failed (continuing): %s", exc)
+
+    # Short correspondence pieces can make a content-level error while citing a
+    # perfectly real paper.  DOI existence checks cannot detect that, so compare
+    # named subtypes with the cited article when references are enabled.
+    if not skip_refs:
+        try:
+            from modules.citation_content_checker import check_citation_content_consistency
+            citation_content_issues = check_citation_content_consistency(pdf_path)
+            ref_results.extend(citation_content_issues)
+            if citation_content_issues:
+                log.info(
+                    "Citation content consistency checks: %d finding(s)",
+                    len(citation_content_issues),
+                )
+        except Exception as exc:
+            log.warning("Citation content consistency checks failed (continuing): %s", exc)
+
+    # Humanities-oriented integrity checks feed the existing reference/data issue
+    # streams. They do not introduce a new risk dimension or alter risk thresholds.
+    try:
+        from modules.humanities_checker import check_humanities_integrity
+        humanities = check_humanities_integrity(
+            reference_text,
+            parsed_refs,
+            skip_references=skip_refs,
+        )
+        ref_results.extend(humanities["reference_issues"])
+        data_results.extend(humanities["text_issues"])
+        if humanities["reference_issues"] or humanities["text_issues"]:
+            log.info(
+                "Humanities integrity checks: %d reference/text findings, %d text findings",
+                len(humanities["reference_issues"]),
+                len(humanities["text_issues"]),
+            )
+    except Exception as exc:
+        log.warning("Humanities integrity checks failed (continuing): %s", exc)
+
+    # API detection and batch workflows both dispatch through this pipeline.
+    # Read the paper independently BEFORE scoring; a detector-only report cannot
+    # discover a missing manuscript contradiction from an empty findings list.
+    content_audit_path = Path(output_dir) / "initial_content_screen.json"
+    try:
+        content_issues, content_warnings, content_audit = screen_manuscript(pdf_path)
+        data_results.extend(content_issues)
+        data_warnings.extend(content_warnings)
+        content_audit_path.write_text(json.dumps(content_audit, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        content_audit_path.write_text(json.dumps({
+            **getattr(exc, 'audit', {}),
+            "status": "incomplete", "source_pdf": str(pdf_path),
+            "error_type": type(exc).__name__, "error": str(exc),
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Do not produce a success report or write a low-risk record on failure.
+        raise RuntimeError(f"初审内容核查未完成，未生成放行结论，详情见 {content_audit_path}") from exc
 
     first_pages_text = "\n\n".join(p["text"] for p in text_pages[:4])
 
@@ -557,6 +652,9 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
         "image_splicing": splice_results,
         "data_anomalies": data_results,
         "reference_issues": ref_results,
+        "analysis_warnings": data_warnings,
+        "content_screening": {k: v for k, v in content_audit.items()
+                              if k not in {"candidates", "decisions", "calculations"}},
         "summary": {
             "total_issues": len(image_results) + len(data_results) + len(ref_results) + len(splice_results),
             "image_issues": len(image_results),
@@ -625,6 +723,21 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(findings, f, ensure_ascii=False, indent=2, default=str, cls=NumpyEncoder)
     log.info("Saved structured results to %s", json_path)
+
+    try:
+        from utils.output_cleanup import cleanup_paper_output
+
+        cleanup_stats = cleanup_paper_output(output_dir)
+        if cleanup_stats.files_removed:
+            log.info(
+                "Removed %d unreferenced extraction images (%.2f MiB)",
+                cleanup_stats.files_removed,
+                cleanup_stats.bytes_reclaimed / (1024 ** 2),
+            )
+        if cleanup_stats.errors:
+            log.warning("Output cleanup completed with errors: %s", cleanup_stats.errors[:3])
+    except Exception as exc:
+        log.warning("Failed to clean output extraction images: %s", exc)
 
     log.info("Analysis complete. Total issues: %d", findings["summary"]["total_issues"])
     return findings

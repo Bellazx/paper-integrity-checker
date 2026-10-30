@@ -40,7 +40,13 @@ TMP_DIR = BASE / "data" / "tmp" / "4050_review_watcher"
 STATE_FILE = TMP_DIR / "state.json"
 LOG_FILE = TMP_DIR / "watcher.log"
 METRICS_FILE = TMP_DIR / "metrics.jsonl"
-REPORT_SCRIPT = Path("/home/library/.claude/skills/paper-batch-review/scripts/generate_review_report.py")
+# Route through the project shim; direct skill invocation could bypass the
+# fail-closed semantic coverage gate.
+REPORT_SCRIPT = BASE / "scripts" / "generate_review_report.py"
+REPORT_PYTHON = os.environ.get(
+    "PAPER_CHECKER_PYTHON",
+    str(BASE / "venv" / "bin" / "python") if (BASE / "venv" / "bin" / "python").is_file() else sys.executable,
+)
 
 DB_CONFIG = {
     "server": "10.119.5.44",
@@ -408,7 +414,7 @@ def _group_id(dois: list[str]) -> str:
 def _launch_group(dois: list[str], state: dict) -> int:
     group_id = _group_id(dois)
     cmd = [
-        sys.executable,
+        REPORT_PYTHON,
         "-u",
         str(BASE / "watch_4050_reviews.py"),
         "--worker",

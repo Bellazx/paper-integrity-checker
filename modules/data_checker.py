@@ -1,8 +1,10 @@
 import logging
 import hashlib
+import io
 import math
 import re
 import time
+import zipfile
 from collections import defaultdict
 from pathlib import Path
 
@@ -30,15 +32,20 @@ from utils.stats import (
     check_value_recycling, terminal_digit_test, sd_regularity_test,
     check_trailing_digit_uniformity, check_passage_offset_pattern,
 )
+from modules.source_data_patterns import detect_source_data_patterns
+from utils.delimited_source import TEXT_TABLE_SUFFIXES, read_screen_table
 
 log = logging.getLogger(__name__)
 
 MAX_LOAD_RETRIES = 3
-TABLE_DATA_EXTENSIONS = {".xlsx", ".xls", ".csv", ".docx", ".fcs", ".sav"}
+TABLE_DATA_EXTENSIONS = {".xlsx", ".xls", ".csv", ".docx", ".fcs", ".sav"} | TEXT_TABLE_SUFFIXES
+ARCHIVE_DATA_EXTENSIONS = {".zip", ".rar"}
 STRUCTURE_DATA_EXTENSIONS = {".pdb", ".cif"}
-DATA_FILE_EXTENSIONS = TABLE_DATA_EXTENSIONS | STRUCTURE_DATA_EXTENSIONS
+DATA_FILE_EXTENSIONS = TABLE_DATA_EXTENSIONS | ARCHIVE_DATA_EXTENSIONS | STRUCTURE_DATA_EXTENSIONS
 MAX_SUBTABLES_PER_WORKBOOK = 40
 MAX_SUBTABLES_FOR_FULL_SCAN = 500
+MAX_ARCHIVE_DATA_FILES = 100
+MAX_ARCHIVE_MEMBER_BYTES = 200 * 1024 * 1024
 _SHEET_SCAN_SKIP_WORKBOOKS: set[str] = set()
 _CROSS_SHEET_SKIP_WORKBOOKS: set[str] = set()
 
@@ -46,7 +53,7 @@ _CROSS_SHEET_SKIP_WORKBOOKS: set[str] = set()
 # alongside the paper but are NOT experimental data. Analyzing them produces meaningless
 # anomalies (e.g. decimal_uniformity on a 'figure_no' column) and masks real source-data
 # absence, so they must be skipped during data-anomaly detection.
-_METADATA_FILENAMES = {"resources.csv", "figures.csv", "manifest.csv", "resources.tsv"}
+_METADATA_FILENAMES = {"resources.csv", "figures.csv", "manifest.csv", "resources.tsv", "doi.txt"}
 
 
 def _cap_workbook_subtables(all_tables: dict[str, pd.DataFrame], workbook_name: str) -> dict[str, pd.DataFrame]:
@@ -387,14 +394,69 @@ def _split_sub_tables(df: pd.DataFrame, filename: str, sheet_name: str) -> dict[
     return tables
 
 
+def _raw_workbook_pattern_anomalies(
+    raw_sheets: dict[str, pd.DataFrame], file_name: str
+) -> list[dict]:
+    anomalies = []
+    for sheet_name, df in raw_sheets.items():
+        grid = df.astype(object).where(df.notna(), None).values.tolist()
+        patterns = detect_source_data_patterns(file_name, str(sheet_name), grid)
+        anomalies.extend(patterns["same_sheet_exact_series_reuse"])
+        anomalies.extend(patterns["same_sheet_channel_duplicate"])
+        anomalies.extend(patterns["fixed_ratio_series"])
+        anomalies.extend(patterns["semantic_transform_conflicts"])
+    return anomalies
+
+
+def _read_delimited_text_xls(path: Path) -> dict[str, pd.DataFrame] | None:
+    """Read a text table that was delivered with an ``.xls`` suffix.
+
+    Source-data exports occasionally use the legacy Excel extension for TSV or
+    CSV content. Keep binary/corrupt workbooks on the normal failure path and
+    only accept clearly delimited, multi-line text with at least two columns.
+    """
+    try:
+        payload = path.read_bytes()
+    except OSError:
+        return None
+    if not payload or b"\x00" in payload[:65536]:
+        return None
+
+    text = None
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            text = payload.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        return None
+
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+    delimiter = max(("\t", ",", ";"), key=lambda value: lines[0].count(value))
+    if lines[0].count(delimiter) < 1:
+        return None
+
+    try:
+        frame = pd.read_csv(io.StringIO(text), sep=delimiter, header=None)
+    except Exception:
+        return None
+    if frame.shape[0] < 2 or frame.shape[1] < 2:
+        return None
+    return {"Sheet1": frame}
+
+
 def _load_data_files(
     data_dir: str or Path or list,
-) -> tuple[dict[str, dict[str, pd.DataFrame]], list[str]]:
+) -> tuple[dict[str, dict[str, pd.DataFrame]], list[str], list[dict]]:
     """Load all Excel/CSV files with retry logic.
-    Returns (loaded_data, failed_file_names)."""
+    Returns (loaded_data, failed_file_names, raw_pattern_anomalies)."""
     data_dirs = [Path(data_dir)] if not isinstance(data_dir, list) else [Path(d) for d in data_dir]
     result = {}
     failed_files = []
+    pattern_anomalies = []
     seen_fingerprints: set[tuple[int, str]] = set()
 
     def display_name(path: Path) -> str:
@@ -433,9 +495,22 @@ def _load_data_files(
         if f.suffix.lower() in (".xlsx", ".xls"):
             loaded = False
             engine = "xlrd" if f.suffix.lower() == ".xls" else "openpyxl"
+            text_workbook = _read_delimited_text_xls(f) if f.suffix.lower() == ".xls" else None
+            if text_workbook is not None:
+                pattern_anomalies.extend(_raw_workbook_pattern_anomalies(text_workbook, name))
+                all_tables = {}
+                for sheet_name, df in text_workbook.items():
+                    all_tables.update(_split_sub_tables(df, name, sheet_name))
+                all_tables = _cap_workbook_subtables(all_tables, name)
+                result[name] = all_tables
+                loaded = True
+                log.info("Loaded text-delimited XLS %s: %d sub-tables", name, len(all_tables))
             for attempt in range(MAX_LOAD_RETRIES):
+                if loaded:
+                    break
                 try:
                     raw = pd.read_excel(f, sheet_name=None, engine=engine, header=None)
+                    pattern_anomalies.extend(_raw_workbook_pattern_anomalies(raw, name))
                     all_tables = {}
                     for sheet_name, df in raw.items():
                         sub_tables = _split_sub_tables(df, name, sheet_name)
@@ -452,6 +527,14 @@ def _load_data_files(
                     else:
                         log.error("Failed to load %s after %d attempts: %s", name, MAX_LOAD_RETRIES, e)
                         failed_files.append(name)
+        elif f.is_file() and f.suffix.lower() in TEXT_TABLE_SUFFIXES:
+            try:
+                frame, coverage_warnings = read_screen_table(f)
+                result[name] = {"Sheet1": frame}
+                failed_files.extend(coverage_warnings)
+            except (ValueError, OSError, UnicodeError) as exc:
+                failed_files.append(f"{name}: {exc}")
+                log.warning("Text source table not checked: %s: %s", name, exc)
         elif f.suffix.lower() == ".csv":
             loaded = False
             for attempt in range(MAX_LOAD_RETRIES):
@@ -517,6 +600,61 @@ def _load_data_files(
             except Exception as e:
                 log.warning("Failed to load %s: %s", name, e)
                 failed_files.append(name)
+        elif f.suffix.lower() == ".zip":
+            try:
+                with zipfile.ZipFile(f) as zf:
+                    members = [
+                        info for info in zf.infolist()
+                        if not info.is_dir()
+                        and Path(info.filename).suffix.lower() in ({".xlsx", ".xls", ".csv"} | TEXT_TABLE_SUFFIXES)
+                        and not Path(info.filename).name.startswith("~$")
+                        and info.file_size <= MAX_ARCHIVE_MEMBER_BYTES
+                    ][:MAX_ARCHIVE_DATA_FILES]
+                    for info in members:
+                        member_name = Path(info.filename).name
+                        member_suffix = Path(info.filename).suffix.lower()
+                        payload = zf.read(info)
+                        archive_name = f"{name}/{info.filename}"
+                        if member_suffix in (".xlsx", ".xls"):
+                            engine = "xlrd" if member_suffix == ".xls" else "openpyxl"
+                            try:
+                                raw = pd.read_excel(
+                                    io.BytesIO(payload), sheet_name=None, engine=engine, header=None
+                                )
+                                pattern_anomalies.extend(
+                                    _raw_workbook_pattern_anomalies(raw, archive_name)
+                                )
+                                all_tables = {}
+                                for sheet_name, df in raw.items():
+                                    all_tables.update(_split_sub_tables(df, member_name, sheet_name))
+                                all_tables = _cap_workbook_subtables(all_tables, archive_name)
+                                result[archive_name] = all_tables
+                                log.info("Loaded %s: %d sub-tables", archive_name, len(all_tables))
+                            except Exception as e:
+                                log.warning("Failed to load %s: %s", archive_name, e)
+                                failed_files.append(archive_name)
+                        elif member_suffix in TEXT_TABLE_SUFFIXES:
+                            try:
+                                import tempfile
+                                with tempfile.TemporaryDirectory(prefix="source_table_") as temp:
+                                    extracted = Path(temp) / member_name
+                                    extracted.write_bytes(payload)
+                                    frame, coverage_warnings = read_screen_table(extracted)
+                                    result[archive_name] = {"Sheet1": frame}
+                                    failed_files.extend(f"{archive_name}: {w}" for w in coverage_warnings)
+                            except (OSError, ValueError, UnicodeError) as exc:
+                                failed_files.append(f"{archive_name}: {exc}")
+                        elif member_suffix == ".csv":
+                            try:
+                                df = pd.read_csv(io.BytesIO(payload))
+                                result[archive_name] = {"Sheet1": df}
+                                log.info("Loaded %s", archive_name)
+                            except Exception as e:
+                                log.warning("Failed to load %s: %s", archive_name, e)
+                                failed_files.append(archive_name)
+            except (OSError, zipfile.BadZipFile) as e:
+                log.warning("Failed to read ZIP %s: %s", name, e)
+                failed_files.append(name)
         elif f.suffix.lower() == ".rar":
             try:
                 import rarfile
@@ -531,6 +669,11 @@ def _load_data_files(
                             engine = "xlrd" if extracted.suffix.lower() == ".xls" else "openpyxl"
                             try:
                                 raw = pd.read_excel(extracted, sheet_name=None, engine=engine, header=None)
+                                pattern_anomalies.extend(
+                                    _raw_workbook_pattern_anomalies(
+                                        raw, f"{f.name}/{extracted.name}"
+                                    )
+                                )
                                 all_tables = {}
                                 for sheet_name, df in raw.items():
                                     sub_tables = _split_sub_tables(df, extracted.name, sheet_name)
@@ -540,6 +683,13 @@ def _load_data_files(
                                 log.info("Loaded %s/%s: %d sub-tables", f.name, extracted.name, len(all_tables))
                             except Exception as e:
                                 log.warning("Failed to load %s/%s: %s", f.name, extracted.name, e)
+                        elif extracted.is_file() and extracted.suffix.lower() in TEXT_TABLE_SUFFIXES:
+                            try:
+                                frame, coverage_warnings = read_screen_table(extracted)
+                                result[f"{f.name}/{extracted.name}"] = {"Sheet1": frame}
+                                failed_files.extend(f"{f.name}: {w}" for w in coverage_warnings)
+                            except (OSError, ValueError, UnicodeError) as exc:
+                                failed_files.append(f"{f.name}/{extracted.name}: {exc}")
                         elif extracted.suffix.lower() == ".csv":
                             try:
                                 df = pd.read_csv(extracted)
@@ -551,7 +701,7 @@ def _load_data_files(
                 log.warning("Failed to extract RAR %s: %s", f.name, e)
                 failed_files.append(f.name)
 
-    return result, failed_files
+    return result, failed_files, pattern_anomalies
 
 
 def _parse_pdb_atom_line(line: str, line_no: int, model_id: str) -> dict:
@@ -2854,12 +3004,12 @@ def check_data_anomalies(data_dir: str or Path or list) -> list[dict]:
     _CROSS_SHEET_SKIP_WORKBOOKS.clear()
     pdb_anomalies, _pdb_failed, pdb_count = _check_pdb_files(existing_dirs)
     cif_anomalies, _cif_failed, cif_count = _check_cif_files(existing_dirs)
-    all_files, _failed = _load_data_files(existing_dirs)
+    all_files, _failed, pattern_anomalies = _load_data_files(existing_dirs)
     if not all_files and not pdb_count and not cif_count:
         log.info("No data files found in %s", existing_dirs)
         return []
 
-    all_anomalies = list(pdb_anomalies) + list(cif_anomalies)
+    all_anomalies = list(pdb_anomalies) + list(cif_anomalies) + pattern_anomalies
     for fname, sheets in all_files.items():
         if fname in _SHEET_SCAN_SKIP_WORKBOOKS:
             log.warning("Skipping per-subtable statistical scan for capped workbook %s (%d sampled sub-tables)", fname, len(sheets))
@@ -2876,6 +3026,7 @@ def check_data_anomalies(data_dir: str or Path or list) -> list[dict]:
             cross_anomalies = _analyze_cross_sheet(sheets, fname)
             all_anomalies.extend(cross_anomalies)
 
+    all_anomalies = _suppress_redundant_transform_findings(all_anomalies)
     high = sum(1 for a in all_anomalies if a["severity"] == "high")
     medium = sum(1 for a in all_anomalies if a["severity"] == "medium")
     low = sum(1 for a in all_anomalies if a["severity"] == "low")
@@ -2896,12 +3047,12 @@ def check_data_with_validation(data_dir: str or Path or list) -> tuple[list[dict
     _CROSS_SHEET_SKIP_WORKBOOKS.clear()
     pdb_anomalies, pdb_failed, pdb_count = _check_pdb_files(existing_dirs)
     cif_anomalies, cif_failed, cif_count = _check_cif_files(existing_dirs)
-    all_files, failed_files = _load_data_files(existing_dirs)
+    all_files, failed_files, pattern_anomalies = _load_data_files(existing_dirs)
     failed_files = failed_files + pdb_failed + cif_failed
     if not all_files and not failed_files and not pdb_count and not cif_count:
         return [], []
 
-    all_anomalies = list(pdb_anomalies) + list(cif_anomalies)
+    all_anomalies = list(pdb_anomalies) + list(cif_anomalies) + pattern_anomalies
     for fname, sheets in all_files.items():
         if fname in _SHEET_SCAN_SKIP_WORKBOOKS:
             log.warning("Skipping per-subtable statistical scan for capped workbook %s (%d sampled sub-tables)", fname, len(sheets))
@@ -2916,6 +3067,7 @@ def check_data_with_validation(data_dir: str or Path or list) -> tuple[list[dict
                 continue
             all_anomalies.extend(_analyze_cross_sheet(sheets, fname))
 
+    all_anomalies = _suppress_redundant_transform_findings(all_anomalies)
     if all_anomalies:
         high = sum(1 for a in all_anomalies if a["severity"] == "high")
         medium = sum(1 for a in all_anomalies if a["severity"] == "medium")
@@ -2923,3 +3075,45 @@ def check_data_with_validation(data_dir: str or Path or list) -> tuple[list[dict
         log.info("Data anomalies found: %d total (high=%d, medium=%d, low=%d)", len(all_anomalies), high, medium, low)
 
     return all_anomalies, failed_files
+
+
+def _suppress_redundant_transform_findings(anomalies: list[dict]) -> list[dict]:
+    """Do not report the same mislabeled transform columns three times.
+
+    A semantic transform conflict already states that two named columns are
+    identical and explains the violated formula.  Generic duplicate/correlation
+    detectors add no independent evidence for that same pair and make the report
+    look like several different problems.
+    """
+    semantic_pairs = []
+    for issue in anomalies:
+        if issue.get("test") != "semantic_transform_conflict":
+            continue
+        details = issue.get("details", {})
+        pair = frozenset({str(details.get("left_header", "")), str(details.get("right_header", ""))})
+        if len(pair) == 2 and "" not in pair:
+            semantic_pairs.append((str(issue.get("location", "")).split(" / ", 1)[0], pair))
+
+    filtered = []
+    for issue in anomalies:
+        test = issue.get("test")
+        location_file = str(issue.get("location", "")).split(" / ", 1)[0]
+        redundant = False
+        if test == "feature_matrix_duplicate_columns":
+            groups = issue.get("details", {}).get("duplicate_column_groups", [])
+            redundant = any(
+                location_file == source_file and frozenset(map(str, group)) == pair
+                for source_file, pair in semantic_pairs
+                for group in groups
+            )
+        elif test == "feature_matrix_near_identical_columns":
+            pairs = issue.get("details", {}).get("pairs", [])
+            redundant = any(
+                location_file == source_file
+                and frozenset({str(item.get("col_a", "")), str(item.get("col_b", ""))}) == pair
+                for source_file, pair in semantic_pairs
+                for item in pairs
+            )
+        if not redundant:
+            filtered.append(issue)
+    return filtered

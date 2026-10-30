@@ -59,7 +59,7 @@ def is_nature_crawl(paper_dir: str) -> bool:
 
 
 def _load_manifest(paper_dir: str) -> dict:
-    with open(Path(paper_dir) / "manifest.json", "r", encoding="utf-8") as f:
+    with open(Path(paper_dir) / "manifest.json", encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -84,7 +84,7 @@ def extract_metadata_from_manifest(paper_dir: str) -> dict:
         html_path = d / "html" / "article.html"
     if html_path.exists():
         try:
-            with open(html_path, "r", encoding="utf-8") as f:
+            with open(html_path, encoding="utf-8") as f:
                 html_content = f.read()
 
             jsonld_blocks = re.findall(
@@ -140,7 +140,7 @@ def extract_metadata_from_manifest(paper_dir: str) -> dict:
 
 
 def extract_text_from_html(html_path: str) -> str:
-    with open(html_path, "r", encoding="utf-8") as f:
+    with open(html_path, encoding="utf-8") as f:
         content = f.read()
 
     try:
@@ -169,7 +169,7 @@ def extract_text_from_html(html_path: str) -> str:
 
 
 def extract_references_from_html(html_path: str) -> list[dict]:
-    with open(html_path, "r", encoding="utf-8") as f:
+    with open(html_path, encoding="utf-8") as f:
         content = f.read()
 
     try:
@@ -495,6 +495,7 @@ def analyze_nature_paper(
         "image_splicing": all_splice_results,
         "data_anomalies": all_data_results,
         "reference_issues": ref_results,
+        "analysis_warnings": [f"source-data coverage incomplete: {item}" for item in all_failed_files],
         "summary": {
             "total_issues": len(all_image_results) + len(all_data_results) + len(ref_results) + len(all_splice_results),
             "image_issues": len(all_image_results),
@@ -559,6 +560,21 @@ def analyze_nature_paper(
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(findings, f, ensure_ascii=False, indent=2, default=str, cls=NumpyEncoder)
     log.info("Saved report to %s", json_path)
+
+    try:
+        from utils.output_cleanup import cleanup_paper_output
+
+        cleanup_stats = cleanup_paper_output(output_dir)
+        if cleanup_stats.files_removed:
+            log.info(
+                "Removed %d unreferenced extraction images (%.2f MiB)",
+                cleanup_stats.files_removed,
+                cleanup_stats.bytes_reclaimed / (1024 ** 2),
+            )
+        if cleanup_stats.errors:
+            log.warning("Output cleanup completed with errors: %s", cleanup_stats.errors[:3])
+    except Exception as exc:
+        log.warning("Failed to clean output extraction images: %s", exc)
 
     log.info("Analysis complete. Total issues: %d", findings["summary"]["total_issues"])
     return findings

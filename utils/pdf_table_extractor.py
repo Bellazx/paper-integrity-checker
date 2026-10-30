@@ -35,6 +35,7 @@ PAGE_STRATEGY_TIMEOUT_SECONDS = max(
     1, int(os.getenv("PDF_TABLE_PAGE_TIMEOUT_SECONDS", "30"))
 )
 PAGE_STRATEGY_WORKERS = max(1, int(os.getenv("PDF_TABLE_PAGE_WORKERS", "12")))
+MAX_PAGES_PER_PDF = max(0, int(os.getenv("PDF_TABLE_MAX_PAGES", "200")))
 
 
 def _is_numeric_cell(s: str) -> bool:
@@ -193,7 +194,7 @@ def _extract_page_fitz_with_timeout(
 
 def _extract_with_strategy(
     pdf_path: Path,
-    page_count: int,
+    page_indices: list[int],
     strategy_name: str,
     settings: dict,
     min_rows: int,
@@ -227,8 +228,10 @@ def _extract_with_strategy(
         return page_index, status, payload
 
     page_results = []
-    with ThreadPoolExecutor(max_workers=min(max_workers, page_count)) as executor:
-        futures = [executor.submit(extract_page, page_index) for page_index in range(page_count)]
+    if not page_indices:
+        return accepted
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(page_indices))) as executor:
+        futures = [executor.submit(extract_page, page_index) for page_index in page_indices]
         for future in as_completed(futures):
             page_results.append(future.result())
 
@@ -275,11 +278,23 @@ def _extract_with_strategy(
     return accepted
 
 
+def _select_page_indices(page_count: int, max_pages: int) -> list[int]:
+    """Select a bounded, evenly distributed page sample for very large PDFs."""
+    if page_count <= 0:
+        return []
+    if max_pages <= 0 or page_count <= max_pages:
+        return list(range(page_count))
+    if max_pages == 1:
+        return [0]
+    return [round(i * (page_count - 1) / (max_pages - 1)) for i in range(max_pages)]
+
+
 def extract_tables_from_pdf(pdf_path: str, output_dir: str, *,
                              min_rows: int = MIN_ROWS,
                              min_cols: int = MIN_COLS,
                              page_strategy_timeout_seconds: int = PAGE_STRATEGY_TIMEOUT_SECONDS,
-                             page_strategy_workers: int = PAGE_STRATEGY_WORKERS) -> list[Path]:
+                             page_strategy_workers: int = PAGE_STRATEGY_WORKERS,
+                             max_pages: int = MAX_PAGES_PER_PDF) -> list[Path]:
     """Extract tables from one PDF and write them as CSVs under
     `<output_dir>/data_tables/`. Returns the list of written CSV files.
     """
@@ -300,10 +315,18 @@ def extract_tables_from_pdf(pdf_path: str, output_dir: str, *,
     try:
         with pdfplumber.open(str(pdf_path)) as pdf:
             page_count = len(pdf.pages)
+        page_indices = _select_page_indices(page_count, max_pages)
+        if len(page_indices) < page_count:
+            log.warning(
+                "PDF has %d pages; sampling %d evenly distributed pages for table extraction: %s",
+                page_count,
+                len(page_indices),
+                pdf_path,
+            )
         for strat_name, settings in _STRATEGIES:
             tables = _extract_with_strategy(
                 pdf_path,
-                page_count,
+                page_indices,
                 strat_name,
                 settings,
                 min_rows,

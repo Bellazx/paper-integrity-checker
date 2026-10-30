@@ -31,6 +31,28 @@ SJTU_KEYWORDS = [
 _conn_local = threading.local()
 
 
+def _select_initial_report_url(
+    generated_url: str,
+    initial_risk_level: str | None,
+    review_result: str | None,
+    review_report_url: str | None,
+) -> str:
+    """Use confirmed review evidence only after initial screening is high itself.
+
+    This deliberately does not change any initial score or risk level.  A low
+    initial result stays low even when a later review is high; the detector must
+    independently produce the high-risk result before its user-facing link can be
+    aligned with the confirmed review report.
+    """
+    if (
+        str(initial_risk_level or "").strip() == "高风险"
+        and str(review_result or "").strip() == "高风险"
+        and str(review_report_url or "").strip()
+    ):
+        return str(review_report_url).strip()
+    return generated_url
+
+
 def get_connection():
     if not hasattr(_conn_local, "conn") or _conn_local.conn is None:
         _conn_local.conn = pymssql.connect(**DB_CONFIG)
@@ -57,7 +79,7 @@ def _find_sjtu_authors(html_path: str) -> dict:
     }
 
     try:
-        with open(html_path, "r", encoding="utf-8") as f:
+        with open(html_path, encoding="utf-8") as f:
             content = f.read()
     except Exception:
         return result
@@ -183,10 +205,18 @@ def build_paper_metadata(findings: dict, html_path: str = None) -> dict:
     }
 
 
-def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: str = None, namespace: str = ""):
+def insert_findings(
+    findings: dict,
+    chinese_reports_dir: str = None,
+    html_path: str = None,
+    namespace: str = "",
+    source_path: str = "",
+):
     """Insert analysis results into SQL Server."""
     from modules.chinese_report_generator import (
-        _compute_dimension_risk, _compute_image_risk, _compute_overall_risk, _apply_data_caps,
+        _apply_data_caps, _apply_explainability_dimension_downgrade,
+        _compute_dimension_risk, _compute_image_risk, _compute_overall_risk,
+        _reconcile_risk_levels,
     )
 
     paper = findings.get("paper", {})
@@ -197,15 +227,8 @@ def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: 
     data_risk = _compute_dimension_risk(capped_data)
     ref_risk = _compute_dimension_risk(findings.get("reference_issues", []))
     overall = _compute_overall_risk(findings)
-
-    if overall["level"] == "高风险":
-        for dim in overall.get("high_dimensions", []):
-            if dim == "data" and data_risk["level"] != "高风险":
-                data_risk["level"] = "高风险"
-                data_risk["color"] = "#c00"
-            elif dim == "image" and image_risk["level"] != "高风险":
-                image_risk["level"] = "高风险"
-                image_risk["color"] = "#c00"
+    _apply_explainability_dimension_downgrade(findings, image_risk, data_risk, ref_risk)
+    _reconcile_risk_levels(findings, overall, image_risk, data_risk, ref_risk)
 
     meta = build_paper_metadata(findings, html_path=html_path)
 
@@ -215,6 +238,11 @@ def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: 
             table_name = namespace
         else:
             log.warning("Ignoring unsafe DB namespace=%r; using %s", namespace, table_name)
+
+    # ``source_path`` is currently part of the audit and comprehensive tables.
+    # Keep the SQL for scholar/4050 tables unchanged because those schemas do
+    # not expose this column yet.
+    has_source_path = table_name in {"yujing_quanliang", "yujing_audit"}
 
     report_url = "" if findings.get("pdf_skipped_low_risk") else _make_report_url(findings, chinese_reports_dir, namespace=namespace)
 
@@ -242,9 +270,18 @@ def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: 
         "report_url": report_url[:500],
         "generation_time": datetime.now(),
     }
+    if has_source_path:
+        row["source_path"] = (source_path or "")[:500]
 
-    if overall["level"] == "低风险":
-        sql_update = f"""UPDATE {table_name} SET
+    source_update = (
+        ",\n            source_path=CASE WHEN NULLIF(LTRIM(RTRIM(%(source_path)s)), '') IS NULL "
+        "THEN source_path ELSE %(source_path)s END"
+        if has_source_path else ""
+    )
+    source_insert_column = ", source_path" if has_source_path else ""
+    source_insert_value = ", %(source_path)s" if has_source_path else ""
+
+    sql_update_clear_review = f"""UPDATE {table_name} SET
             title=%(title)s, author=%(author)s, author_type=%(author_type)s,
             department=%(department)s, author_all=%(author_all)s, department_all=%(department_all)s,
             journal=%(journal)s, page=%(page)s, pic_num=%(pic_num)s, data_num=%(data_num)s, ref_num=%(ref_num)s,
@@ -253,10 +290,9 @@ def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: 
             data_score=%(data_score)s, data_risk_level=%(data_risk_level)s,
             ref_score=%(ref_score)s, ref_risk_level=%(ref_risk_level)s,
             report_url=%(report_url)s, generation_time=%(generation_time)s,
-            review_result=NULL, review_report_url=NULL, review_time=NULL
+            review_result=NULL, review_report_url=NULL, review_time=NULL{source_update}
         WHERE doi=%(doi)s"""
-    else:
-        sql_update = f"""UPDATE {table_name} SET
+    sql_update_preserve_review = f"""UPDATE {table_name} SET
             title=%(title)s, author=%(author)s, author_type=%(author_type)s,
             department=%(department)s, author_all=%(author_all)s, department_all=%(department_all)s,
             journal=%(journal)s, page=%(page)s, pic_num=%(pic_num)s, data_num=%(data_num)s, ref_num=%(ref_num)s,
@@ -265,6 +301,7 @@ def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: 
             data_score=%(data_score)s, data_risk_level=%(data_risk_level)s,
             ref_score=%(ref_score)s, ref_risk_level=%(ref_risk_level)s,
             report_url=%(report_url)s, generation_time=%(generation_time)s
+            {source_update}
         WHERE doi=%(doi)s"""
 
     sql_insert = f"""INSERT INTO {table_name} (
@@ -272,19 +309,22 @@ def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: 
         journal, doi, page, pic_num, data_num, ref_num,
         total_score, risk_level, pic_score, pic_risk_level,
         data_score, data_risk_level, ref_score, ref_risk_level,
-        report_url, generation_time
+        report_url, generation_time{source_insert_column}
     ) VALUES (
         %(title)s, %(author)s, %(author_type)s, %(department)s, %(author_all)s, %(department_all)s,
         %(journal)s, %(doi)s, %(page)s, %(pic_num)s, %(data_num)s, %(ref_num)s,
         %(total_score)s, %(risk_level)s, %(pic_score)s, %(pic_risk_level)s,
         %(data_score)s, %(data_risk_level)s, %(ref_score)s, %(ref_risk_level)s,
-        %(report_url)s, %(generation_time)s
+        %(report_url)s, %(generation_time)s{source_insert_value}
     )"""
 
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute(f"SELECT risk_level, review_result FROM {table_name} WHERE doi=%(doi)s", row)
+        cursor.execute(
+            f"SELECT risk_level, review_result, review_report_url FROM {table_name} WHERE doi=%(doi)s",
+            row,
+        )
         existing = cursor.fetchone()
         if existing:
             protected_snapshot = Path(__file__).resolve().parent.parent / "data" / "protected_snapshot_2054.json"
@@ -295,6 +335,14 @@ def insert_findings(findings: dict, chinese_reports_dir: str = None, html_path: 
                 if row["doi"] in _protected:
                     log.info("Skipped protected DOI=%s (risk=%s, review=%s)", row["doi"], existing[0], existing[1])
                     return
+            row["report_url"] = _select_initial_report_url(
+                row["report_url"], row["risk_level"], existing[1], existing[2]
+            )
+            sql_update = (
+                sql_update_preserve_review
+                if row["risk_level"] == "高风险"
+                else sql_update_clear_review
+            )
             cursor.execute(sql_update, row)
             conn.commit()
             log.info("Updated in DB %s: DOI=%s, score=%s/%s", table_name, row["doi"], row["total_score"], row["risk_level"])

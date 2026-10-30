@@ -1,5 +1,6 @@
 import logging
 import hashlib
+import os
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -9,6 +10,8 @@ import numpy as np
 import pdfplumber
 
 log = logging.getLogger(__name__)
+
+MAX_IMAGE_PDF_PAGES = max(0, int(os.getenv("PDF_IMAGE_MAX_PAGES", "200")))
 
 
 @dataclass
@@ -87,7 +90,19 @@ def _extract_xref(pdf_path: str, page_num: int, img_index: int, xref: int, min_s
         return None
 
 
-def extract_images(pdf_path: str, output_dir: str, min_size: int = 200, max_workers: int = 4) -> list[ExtractedImage]:
+def _select_page_indices(page_count: int, max_pages: int) -> list[int]:
+    if page_count <= 0:
+        return []
+    if max_pages <= 0 or page_count <= max_pages:
+        return list(range(page_count))
+    if max_pages == 1:
+        return [0]
+    return [round(i * (page_count - 1) / (max_pages - 1)) for i in range(max_pages)]
+
+
+def extract_images(pdf_path: str, output_dir: str, min_size: int = 200,
+                   max_workers: int = 4,
+                   max_pages: int = MAX_IMAGE_PDF_PAGES) -> list[ExtractedImage]:
     """Extract all embedded images from a PDF using PyMuPDF.
 
     Per-xref extraction is parallelized across pages (each worker opens its own
@@ -104,10 +119,18 @@ def extract_images(pdf_path: str, output_dir: str, min_size: int = 200, max_work
     # 2026-06-24: 跳过 JPXDecode (JPEG2000) — PyMuPDF 1.26 在 Pixmap(doc, xref) 时 segfault
     # (Frontiers PDF 用 jpx + 1-bit index masks，主图仍 jpeg 可提)
     doc = fitz.open(pdf_path)
+    page_indices = _select_page_indices(len(doc), max_pages)
+    if len(page_indices) < len(doc):
+        log.warning(
+            "PDF has %d pages; sampling %d evenly distributed pages for image extraction: %s",
+            len(doc),
+            len(page_indices),
+            pdf_path,
+        )
     xref_jobs: list[tuple[int, int, int]] = []
     seen_xrefs = set()
     skipped_jpx = 0
-    for page_num in range(len(doc)):
+    for page_num in page_indices:
         page = doc[page_num]
         for img_index, img_info in enumerate(page.get_images(full=True)):
             xref = img_info[0]
@@ -158,7 +181,7 @@ def extract_images(pdf_path: str, output_dir: str, min_size: int = 200, max_work
 
 
 def extract_standalone_images(paper_dir: str, output_dir: str, min_size: int = 200, max_images: int = 30, extra_image_dirs: list[str] | None = None) -> list[ExtractedImage]:
-    """Load standalone image files (TIF/TIFF/JPEG/PNG) from paper directory.
+    """Load standalone image files (TIF/TIFF/JPEG/PNG/GIF) from paper directory.
 
     extra_image_dirs: optional list of additional directories whose image files
     should be included in the scan (e.g. an `<output_dir>/images/` populated
@@ -171,7 +194,7 @@ def extract_standalone_images(paper_dir: str, output_dir: str, min_size: int = 2
     paper_path = Path(paper_dir)
     output_images = Path(output_dir) / "images"
     images = []
-    img_extensions = {".tif", ".tiff", ".jpg", ".jpeg", ".png"}
+    img_extensions = {".tif", ".tiff", ".jpg", ".jpeg", ".png", ".gif"}
 
     # Allow callers to inject extra image roots that the default rglob guard
     # would otherwise skip (the output-images folder is the canonical case).

@@ -1,26 +1,78 @@
+from __future__ import annotations
+
 import json
 import logging
 import os
 import re
 import hashlib
 import html as html_lib
+import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 
 import fitz
 
-import sys, pathlib
+import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from modules.doi_utils import normalize_doi
 from utils.llm_client import chat
 
 log = logging.getLogger(__name__)
 
-# fitz 找不到 "Noto Sans CJK SC" 时会 fallback 到 mupdf 内置的 Droid Sans Fallback (含 CJK)
-# 但 mupdf 内置 Nimbus Sans (Latin) 不含 Latin Extended (é/ó/í/ú/ñ), 西文重音会被替换为 U+FFFD
-# 故把 Charis SIL (覆盖 Latin Extended) 放在 chain 里, 让西文重音字符能正常显示
-FONT_REGULAR = '"Noto Sans CJK SC", "Charis SIL", "DejaVu Sans", sans-serif'
-FONT_BOLD = '"Noto Sans CJK SC", "Charis SIL", "DejaVu Sans Bold", sans-serif'
+REPORT_PYTHON_VERSION = (3, 12, 3)
+REPORT_PYMUPDF_VERSION = "1.27.2.3"
+REPORT_FONT_FAMILY = "Noto Sans CJK SC"
+REPORT_FONT_HASHES = {
+    "Regular": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+    "Bold": "faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb",
+}
+FONT_REGULAR = f'"{REPORT_FONT_FAMILY}", sans-serif'
+FONT_BOLD = f'"{REPORT_FONT_FAMILY}", sans-serif'
+
+
+def _resolved_font_file(style: str) -> Path | None:
+    try:
+        result = subprocess.run(
+            ["fc-match", "-f", "%{file}", f"{REPORT_FONT_FAMILY}:style={style}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    path = Path(result.stdout.strip())
+    return path if path.is_file() else None
+
+
+def validate_report_render_environment() -> None:
+    """Reject PDF rendering when the pinned runtime or fonts are unavailable."""
+    errors = []
+    actual_python = sys.version_info[:3]
+    if actual_python != REPORT_PYTHON_VERSION:
+        errors.append(
+            f"Python {'.'.join(map(str, REPORT_PYTHON_VERSION))} required; "
+            f"got {'.'.join(map(str, actual_python))} ({sys.executable})"
+        )
+
+    actual_pymupdf = getattr(fitz, "__version__", "unknown")
+    if actual_pymupdf != REPORT_PYMUPDF_VERSION:
+        errors.append(f"PyMuPDF {REPORT_PYMUPDF_VERSION} required; got {actual_pymupdf}")
+
+    for style, expected_hash in REPORT_FONT_HASHES.items():
+        font_path = _resolved_font_file(style)
+        if font_path is None:
+            errors.append(f"font {REPORT_FONT_FAMILY} {style} is unavailable")
+            continue
+        actual_hash = hashlib.sha256(font_path.read_bytes()).hexdigest()
+        if actual_hash != expected_hash:
+            errors.append(
+                f"font {REPORT_FONT_FAMILY} {style} hash mismatch at {font_path}: "
+                f"expected {expected_hash}, got {actual_hash}"
+            )
+
+    if errors:
+        raise RuntimeError("Report rendering environment mismatch: " + "; ".join(errors))
 
 METHODS_HTML = """
 <h2 style="font-size:13pt; color:#1a1a1a; margin-top:18pt; margin-bottom:6pt;">附录：检测方法说明</h2>
@@ -46,6 +98,8 @@ METHODS_HTML = """
 
 <p style="font-size:10pt; font-weight:bold; color:#1a1a1a; margin-top:10pt; margin-bottom:4pt;">3. 参考文献核验</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:8pt;">通过DOI（数字对象标识符）向CrossRef国际学术数据库查询每条参考文献的真实性，验证其是否真实存在、标题与作者是否匹配。</p>
+<p style="font-size:9.5pt; color:#333; margin-bottom:3pt;"><b>中文及综述论文引文一致性：</b>识别“参考文献”“注释”等中文文献区段，核对正文编号引用与文末条目是否对应，提示重复条目、未被正文引用的条目及异常年份。</p>
+<p style="font-size:9.5pt; color:#333; margin-bottom:8pt;"><b>综述方法完整性：</b>对具有综述特征的论文检查数据库、检索范围、检索词及纳入排除标准等方法信息；叙述性综述的适用性仍需人工判断。</p>
 
 <p style="font-size:10pt; font-weight:bold; color:#1a1a1a; margin-top:10pt; margin-bottom:4pt;">4. 图像拼接检测</p>
 <p style="font-size:9.5pt; color:#333; margin-bottom:3pt;">针对蛋白质印迹（Western blot）、凝胶电泳等条带类图像，初步筛查是否存在拼接迹象，重点关注以下特征：</p>
@@ -57,17 +111,17 @@ METHODS_HTML = """
 
 DISCLAIMER_HTML = """
 <h2 style="font-size:13pt; color:#1a1a1a; margin-top:18pt; margin-bottom:6pt;">六、免责声明</h2>
-<p style="font-size:9pt; color:#666; margin-bottom:3pt;">本报告由学术论文预警系统自动生成，所有发现均基于算法分析，仅供参考。</p>
+<p style="font-size:9pt; color:#666; margin-bottom:3pt;">本报告由Paper Pecker自动生成，所有发现均基于算法分析，仅供参考。</p>
 <p style="font-size:9pt; color:#666; margin-bottom:3pt;">部分图像相似性可能来源于合理的实验设计（如共用内参对照、标准分子量标记等），部分数据特征可能有合理的科学解释。</p>
 <p style="font-size:9pt; color:#666; margin-bottom:3pt;">最终结论须结合原始实验材料、作者说明及领域专家的人工审核后方可作出。</p>
-<p style="font-size:9pt; color:#999; margin-top:10pt;">报告生成日期：{date} | 学术论文预警系统</p>
+<p style="font-size:9pt; color:#999; margin-top:10pt;">报告生成日期：{date} | Paper Pecker</p>
 """
 
 CN_SYSTEM_PROMPT = """你是学术论文风险检测领域的专家。
 你需要完成两项任务：1) 从论文文本中提取作者和机构信息；2) 根据检测结果撰写中文预警报告。
 要求：
-1. 使用中文撰写，语言专业、严谨
-2. 引用具体数据和位置（页码、列名、数值）
+1. 使用中文撰写，但必须使用普通审核人员能直接理解的解释性语言，避免只堆砌检测术语
+2. 每个具体问题都必须先写清位置，再写问题类型、具体事实、需关注原因和核查依据
 3. 严格按照指定的格式输出
 4. 使用"提示""可能""有待进一步调查"等客观措辞，避免直接下结论
 5. ⚠️ 严格禁止使用"造假""篡改""伪造"等指控性词汇，无论肯定或否定语境均不得出现。应使用"数据异常""图像完整性问题""规范性不足""统计特征偏离预期"等中性表述替代
@@ -99,6 +153,7 @@ CN_REPORT_PROMPT = """请完成以下两项任务。
 - 图像重复检测：{image_level}
 - 数据异常检测：{data_level}
 - 参考文献核验：{ref_level}
+- 必须逐项写入第四节的高风险维度：{high_dimensions}
 
 ### 检测结果
 
@@ -116,10 +171,22 @@ CN_REPORT_PROMPT = """请完成以下两项任务。
 
 ---
 
+### 详细问题的强制写法
+
+    对每一个被保留的问题，必须按下面的顺序写，不能只写“存在异常”“数据重复”或“标题不匹配”：
+
+1. **问题位置**：原文第几页、Fig./Table/Supplementary Fig. 编号、公式编号；涉及源数据时还要写文件名、sheet 名、列名和行号或行范围。
+2. **问题类型**：例如图文不一致、样本量不一致、跨实验数据复用、公式计算不一致、图像重复、参考文献著录不一致。
+3. **具体情况**：列出实际观察到的数值、标签、图像或文字，并与论文写法逐项对照；涉及计算时写出公式、代入值、计算结果、论文报告值和差异。
+4. **需关注原因**：用通俗语言说明这会影响哪个结论、参数、图表或可重复性；不要只写“影响论文可靠性”。
+5. **核查依据**：说明是如何用原文、图注、原始数据、图片或统计计算核对出来的。
+
 涉及确定性规则给出的表号、场景名、数据集名、模型名、指标名和数值时，必须逐字采用“位置/描述/详情”中的证据；
 不得补充、替换或创造证据中未出现的实体标签，也不得把证据中的TG/JA/BB等名称改写成其他缩写。
 对于 quantitative_claim_mismatch，详情中 mismatched_metrics[].metric 是该问题指标名的唯一来源；
 例如 metric=RMSE 时，该问题的标题、具体情况和核查依据都必须写 RMSE，绝不能写成 ERR、MAE 或其他指标。
+
+如果某项告警经核查属于正常现象，也要写明核查位置和排除理由，例如“第5页 Fig.2A 与原始图片文件的匹配是同一张投稿图片的PDF嵌入版，不是两组实验重复使用”。
 
 请严格按照以下格式输出（不要包含```标记）：
 
@@ -127,10 +194,10 @@ CN_REPORT_PROMPT = """请完成以下两项任务。
 {{"authors": ["按论文原文抄录的作者1", "按论文原文抄录的作者2", ...], "affiliations": ["1. 按论文原文抄录的机构1", "2. 按论文原文抄录的机构2", ...]}}
 ===ANALYSIS_HTML===
 <h2 style="font-size:13pt; color:#1a1a1a; margin-top:18pt; margin-bottom:6pt;">三、检测结果总览</h2>
-[用一段话概述整体风险等级和关键发现。注意：整体风险等级必须与系统计算的一致（{overall_level}），不要自行判断风险等级，不要出现任何分值/分数。然后用列表列出三个维度的问题数量和严重程度分布]
+[用一段话概述整体风险等级和关键发现。注意：整体风险等级必须与系统计算的一致（{overall_level}），不要自行判断风险等级，不要出现任何分值/分数。然后用列表列出三个维度的问题数量和严重程度分布。**注意**：图像重复和图像拼接合并为"图像问题"一个维度，不要拆成两个独立维度]
 
 <h2 style="font-size:13pt; color:#1a1a1a; margin-top:18pt; margin-bottom:6pt;">四、主要发现详情</h2>
-[按图像分析、数据分析、参考文献三个小节详细描述发现]
+[必须依次使用“（一）图像问题”“（二）数据分析”“（三）参考文献”三个小节详细描述发现。图像重复和图像拼接同属“图像问题”维度，不要拆成两个独立问题。凡上文列入“必须逐项写入第四节的高风险维度”的维度，都必须在对应小节中写出至少一个完整问题，并按“问题位置、问题类型、具体情况、需关注原因、核查依据”五项展开；不得只在总览中标为高风险而在详情中省略。]
 
 <h2 style="font-size:13pt; color:#1a1a1a; margin-top:18pt; margin-bottom:6pt;">五、综合风险评估</h2>
 [综合风险等级必须与系统一致：{overall_level}。围绕此等级展开分析，说明各维度的风险贡献，分析各类发现之间的关联性。禁止出现任何具体分值/分数]
@@ -181,6 +248,9 @@ def _format_splice_findings(findings: list[dict]) -> str:
 def _format_data_findings(findings: list[dict]) -> str:
     if not findings:
         return "未检测到数据异常。"
+    # Reproducible manuscript/source contradictions must survive the representative
+    # sample when hundreds of weak spreadsheet alerts precede them.
+    findings = sorted(findings, key=lambda item: item.get("test") not in _QUANTITATIVE_DECISIVE_TESTS)
     MAX_DETAIL_ITEMS = 100
     if len(findings) <= MAX_DETAIL_ITEMS:
         lines = [f"共发现 {len(findings)} 个数据异常：\n"]
@@ -198,7 +268,7 @@ def _format_data_findings(findings: list[dict]) -> str:
                 "quantitative_claim_mismatch",
                 "quantitative_summary_mismatch",
                 "scenario_definition_conflict",
-            }:
+            } | _QUANTITATIVE_DECISIVE_TESTS:
                 lines.append(
                     "  详情: " + json.dumps(f.get("details", {}), ensure_ascii=False, default=str)
                 )
@@ -251,6 +321,124 @@ def _format_reference_findings(findings: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _parse_combined_report_response(response: str) -> tuple[dict, str]:
+    response = re.sub(r'^```(?:json|html)?\s*', '', response or '')
+    response = re.sub(r'\s*```$', '', response)
+    metadata = {"authors_full": [], "affiliations": []}
+    analysis_html = response
+
+    if "===METADATA_JSON===" in response and "===ANALYSIS_HTML===" in response:
+        parts = response.split("===ANALYSIS_HTML===", 1)
+        meta_part = parts[0].split("===METADATA_JSON===", 1)[-1].strip()
+        analysis_html = parts[1].strip()
+        try:
+            meta_part = re.sub(r'^```(?:json)?\s*', '', meta_part)
+            meta_part = re.sub(r'\s*```$', '', meta_part)
+            meta_obj = json.loads(meta_part)
+            metadata = {
+                "authors_full": meta_obj.get("authors", []),
+                "affiliations": meta_obj.get("affiliations", []),
+            }
+        except Exception as exc:
+            log.warning("Failed to parse metadata JSON from combined response: %s", exc)
+
+    analysis_html = re.sub(r'<table[^>]*>.*?</table>', '', analysis_html, flags=re.DOTALL)
+    analysis_html = analysis_html.replace("为什么需要关注", "需关注原因")
+    analysis_html = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', analysis_html)
+    analysis_html = re.sub(r'={3,}\s*[A-Z_][A-Z0-9_]*\s*={3,}', '', analysis_html)
+    return metadata, analysis_html
+
+
+def _protect_formula_references_html(value: str) -> str:
+    """Keep equation references together when MuPDF lays out a line."""
+    value = re.sub(
+        r"(公式|式)\s*[（(]\s*\n\s*(\d+)\s*[）)]",
+        r"\1(\2)",
+        value or "",
+    )
+    return re.sub(
+        r"(?<![A-Za-z0-9])((?:公式|式)\s*[（(]\s*\d+\s*[）)])",
+        r'<span style="white-space:nowrap;">\1</span>',
+        value,
+    )
+
+
+def _analysis_explanation_gaps(
+    analysis_html: str,
+    overall_level: str,
+    high_dimensions: set[str] | None = None,
+) -> list[str]:
+    if overall_level != "高风险":
+        return []
+    plain = re.sub(r'<[^>]+>', ' ', analysis_html or '')
+    required = {
+        "问题位置": r"问题位置\s*[：:]",
+        "问题类型": r"问题类型\s*[：:]",
+        "具体情况": r"具体情况\s*[：:]",
+        "需关注原因": r"需关注原因\s*[：:]",
+        "核查依据": r"核查依据\s*[：:]",
+    }
+    gaps = [name for name, pattern in required.items() if not re.search(pattern, plain)]
+    location_re = re.compile(
+        r"(?:第\s*\d+\s*页|page\s*\d+|Fig(?:ure)?\.?\s*[A-Za-z0-9.-]+|"
+        r"Table\s*[A-Za-z0-9.-]+|图\s*[A-Za-z0-9.-]+|表\s*[A-Za-z0-9.-]+|"
+        r"公式?\s*[（(]?\d+|式\s*[（(]?\d+|sheet\s*['\"“”]?[^，,。;；\n]+|"
+        r"(?:参考)?文献\s*(?:第|#)?\s*\d+\s*(?:条|项|号)?)",
+        re.I,
+    )
+    if not location_re.search(plain):
+        gaps.append("具体页码/图表/公式/sheet/参考文献编号")
+
+    section_patterns = {
+        "image": (r"（一）\s*图像(?:问题|分析)", r"（二）\s*数据"),
+        "data": (r"（二）\s*数据(?:分析|异常)?", r"（三）\s*参考文献"),
+        "reference": (r"（三）\s*参考文献", r"五、\s*综合风险评估"),
+    }
+    required_labels = ("问题位置", "问题类型", "具体情况", "需关注原因", "核查依据")
+    for dimension in high_dimensions or set():
+        patterns = section_patterns.get(dimension)
+        if not patterns:
+            continue
+        start = re.search(patterns[0], plain)
+        if not start:
+            gaps.append(f"{dimension}高风险维度详情")
+            continue
+        end = re.search(patterns[1], plain[start.end():])
+        block = plain[start.end():start.end() + end.start()] if end else plain[start.end():]
+        if any(not re.search(rf"{label}\s*[：:]", block) for label in required_labels):
+            gaps.append(f"{dimension}高风险维度完整说明")
+    return gaps
+
+
+def _build_explainability_downgrade_html() -> str:
+    """Render low risk when a high signal has no complete, verifiable detail."""
+    paragraph = (
+        '<p style="font-size:9.5pt; color:#333; margin-bottom:3pt;">'
+        '现有材料核查范围内未形成能够具体定位、逐项核对并独立复核的完整性问题说明，'
+        '因此相关自动告警不作为高风险结论，综合判定为<span style="color:#080;">低风险</span>。'
+        '</p>'
+    )
+    detail = (
+        '<p style="font-size:9.5pt; color:#333; margin-bottom:3pt;">'
+        '在现有可读材料范围内，未形成完整的“问题位置、问题类型、具体情况、需关注原因、核查依据”五项说明，'
+        '未发现可以具体确认的论文完整性问题。'
+        '</p>'
+    )
+    return f"""
+<h2 style="font-size:13pt; color:#1a1a1a; margin-top:18pt; margin-bottom:6pt;">三、检测结果总览</h2>
+{paragraph}
+<h2 style="font-size:13pt; color:#1a1a1a; margin-top:18pt; margin-bottom:6pt;">四、主要发现详情</h2>
+<p style="font-size:10pt; font-weight:bold; color:#1a1a1a; margin-top:10pt; margin-bottom:4pt;">（一）图像问题</p>
+{detail}
+<p style="font-size:10pt; font-weight:bold; color:#1a1a1a; margin-top:10pt; margin-bottom:4pt;">（二）数据分析</p>
+{detail}
+<p style="font-size:10pt; font-weight:bold; color:#1a1a1a; margin-top:10pt; margin-bottom:4pt;">（三）参考文献</p>
+{detail}
+<h2 style="font-size:13pt; color:#1a1a1a; margin-top:18pt; margin-bottom:6pt;">五、综合风险评估</h2>
+{paragraph}
+"""
+
+
 def _generate_analysis_html(findings: dict, first_pages_text: str) -> tuple[dict, str]:
     """Generate analysis HTML and extract metadata in a single LLM call.
     Returns (metadata_dict, analysis_html)."""
@@ -261,21 +449,18 @@ def _generate_analysis_html(findings: dict, first_pages_text: str) -> tuple[dict
     data_risk = _compute_dimension_risk(capped_data)
     ref_risk = _compute_dimension_risk(findings.get("reference_issues", []))
     overall_risk = _compute_overall_risk(findings)
-
-    if overall_risk["level"] == "高风险":
-        for dim in overall_risk.get("high_dimensions", []):
-            if dim == "data" and data_risk["level"] != "高风险":
-                data_risk["level"] = "高风险"
-                data_risk["color"] = "#c00"
-            elif dim == "image" and image_risk["level"] != "高风险":
-                image_risk["level"] = "高风险"
-                image_risk["color"] = "#c00"
+    _reconcile_risk_levels(findings, overall_risk, image_risk, data_risk, ref_risk)
 
     risk_kwargs = dict(
         overall_level=overall_risk["level"],
         image_level=image_risk["level"],
         data_level=data_risk["level"],
         ref_level=ref_risk["level"],
+        high_dimensions="、".join(
+            {"image": "图像", "data": "数据", "reference": "参考文献"}[dim]
+            for dim in ("image", "data", "reference")
+            if dim in overall_risk.get("high_dimensions", set())
+        ) or "无",
     )
 
     truncated_text = first_pages_text[:6000]
@@ -294,16 +479,23 @@ def _generate_analysis_html(findings: dict, first_pages_text: str) -> tuple[dict
         reference_section=_format_reference_findings(findings.get("reference_issues", [])),
         **risk_kwargs,
     )
-
     prompt_len = len(prompt)
     if prompt_len > 20000:
         log.warning("Combined prompt too long (%d chars), rebuilding with compact format", prompt_len)
         findings_copy = findings.copy()
         for key in ("image_duplicates", "image_splicing", "data_anomalies", "reference_issues"):
             items = findings_copy.get(key, [])
-            high_medium = [x for x in items if x.get("severity") in ("high", "medium")]
-            if len(high_medium) < len(items):
-                findings_copy[key] = high_medium
+            # Keep low-severity manuscript errata (including ordinary typos)
+            # in the compact prompt so they remain visible in the report even
+            # when a paper has many detector findings. They never affect the
+            # high-risk gate, but dropping them would violate the errata policy.
+            retained = [
+                x for x in items
+                if x.get("severity") in ("high", "medium")
+                or x.get("test") == "verified_manuscript_content_conflict"
+            ]
+            if len(retained) < len(items):
+                findings_copy[key] = retained
         prompt = CN_REPORT_PROMPT.format(
             first_pages_text=truncated_text,
             title=paper.get("title", "未知"),
@@ -319,41 +511,79 @@ def _generate_analysis_html(findings: dict, first_pages_text: str) -> tuple[dict
             **risk_kwargs,
         )
 
+    if findings.get("analysis_warnings"):
+        prompt += (
+            "\n材料覆盖限制（须在报告中如实说明，不能写成已完整核验，也不能把读取失败当作论文风险证据）：\n"
+            + "\n".join(str(x) for x in findings["analysis_warnings"])
+        )
     log.info("Generating combined metadata+analysis (prompt: %d chars)", len(prompt))
     response = chat(prompt, system=CN_SYSTEM_PROMPT, temperature=0.3)
-    response = re.sub(r'^```(?:json|html)?\s*', '', response)
-    response = re.sub(r'\s*```$', '', response)
+    metadata, analysis_html = _parse_combined_report_response(response)
+    gaps = _analysis_explanation_gaps(
+        analysis_html,
+        overall_risk["level"],
+        overall_risk.get("high_dimensions", set()),
+    )
+    if gaps:
+        log.warning("Initial report explanation is incomplete (%s); retrying once", ", ".join(gaps))
+        repair_prompt = prompt + (
+            "\n\n上一次输出不符合可解释性要求。请完整重写，并确保每个确认问题都按"
+            "问题位置、问题类型、具体情况、需关注原因、核查依据五项依次展开。"
+        )
+        response = chat(repair_prompt, system=CN_SYSTEM_PROMPT, temperature=0.2)
+        metadata, analysis_html = _parse_combined_report_response(response)
+        gaps = _analysis_explanation_gaps(
+            analysis_html,
+            overall_risk["level"],
+            overall_risk.get("high_dimensions", set()),
+        )
+        if gaps:
+            # A report-writing failure must not erase reproducible calculations.
+            # Use a bounded evidence-only fallback when data is the sole high
+            # dimension. Other dimensions still require their own explanations.
+            quantitative = [x for x in findings.get("data_anomalies", [])
+                            if x.get("test") in _QUANTITATIVE_DECISIVE_TESTS
+                            and x.get("severity") == "high" and x.get("description")
+                            and x.get("details", {}).get("source_pdf")]
+            if quantitative and overall_risk.get("high_dimensions") == {"data"}:
+                analysis_html = _quantitative_evidence_html(quantitative, findings.get("analysis_warnings", []))
+                return metadata, analysis_html
+            if quantitative:
+                raise ValueError("报告缺少其他风险维度说明；保留已复算的数据发现，报告生成失败，不降级检测结果")
+            log.error(
+                "Initial high-risk result lacks complete evidence detail after retry; "
+                "downgrading effective conclusion to low risk: %s",
+                ", ".join(gaps),
+            )
+            findings["_explainability_downgraded"] = True
+            analysis_html = _build_explainability_downgrade_html()
 
-    metadata = {"authors_full": [], "affiliations": []}
-    analysis_html = response
-
-    if "===METADATA_JSON===" in response and "===ANALYSIS_HTML===" in response:
-        parts = response.split("===ANALYSIS_HTML===", 1)
-        meta_part = parts[0].split("===METADATA_JSON===", 1)[-1].strip()
-        analysis_html = parts[1].strip()
-        try:
-            meta_part = re.sub(r'^```(?:json)?\s*', '', meta_part)
-            meta_part = re.sub(r'\s*```$', '', meta_part)
-            import json as _json
-            meta_obj = _json.loads(meta_part)
-            metadata = {
-                "authors_full": meta_obj.get("authors", []),
-                "affiliations": meta_obj.get("affiliations", []),
-            }
-            log.info("Extracted %d authors, %d affiliations from combined call",
-                     len(metadata["authors_full"]), len(metadata["affiliations"]))
-        except Exception as e:
-            log.warning("Failed to parse metadata JSON from combined response: %s", e)
-
-    analysis_html = re.sub(r'<table[^>]*>.*?</table>', '', analysis_html, flags=re.DOTALL)
-    analysis_html = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', analysis_html)
-    # Strip any leftover section markers that the LLM may have echoed from the
-    # prompt template (===METADATA_JSON===, ===ANALYSIS_HTML===, and any other
-    # custom ===SOMETHING=== delimiters). Without this, those tokens leak into
-    # the rendered PDF as visible literal text.
-    analysis_html = re.sub(r'={3,}\s*[A-Z_][A-Z0-9_]*\s*={3,}', '', analysis_html)
+    log.info("Extracted %d authors, %d affiliations from combined call",
+             len(metadata["authors_full"]), len(metadata["affiliations"]))
     log.info("Combined response parsed (analysis: %d chars)", len(analysis_html))
     return metadata, analysis_html
+
+
+def _quantitative_evidence_html(issues: list[dict], warnings: list[str]) -> str:
+    esc = html_lib.escape
+    blocks = []
+    for issue in issues:
+        blocks.append(
+            f"<p><b>问题位置：</b>{esc(issue['location'])}</p>"
+            "<p><b>问题类型：</b>公开数值、单位或计算关系不一致。</p>"
+            f"<p><b>具体情况：</b>{esc(issue['description'])}</p>"
+            "<p><b>需关注原因：</b>该差异需要作者更正或说明计算及数据处理口径。</p>"
+            "<p><b>核查依据：</b>以上所列正文、公式、图表或随文源数据；逐项复算结果见具体情况。</p>"
+        )
+    coverage = "".join(f"<p>{esc(str(w))}</p>" for w in warnings)
+    return (
+        '<h2>三、检测结果总览</h2><p>有风险：发现可定位的数量或标注差异，具体如下。</p>'
+        '<h2>四、主要发现详情</h2><p>（一）图像问题</p><p>当前图像筛查未形成独立风险判定依据。</p>'
+        '<p>（二）数据分析</p>' + "".join(blocks) +
+        '<p>（三）参考文献</p><p>当前引用核查未形成独立风险判定依据。</p>'
+        '<h2>五、综合风险评估</h2><p>有风险：需核对上述具体差异，不等同于已经证明存在数据造假。</p>'
+        + coverage
+    )
 
 
 WEIGHT_IMAGE = 0.20
@@ -372,6 +602,30 @@ _DATA_HIGH_CAPS = {
     # bounded by the medium/low score ceilings (min(25,..)/min(12,..)) in
     # _compute_dimension_risk and cannot, on their own, reach the data high-risk gate.
 }
+
+# These checks establish a direct, reproducible contradiction rather than a weak
+# statistical signal.  One finding is therefore sufficient to put its dimension
+# through the high-risk gate.  The rule names are generic; no DOI is special-cased.
+from modules.quantitative_consistency import DECISIVE_TESTS as _QUANTITATIVE_DECISIVE_TESTS
+
+_DECISIVE_DATA_TESTS = {
+    "semantic_transform_conflict",
+    "same_sheet_channel_duplicate",
+    "cross_document_quantitative_mismatch",
+    "group_sign_polarity_outlier",
+} | _QUANTITATIVE_DECISIVE_TESTS
+_DECISIVE_REFERENCE_TYPES = {"citation_entity_type_conflict"}
+
+
+def _has_decisive_issue(issues: list[dict]) -> bool:
+    return any(
+        (issue.get("test") in _DECISIVE_DATA_TESTS
+         and (issue.get("test") != "verified_manuscript_content_conflict"
+              or issue.get("details", {}).get("verification_status") == "source_grounded_and_counterchecked")
+         and (issue.get("test") not in _QUANTITATIVE_DECISIVE_TESTS or issue.get("severity") == "high"))
+        or issue.get("issue_type") in _DECISIVE_REFERENCE_TYPES
+        for issue in issues
+    )
 
 
 def _apply_data_caps(issues: list[dict]) -> list[dict]:
@@ -471,6 +725,8 @@ def _compute_dimension_risk(issues: list[dict]) -> dict:
         volume_bonus = 0
 
     score = min(100, high_contrib + medium_contrib + low_contrib + volume_bonus)
+    if _has_decisive_issue(issues):
+        score = max(61, score)
 
     if score <= 30:
         level, color = "低风险", "#080"
@@ -526,6 +782,14 @@ def _compute_image_risk(findings: dict) -> dict:
     return risk
 
 
+def _apply_explainability_dimension_downgrade(findings: dict, *risks: dict) -> None:
+    """Make dimension levels match an explainability-based overall downgrade."""
+    if not findings.get("_explainability_downgraded"):
+        return
+    for risk in risks:
+        risk.update(score=0, level="低风险", color="#080")
+
+
 def _count_fraud_indicators(findings: dict) -> int:
     data = findings.get("data_anomalies", [])
     img = findings.get("image_duplicates", [])
@@ -535,6 +799,11 @@ def _count_fraud_indicators(findings: dict) -> int:
     has_cgd = any(
         x.get("test") == "cross_group_duplicate"
         and x.get("details", {}).get("overlap_ratio", 0) >= 0.80
+        for x in data
+    )
+    has_channel_duplicate = any(
+        x.get("test") == "same_sheet_channel_duplicate"
+        and x.get("severity") == "high"
         for x in data
     )
     has_img = any(x.get("severity") == "high" and _is_cross_image_duplicate(x) for x in img)
@@ -552,7 +821,7 @@ def _count_fraud_indicators(findings: dict) -> int:
         and x.get("details", {}).get("p_value", 1) < 0.001
         for x in data
     )
-    return sum([has_cv, has_arith, has_geo, has_cgd, has_img, has_identity_dep,
+    return sum([has_cv, has_arith, has_geo, has_cgd, has_channel_duplicate, has_img, has_identity_dep,
                 has_volume, has_benford])
 
 
@@ -592,6 +861,8 @@ def _compute_overall_risk(findings: dict) -> dict:
     data_risk = _compute_dimension_risk(capped_data)
     ref_issues = findings.get("reference_issues", [])
     ref_risk = _compute_dimension_risk(ref_issues)
+    decisive_data_trigger = _has_decisive_issue(capped_data)
+    decisive_reference_trigger = _has_decisive_issue(ref_issues)
 
     max_dim = max(image_risk["score"], data_risk["score"], ref_risk["score"])
     weighted_avg = (
@@ -615,6 +886,9 @@ def _compute_overall_risk(findings: dict) -> dict:
         bonus = 0
 
     score = min(100, base_score + bonus)
+
+    if decisive_data_trigger or decisive_reference_trigger:
+        score = max(61, score)
 
     if max_dim > 60 and score <= 60:
         score = 61
@@ -659,9 +933,9 @@ def _compute_overall_risk(findings: dict) -> dict:
                 if fsize < 2000:
                     continue
             cross_page_imgs += 1
-    cross_page_unique_imgs = len(set(
+    cross_page_unique_imgs = len({
         k for k in cross_page_img_counts if cross_page_img_counts[k] > 0
-    ))
+    })
     if cross_page_unique_imgs > 10:
         cross_page_imgs = 0
     if cross_page_imgs > 0:
@@ -758,7 +1032,9 @@ def _compute_overall_risk(findings: dict) -> dict:
     if data_integrity_burden_trigger and score < 61:
         score = 61
     is_high = (
-        data_high_trigger
+        decisive_data_trigger
+        or decisive_reference_trigger
+        or data_high_trigger
         or data_integrity_burden_trigger
         or cross_page_imgs >= 10
         or full_dup_trigger
@@ -774,13 +1050,14 @@ def _compute_overall_risk(findings: dict) -> dict:
         or (data_risk["score"] >= 45 and data_risk["medium"] >= 8)  # 大量中等数据信号
         or (ref_risk["score"] >= 40 and data_risk["score"] >= 15)  # 引用+数据组合
         or score >= 56                   # 总分接近阈值（如 41587-020-00781-8 total=56）
-        # 2026-06-24: 漏判修复 — fcimb 2025.1559182 图像 1 high + 数据 1 high 但被 image<30 拦在门外
-        # 双维度各自至少有 1 条 high 实质证据是 hard signal,任一独立维度都不能被另一维的低分拉下来
-        or (image_risk["high"] >= 1 and data_risk["high"] >= 1)
     )
 
     high_dims = set()
     if is_high:
+        if decisive_data_trigger:
+            high_dims.add("data")
+        if decisive_reference_trigger:
+            high_dims.add("reference")
         if data_high_trigger or data_integrity_burden_trigger:
             high_dims.add("data")
         if data_integrity_burden_trigger:
@@ -819,6 +1096,25 @@ def _compute_overall_risk(findings: dict) -> dict:
             )
             if best[1] > 0:
                 high_dims.add({"image": "image", "data": "data", "ref": "reference"}[best[0]])
+    # A caller may preserve an externally established high-risk result through
+    # _force_risk_level. Keep the overview internally consistent by identifying
+    # the dimensions that actually carry evidence instead of showing all green.
+    if findings.get("_force_risk_level") == "高风险" and not high_dims:
+        if image_risk["high"]:
+            high_dims.add("image")
+        if data_risk["high"]:
+            high_dims.add("data")
+        if ref_risk["high"]:
+            high_dims.add("reference")
+        if not high_dims:
+            best = max(
+                ("image", image_risk["score"]),
+                ("data", data_risk["score"]),
+                ("reference", ref_risk["score"]),
+                key=lambda item: item[1],
+            )
+            if best[1] > 0:
+                high_dims.add(best[0])
 
     if findings.get("_force_risk_level"):
         level = findings["_force_risk_level"]
@@ -835,6 +1131,14 @@ def _compute_overall_risk(findings: dict) -> dict:
     high = sum(1 for x in all_issues if x.get("severity") == "high")
     medium = sum(1 for x in all_issues if x.get("severity") == "medium")
     low = sum(1 for x in all_issues if x.get("severity") == "low")
+    if findings.get("_explainability_downgraded"):
+        # A high detector signal without a complete, location-based explanation
+        # is not publishable as a high-risk conclusion. Keep raw issue counts
+        # for auditability, but make the effective risk and score low.
+        level, color, score, high_dims = "低风险", "#080", 0, set()
+    elif level == "高风险" and not high_dims:
+        # Never publish a high overall result with no named high-risk dimension.
+        level, color = "低风险", "#080"
     return {
         "score": score, "level": level, "color": color,
         "high": high, "medium": medium, "low": low,
@@ -842,8 +1146,39 @@ def _compute_overall_risk(findings: dict) -> dict:
     }
 
 
+def _reconcile_risk_levels(
+    findings: dict,
+    overall: dict,
+    image_risk: dict,
+    data_risk: dict,
+    ref_risk: dict,
+) -> dict:
+    """Enforce one consistent overall/dimension risk vocabulary everywhere."""
+    dimensions = {
+        "image": image_risk,
+        "data": data_risk,
+        "reference": ref_risk,
+    }
+    high_dimensions = set(overall.get("high_dimensions", set())) & set(dimensions)
+
+    if overall.get("level") != "高风险" or not high_dimensions:
+        overall["level"] = "低风险"
+        overall["color"] = "#080"
+        overall["high_dimensions"] = set()
+        for risk in dimensions.values():
+            risk.update(level="低风险", color="#080")
+        return overall
+
+    overall["high_dimensions"] = high_dimensions
+    for name, risk in dimensions.items():
+        if name in high_dimensions:
+            risk.update(level="高风险", color="#c00")
+        else:
+            risk.update(level="低风险", color="#080")
+    return overall
+
+
 def _build_risk_score_html(findings: dict) -> str:
-    duplicate_risk = _compute_dimension_risk(findings.get("image_duplicates", []))
     image_risk = _compute_image_risk(findings)
     raw_data = findings.get("data_anomalies", [])
     raw_data_high = sum(1 for x in raw_data if x.get("severity") == "high")
@@ -853,18 +1188,12 @@ def _build_risk_score_html(findings: dict) -> str:
     capped_data_risk = _compute_dimension_risk(capped_data)
     ref_risk = _compute_dimension_risk(findings.get("reference_issues", []))
     overall = _compute_overall_risk(findings)
-    if findings.get("_force_risk_level"):
-        overall["level"] = findings["_force_risk_level"]
-        overall["color"] = "#c00" if overall["level"] == "高风险" else "#080"
-
-    if overall["level"] == "高风险":
-        for dim in overall.get("high_dimensions", []):
-            if dim == "data" and capped_data_risk["level"] != "高风险":
-                capped_data_risk["level"] = "高风险"
-                capped_data_risk["color"] = "#c00"
-            elif dim == "image" and image_risk["level"] != "高风险":
-                image_risk["level"] = "高风险"
-                image_risk["color"] = "#c00"
+    _apply_explainability_dimension_downgrade(
+        findings, image_risk, capped_data_risk, ref_risk
+    )
+    _reconcile_risk_levels(
+        findings, overall, image_risk, capped_data_risk, ref_risk
+    )
 
     scored_high = capped_data_risk["high"]
     note_html = ""
@@ -874,30 +1203,26 @@ def _build_risk_score_html(findings: dict) -> str:
 注：原始{raw_data_high}项HIGH告警经评分规则调整（含线性依赖重分类及同类型封顶），风险等级按{scored_high}项HIGH计算。
 </p>"""
 
-    # Splice pre-screen line — rendered deterministically (not via the LLM) so the
-    # risk overview has a stable set of dimensions. Shows counts only (no score);
-    # >=2 suspects is 高风险 (matches the is_high trigger), 0/1 suspects stay 低风险.
+    # Image-dimension block: combine 图像重复 (image_duplicates) and 图像拼接
+    # (image_splicing) into a single "图像问题" line so readers see one overall
+    # image-risk verdict. Show only the total count — no per-sub-dimension split.
     splice = findings.get("image_splicing", [])
-    n = len(splice)
-    sp_level = "高风险" if n >= 2 else "低风险"
-    sp_color = "#c00" if n >= 2 else "#080"
+    splice_n = len(splice)
+    duplicate_pairs = len(findings.get("image_duplicates", []))
+    total_image_issues = duplicate_pairs + splice_n
+    image_risk_combined = image_risk
+    if splice_n >= 2 and image_risk_combined["level"] != "高风险":
+        image_risk_combined = dict(image_risk_combined)
+        image_risk_combined["level"] = "高风险"
+        image_risk_combined["color"] = "#c00"
+    splice_items_html = ""
     if splice:
-        sp_summary = f"检出 {n} 处疑似拼接图像（达到2处升级为高风险，须经人工查看标注图确认）"
         items = "".join(
             f'<li>第{s.get("page", "?")}页：{s.get("details", "疑似拼接")}</li>'
             for s in splice[:15]
         )
-        more = f'<li>……另有 {n - 15} 处（略）</li>' if n > 15 else ""
+        more = f'<li>……另有 {splice_n - 15} 处（略）</li>' if splice_n > 15 else ""
         splice_items_html = f'\n<ul style="font-size:9pt; color:#555; margin:2pt 0 6pt 0;">{items}{more}</ul>'
-    else:
-        sp_summary = "未检出疑似拼接图像"
-        splice_items_html = ""
-    splice_html = f"""
-<p style="font-size:9.5pt; color:#333; margin-bottom:4pt;">
-<b>图像拼接检测：</b><span style="color:{sp_color}; font-weight:bold;">{sp_level}</span>
-　　{sp_summary}
-</p>
-{splice_items_html}"""
 
     return f"""
 <h2 style="font-size:13pt; color:#1a1a1a; margin-top:18pt; margin-bottom:6pt;">二、初筛风险概览</h2>
@@ -913,10 +1238,10 @@ def _build_risk_score_html(findings: dict) -> str:
 <p style="font-size:10pt; font-weight:bold; color:#1a1a1a; margin-top:10pt; margin-bottom:6pt;">各维度风险评估：</p>
 
 <p style="font-size:9.5pt; color:#333; margin-bottom:4pt;">
-<b>图像重复检测：</b><span style="color:{duplicate_risk['color']}; font-weight:bold;">{duplicate_risk['level']}</span>
-　　高风险 {duplicate_risk['high']}项　中等 {duplicate_risk['medium']}项　低风险 {duplicate_risk['low']}项
+<b>图像问题：</b><span style="color:{image_risk_combined['color']}; font-weight:bold;">{image_risk_combined['level']}</span>
+　　共 {total_image_issues} 项可疑问题
 </p>
-{splice_html}
+{splice_items_html}
 
 <p style="font-size:9.5pt; color:#333; margin-bottom:4pt;">
 <b>数据异常检测：</b><span style="color:{capped_data_risk['color']}; font-weight:bold;">{capped_data_risk['level']}</span>
@@ -979,8 +1304,8 @@ def _build_full_html(findings: dict, analysis_html: str) -> str:
         stats_line = f'<p style="font-size:9.5pt; color:#333; margin-bottom:2pt;">{"　　".join(stats_parts)}</p>'
 
     header_html = f"""
-<h1 style="font-size:18pt; color:#1a1a1a; text-align:center; margin-bottom:4pt;">学术论文预警报告</h1>
-<p style="font-size:9pt; color:#999; text-align:center; margin-bottom:16pt;">Academic Paper Risk Alert Report</p>
+<h1 style="font-size:18pt; color:#1a1a1a; text-align:center; margin-bottom:4pt;">Paper Pecker论文预警报告</h1>
+<p style="font-size:10.5pt; color:#555; text-align:center; margin-top:0; margin-bottom:16pt;">Paper Pecker Risk Alert Report</p>
 
 <hr style="border:none; border-top:1px solid #ccc; margin:10pt 0;">
 
@@ -999,13 +1324,15 @@ def _build_full_html(findings: dict, analysis_html: str) -> str:
     risk_score_html = _build_risk_score_html(findings)
     disclaimer = DISCLAIMER_HTML.format(date=today)
 
+    analysis_html = _protect_formula_references_html(
+        analysis_html.replace("为什么需要关注", "需关注原因")
+    )
     full_html = f"""
 <body style='font-family: {FONT_REGULAR};'>
 {header_html}
 {risk_score_html}
 {analysis_html}
 {disclaimer}
-{METHODS_HTML}
 </body>
 """
     return full_html
@@ -1043,6 +1370,13 @@ def _sanitize_internal_references(html: str) -> str:
         ("coefficient_of_variation", "变异系数"),
         ("not_found", "未收录"),
         ("doi_mismatch", "DOI不匹配"),
+        ("citation_without_reference", "正文引用缺少参考文献条目"),
+        ("uncited_references", "参考文献未在正文引用"),
+        ("duplicate_reference", "重复参考文献"),
+        ("duplicate_reference_doi", "重复参考文献 DOI"),
+        ("future_reference_year", "异常参考文献年份"),
+        ("review_method_incomplete", "综述方法信息不完整"),
+        ("text_repetition", "正文段落重复"),
         ("PHash", "感知哈希"),
     )
     for old, new in replacements:
@@ -1068,6 +1402,36 @@ def _sanitize_internal_references(html: str) -> str:
     html = re.sub(r"\bdoi_unverified\b", "DOI未验证", html)
     html = re.sub(r"\btitle_mismatch\b", "标题不匹配", html)
     html = re.sub(r"\blinear_dependency\b", "线性依赖", html)
+    return html
+
+
+def _normalize_analysis_consistency(findings: dict, html: str) -> str:
+    """Align free-form narrative claims with deterministic scores and counts."""
+    overall = _compute_overall_risk(findings)
+    high_dimensions = overall.get("high_dimensions", set())
+    dimension_aliases = {
+        "image": r"图像(?:问题)?",
+        "data": r"数据(?:异常检测|分析)?",
+        "reference": r"参考文献(?:核验)?",
+    }
+    for dimension, alias in dimension_aliases.items():
+        expected = "高风险" if dimension in high_dimensions else "低风险"
+        html = re.sub(
+            rf"({alias}维度\s*(?:的风险等级)?\s*(?:为|：))\s*(?:高风险|低风险|中等风险)",
+            rf"\g<1>{expected}",
+            html,
+        )
+
+    # The product has only high/low conclusions.  "中等" remains valid as an
+    # issue severity, but must never be presented as a dimension risk level.
+    html = re.sub(r"中等风险", "低风险", html)
+
+    total = int(findings.get("summary", {}).get("total_issues", 0) or 0)
+    html = re.sub(
+        r"(检测范围覆盖[^。]{0,160}?，\s*共发现)\s*\d+\s*(处|项)问题",
+        rf"\g<1>{total}\2问题",
+        html,
+    )
     return html
 
 
@@ -1122,6 +1486,7 @@ def _sanitize_paper_dict(paper: dict) -> dict:
 
 
 def _render_pdf(html: str, output_path: str):
+    validate_report_render_environment()
     html = _soften_risk_wording(html)
     html = _sanitize_internal_references(html)
     story = fitz.Story(html)
@@ -1169,13 +1534,16 @@ def _limit_text_bytes(value: str, max_bytes: int) -> str:
 
 
 def _make_filename(doi: str, title: str) -> str:
+    # Rendering sanitizes metadata before naming its PDF; URL builders must use
+    # the same title when computing the filename digest.
+    title = _sanitize_paper_text(title or "")
     max_bytes = 180
     suffix = ".pdf"
     doi_part = _limit_text_bytes(doi_to_slug(doi) or "unknown", 120)
-    digest_src = f"{doi or ''}\n{title or ''}".encode("utf-8", errors="ignore")
+    digest_src = f"{doi or ''}\n{title or ''}".encode()
     digest = hashlib.sha1(digest_src).hexdigest()[:8]
     title_part = _sanitize_filename_part(title, max_chars=72)
-    fixed_bytes = len(f"{doi_part}_{digest}{suffix}".encode("utf-8"))
+    fixed_bytes = len(f"{doi_part}_{digest}{suffix}".encode())
     if title_part:
         title_budget = max(0, max_bytes - fixed_bytes - 1)
         title_part = _limit_text_bytes(title_part, title_budget).strip("._-")
@@ -1217,6 +1585,7 @@ def _coalesce_metadata(existing: dict, extracted: dict) -> dict:
 
 def generate_chinese_pdf(findings: dict, chinese_reports_dir: str, first_pages_text: str = ""):
     """Generate Chinese PDF report. Returns (output_path, metadata_dict) or (None, metadata_dict)."""
+    caller_findings = findings
     # 修 source 里 control char 错编码 (e.g. δ 错编为 \x01d) + 删 control chars
     paper = _sanitize_paper_dict(findings.get("paper", {}))
     findings = dict(findings)
@@ -1232,9 +1601,14 @@ def generate_chinese_pdf(findings: dict, chinese_reports_dir: str, first_pages_t
 
     try:
         metadata, analysis_html = _generate_analysis_html(findings, first_pages_text)
+        if findings.get("_explainability_downgraded"):
+            caller_findings["_explainability_downgraded"] = True
+            caller_findings["initial_risk_level"] = "低风险"
+            caller_findings["initial_risk_score"] = 0
         metadata = _coalesce_metadata(paper, metadata)
         findings["paper"]["authors_full"] = metadata.get("authors_full", [])
         findings["paper"]["affiliations"] = metadata.get("affiliations", [])
+        analysis_html = _normalize_analysis_consistency(findings, analysis_html)
         full_html = _build_full_html(findings, analysis_html)
         _render_pdf(full_html, output_path)
         log.info("Chinese PDF report generated: %s", filename)

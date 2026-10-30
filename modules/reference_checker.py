@@ -125,7 +125,9 @@ def _extract_references(full_text: str, paper_doi: str | None = None) -> list[di
     """Extract individual references from the reference section of a paper."""
     full_text = _scrub_running_headers(full_text, paper_doi)
     ref_section_pattern = re.compile(
-        r'(?:^|\n)\s*(?:References|Bibliography|Works\s+Cited|REFERENCES)\s*\n',
+        r'(?:^|\n)\s*(?:References|Bibliography|Works\s+Cited|REFERENCES|'
+        r'参考文献|主要参考文献|参考书目|引用文献|注释|脚注|尾注|'
+        r'Selected\s+Bibliography)\s*\n',
         re.IGNORECASE,
     )
     match = ref_section_pattern.search(full_text)
@@ -134,9 +136,25 @@ def _extract_references(full_text: str, paper_doi: str | None = None) -> list[di
         return []
 
     ref_text = full_text[match.end():]
-    ref_text = ref_text[:20000]
+    ref_text = ref_text[:100000]
+    if re.search(r'Selected\s+Bibliography', match.group(0), re.IGNORECASE):
+        refs = _group_narrative_bibliography(ref_text, paper_doi)
+        log.info("Extracted %d narrative bibliography references", len(refs))
+        return refs
 
-    ref_pattern = re.compile(r'^\s*\[?(\d{1,3})\]?[.\s]+(.+?)(?=\n\s*\[?\d{1,3}\]?[.\s]|\Z)', re.MULTILINE | re.DOTALL)
+    bracketed_count = len(re.findall(r'^\s*[\[【]\d{1,3}[\]】]', ref_text, re.MULTILINE))
+    if bracketed_count >= 3:
+        ref_pattern = re.compile(
+            r'^[ \t]*[\[【](\d{1,3})[\]】][ \t]*(.+?)'
+            r'(?=\n[ \t]*[\[【]\d{1,3}[\]】]|\Z)',
+            re.MULTILINE | re.DOTALL,
+        )
+    else:
+        ref_pattern = re.compile(
+            r'^\s*(\d{1,3})[.．、\s]+(.+?)'
+            r'(?=\n\s*\d{1,3}[.．、\s]+|\Z)',
+            re.MULTILINE | re.DOTALL,
+        )
     refs = []
 
     # Reference lists are monotonically numbered. The [:20000] window can overshoot the
@@ -188,8 +206,11 @@ def _looks_like_ref_start(line: str) -> bool:
     Author-first citations start with a surname then an initial/comma, e.g.
     'Smith, L. J., ...', 'Wang, Y., Wan, C., ...', 'van der Berg, A. ...'.
     """
-    return bool(re.match(r'^[A-Z][A-Za-z\'`-]+,?\s+[A-Z]', line) or
-                re.match(r'^(?:van|von|de|del|della|di|da|le|la)\s+[A-Z]', line))
+    return bool(
+        re.match(r'^[A-Z][A-Za-z\'`-]+,?\s+[A-Z]', line)
+        or re.match(r'^(?:van|von|de|del|della|di|da|le|la)\s+[A-Z]', line)
+        or re.match(r'^[\u3400-\u9fff]{2,12}(?:[，,、\s].*)?(?:18|19|20)\d{2}', line)
+    )
 
 
 def _ref_looks_complete(buf: str) -> bool:
@@ -201,6 +222,8 @@ def _ref_looks_complete(buf: str) -> bool:
         return True
     # '(2010). ... 196-204.' or '... 109 (1), 196-204.' style endings with a year present.
     if re.search(r'\(\d{4}\)', buf) and re.search(r'\d+\s*[-–]\s*\d+\.?\s*$', buf):
+        return True
+    if re.search(r'(?:18|19|20)\d{2}', buf) and re.search(r'[。.]\s*$', buf) and len(buf) >= 20:
         return True
     return False
 
@@ -231,6 +254,42 @@ def _group_unnumbered_refs(ref_text: str, paper_doi: str | None) -> list[dict]:
         if doi and paper_doi and doi.lower() == paper_doi.lower():
             doi = None
         refs.append({"number": i + 1, "text": text, "doi": doi})
+    return refs
+
+
+_NARRATIVE_REF_START = re.compile(
+    r"(?<![A-Za-z])"
+    r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’`-]{1,35},\s*"
+    r"(?:[A-Z]\.\s*){1,3}"
+    r"(?:,?\s*(?:(?:and|&)\s*)?[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’`-]{1,35},\s*"
+    r"(?:[A-Z]\.\s*){1,3}){0,12}"
+    r",?\s*(?:18|19|20)\d{2}\.",
+)
+
+
+def _group_narrative_bibliography(ref_text: str, paper_doi: str | None) -> list[dict]:
+    """Extract author-year citations embedded in a narrative selected bibliography."""
+    text = re.sub(r"\s+", " ", ref_text.replace("\u00ad", "")).strip()
+    starts = list(_NARRATIVE_REF_START.finditer(text))
+    refs = []
+    for index, match in enumerate(starts):
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
+        citation = text[match.start():end].strip(" ;")
+        if len(citation) < 25:
+            continue
+        if len(citation) > 1200:
+            citation = citation[:1200].rsplit(". ", 1)[0] + "."
+        doi = None
+        doi_match = re.search(
+            r'(?:doi[:\s]*|https?://doi\.org/)(10\.\d{4,}/[^\s,;]+)',
+            citation,
+            re.IGNORECASE,
+        )
+        if doi_match:
+            doi = doi_match.group(1).rstrip(').].,;:')
+        if doi and paper_doi and doi.lower() == paper_doi.lower():
+            doi = None
+        refs.append({"number": len(refs) + 1, "text": citation, "doi": doi})
     return refs
 
 
@@ -388,7 +447,7 @@ def _normalize_for_match(s: str) -> str:
     s = re.sub(r'<[^>]+>', ' ', s)
     s = re.sub(r'&[a-z]+;', ' ', s)          # HTML entities (&amp; &lt; ...)
     s = s.lower()
-    s = re.sub(r'[^a-z0-9 ]+', ' ', s)       # drop punctuation
+    s = re.sub(r'[^a-z0-9\u3400-\u9fff ]+', ' ', s)  # preserve CJK titles
     s = re.sub(r'\s+', ' ', s).strip()
     return s
 

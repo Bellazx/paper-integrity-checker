@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import logging
 import shutil
+import stat
+import tempfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import rarfile
 
 from api.config import (
-    MAX_UPLOAD_SIZE_BYTES, RUNTIME_TMP_DIR,
+    MAX_UPLOAD_SIZE_BYTES, MAX_EXTRACTED_SIZE_BYTES, MAX_ARCHIVE_FILES, RUNTIME_TMP_DIR,
     input_task_root, output_task_root,
 )
 from api.models import PaperInfo
-from modules.doi_utils import normalize_doi
+from api.services.runtime_tools import require_rar_tool
+from modules.doi_utils import dir_name_to_doi, normalize_doi
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +23,7 @@ log = logging.getLogger(__name__)
 def _open_archive(archive_path: Path):
     ext = archive_path.suffix.lower()
     if ext == ".rar":
+        require_rar_tool()
         return rarfile.RarFile(str(archive_path))
     return zipfile.ZipFile(archive_path)
 
@@ -35,9 +39,26 @@ def validate_archive(archive_path: Path) -> None:
         if not zipfile.is_zipfile(archive_path):
             raise ValueError("Uploaded file is not a valid ZIP archive")
     with _open_archive(archive_path) as af:
-        for name in af.namelist():
-            if ".." in name or name.startswith("/"):
+        entries = af.infolist()
+        if len(entries) > MAX_ARCHIVE_FILES:
+            raise ValueError(f'Archive exceeds {MAX_ARCHIVE_FILES} entries')
+        total_size = sum(item.file_size for item in entries)
+        if total_size > MAX_EXTRACTED_SIZE_BYTES:
+            raise ValueError('Archive exceeds the 8 GiB expanded-size limit')
+        if total_size > shutil.disk_usage(RUNTIME_TMP_DIR).free // 2:
+            raise ValueError('Insufficient free space for extraction and input copy')
+        for item in entries:
+            name = item.filename
+            normalized = name.replace('\\', '/')
+            if ('..' in PurePosixPath(normalized).parts or normalized.startswith('/')
+                    or PureWindowsPath(normalized).drive):
                 raise ValueError(f"Archive contains unsafe path: {name}")
+            if isinstance(item, zipfile.ZipInfo):
+                mode = stat.S_IFMT(item.external_attr >> 16)
+                if mode not in (0, stat.S_IFREG, stat.S_IFDIR):
+                    raise ValueError(f'Archive contains a link or special file: {name}')
+            elif item.is_symlink() or getattr(item, 'file_redir', None):
+                raise ValueError(f'Archive contains a link: {name}')
 
 
 def _read_doi_from_pdf(pdf_path: Path) -> str:
@@ -62,6 +83,23 @@ def _read_doi_from_file(paper_dir: Path) -> str:
     if doi_file.exists():
         return normalize_doi(doi_file.read_text(encoding="utf-8"))
     return ""
+
+
+def _read_doi_from_dir_name(paper_dir: Path) -> str:
+    """Infer a DOI from the conventional single-paper folder name.
+
+    Single-paper uploads commonly arrive as ``10.7554_eLife.97621`` (or one
+    of the other DOI-slug forms supported by :func:`dir_name_to_doi`).  The
+    old extraction path only looked at ``doi.txt`` and PDF metadata, so a
+    perfectly valid folder name could silently become a no-DOI task.  Keep
+    this fallback conservative: only accept names that contain a DOI prefix.
+    """
+    if not paper_dir.name.startswith("10."):
+        return ""
+    try:
+        return normalize_doi(dir_name_to_doi(paper_dir))
+    except Exception:
+        return ""
 
 
 def _unique_dir(root: Path, desired_name: str, used: set[str] | None = None) -> Path:
@@ -108,8 +146,11 @@ def apply_doi_override(paper: PaperInfo, doi: str) -> PaperInfo:
 
 def extract_single(archive_path: Path, task_id: str) -> list[PaperInfo]:
     validate_archive(archive_path)
-    extract_dir = RUNTIME_TMP_DIR / f"paper_extract_{task_id}"
-    extract_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f'paper_extract_{task_id}_', dir=RUNTIME_TMP_DIR) as directory:
+        return _extract_single(archive_path, task_id, Path(directory))
+
+
+def _extract_single(archive_path: Path, task_id: str, extract_dir: Path) -> list[PaperInfo]:
 
     with _open_archive(archive_path) as af:
         af.extractall(extract_dir)
@@ -128,6 +169,8 @@ def extract_single(archive_path: Path, task_id: str) -> list[PaperInfo]:
     if not doi:
         pdf_file = pdfs[0]
         doi = _read_doi_from_pdf(pdf_file)
+    if not doi:
+        doi = _read_doi_from_dir_name(source_dir)
 
     if doi:
         doi_slug = doi.replace("/", "_")
@@ -148,8 +191,6 @@ def extract_single(archive_path: Path, task_id: str) -> list[PaperInfo]:
         else:
             shutil.copy2(item, dest)
 
-    shutil.rmtree(extract_dir, ignore_errors=True)
-
     paper = PaperInfo(
         doi_slug=doi_slug,
         doi=doi,
@@ -161,8 +202,11 @@ def extract_single(archive_path: Path, task_id: str) -> list[PaperInfo]:
 
 def extract_batch(archive_path: Path, task_id: str) -> list[PaperInfo]:
     validate_archive(archive_path)
-    extract_dir = RUNTIME_TMP_DIR / f"paper_extract_{task_id}"
-    extract_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f'paper_extract_{task_id}_', dir=RUNTIME_TMP_DIR) as directory:
+        return _extract_batch(archive_path, task_id, Path(directory))
+
+
+def _extract_batch(archive_path: Path, task_id: str, extract_dir: Path) -> list[PaperInfo]:
 
     with _open_archive(archive_path) as af:
         af.extractall(extract_dir)
@@ -191,6 +235,8 @@ def extract_batch(archive_path: Path, task_id: str) -> list[PaperInfo]:
         doi = _read_doi_from_file(subdir)
         if not doi:
             doi = _read_doi_from_pdf(sub_pdfs[0])
+        if not doi:
+            doi = _read_doi_from_dir_name(subdir)
 
         doi_slug = doi.replace("/", "_") if doi else subdir.name
 
@@ -214,8 +260,6 @@ def extract_batch(archive_path: Path, task_id: str) -> list[PaperInfo]:
             output_dir=str(task_output_root / doi_slug),
             fold_name=subdir.name,
         ))
-
-    shutil.rmtree(extract_dir, ignore_errors=True)
 
     if not papers:
         raise ValueError("Archive does not contain any paper directories with PDFs")

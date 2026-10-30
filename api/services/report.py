@@ -32,6 +32,15 @@ def _review_report_slug(result: dict) -> str:
     return doi_to_slug(result.get("doi") or "") or doi_to_slug(result.get("_report_slug") or "") or "unknown"
 
 
+def _rendered_pdf_names(output: str) -> set[str]:
+    """Return PDF basenames reported by the renderer's stable ``[PDF]`` marker."""
+    return {
+        line.strip()[len("[PDF] "):].strip()
+        for line in (output or "").splitlines()
+        if line.strip().startswith("[PDF] ") and line.strip()[len("[PDF] "):].strip()
+    }
+
+
 async def _kill_process_group(proc) -> None:
     """Terminate the report script and any child worker it spawned.
 
@@ -64,6 +73,34 @@ async def generate_reports(
     write_db: bool = True,
     report_namespace: str | None = None,
 ) -> list[str]:
+    """Retry transient rendering failures without repeating detection/review."""
+    for attempt in range(2):
+        try:
+            return await _generate_reports_once(
+                review_results, task_dir, table_name, write_db, report_namespace,
+            )
+        except (RuntimeError, TimeoutError, OSError) as exc:
+            message = str(exc).lower()
+            transient = isinstance(exc, (TimeoutError, ConnectionError)) or any(
+                cue in message for cue in (
+                    'timed out', 'timeout', 'temporarily unavailable',
+                    'resource temporarily', 'rc=-9', 'connection reset',
+                    'worker killed', 'out of memory',
+                )
+            )
+            if attempt or not transient:
+                raise
+            log.warning('Transient report failure; retrying rendering only: %s', exc)
+            await asyncio.sleep(2)
+
+
+async def _generate_reports_once(
+    review_results: list[dict],
+    task_dir: Path,
+    table_name: str = DEFAULT_TABLE,
+    write_db: bool = True,
+    report_namespace: str | None = None,
+) -> list[str]:
     errored = [
         (r.get("doi") or "<unknown>", r.get("reason") or "review process failed")
         for r in review_results
@@ -74,6 +111,7 @@ async def generate_reports(
         raise ValueError(f"Refusing to generate final review PDF for failed reviews: {sample}")
 
     results_path = task_dir / "review_results.json"
+    task_dir.mkdir(parents=True, exist_ok=True)
     results_path.write_text(json.dumps(review_results, ensure_ascii=False, indent=2))
 
     namespace = sanitize_report_namespace(report_namespace or table_name)
@@ -105,7 +143,20 @@ async def generate_reports(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=str(BASE_DIR),
-        env={**os.environ, "PAPER_INTEGRITY_ROOT": str(BASE_DIR)},
+        env={
+            **os.environ,
+            "PAPER_INTEGRITY_ROOT": str(BASE_DIR),
+            # Resource exhaustion can be an auditable warning, but semantic
+            # coverage gaps must remain fatal so an unexplained HIGH finding
+            # cannot be published as a completed report.
+            "REVIEW_COVERAGE_FAILURE_POLICY": os.environ.get(
+                "REVIEW_COVERAGE_FAILURE_POLICY", "warn"
+            ),
+            # Do not inherit a caller's permissive value. The project report
+            # entrypoint deliberately ignores this legacy escape hatch and
+            # fails closed on every semantic gap.
+            "REVIEW_COVERAGE_GAP_POLICY": "strict",
+        },
         start_new_session=True,
     )
 
@@ -113,9 +164,12 @@ async def generate_reports(
         stdout, stderr = await asyncio.wait_for(
             proc.communicate(), timeout=REPORT_TIMEOUT_SECONDS
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         await _kill_process_group(proc)
         raise TimeoutError(f"Report generation timed out after {REPORT_TIMEOUT_SECONDS}s")
+    except asyncio.CancelledError:
+        await _kill_process_group(proc)
+        raise
 
     out_text = stdout.decode(errors="replace")
     log.info("Report generation output: %s", out_text[-1000:])
@@ -124,19 +178,23 @@ async def generate_reports(
         err = stderr.decode(errors="replace")
         raise RuntimeError(f"Report generation failed (rc={proc.returncode}): {err[-500:]}")
 
-    # Return only the PDFs this task produced — REVIEW_DIR is shared across all tasks,
-    # so globbing it would pollute the count with historical reports. A pre-existing
-    # same-DOI report only counts if its mtime changed during this invocation.
+    # Return only the PDFs requested by this task — REVIEW_DIR is shared across all
+    # tasks, so globbing it would pollute the count with historical reports.  The
+    # renderer prints ``[PDF] filename`` after a successful render; use that signal
+    # as a fallback because a filesystem timestamp can remain unchanged when a
+    # report is replaced atomically on filesystems with coarse timestamp precision.
+    rendered_names = _rendered_pdf_names(out_text)
     pdfs = []
     for p_str, old_mtime in expected.items():
         p = Path(p_str)
         if not p.exists():
             continue
         new_mtime = p.stat().st_mtime_ns
-        if old_mtime is None or new_mtime > old_mtime:
+        if old_mtime is None or new_mtime > old_mtime or p.name in rendered_names:
             pdfs.append(str(p))
     if len(pdfs) != len(expected):
         missing = sorted(set(expected) - set(pdfs))
         log.warning("Review report generation produced %d/%d expected PDFs; missing/stale=%s",
                     len(pdfs), len(expected), missing[:5])
+        raise RuntimeError(f"Missing or stale review PDFs: {missing}")
     return pdfs

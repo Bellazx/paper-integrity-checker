@@ -13,8 +13,10 @@ import argparse
 import gc
 import json
 import logging
+import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -91,6 +93,17 @@ def _dir_doi(paper_dir: Path) -> str:
     return dir_name_to_doi(paper_dir)
 
 
+def _source_path_for_root(root: Path) -> str:
+    """Return a stable data-relative batch path for database provenance."""
+    base = Path(__file__).resolve().parent / "data"
+    resolved = root.resolve()
+    try:
+        relative = resolved.relative_to(base.resolve())
+        return relative.as_posix().rstrip("/") + "/"
+    except ValueError:
+        return resolved.as_posix()
+
+
 def run_single(input_dir: str, output_dir: str, skip_refs: bool = False, author_type: str = "", no_db: bool = False, doi: str = "", report_namespace: str = "", table_root: str = "", table_name: str = ""):
     paper_name = Path(input_dir).name
     out = Path(output_dir) / paper_name
@@ -105,7 +118,7 @@ def run_single(input_dir: str, output_dir: str, skip_refs: bool = False, author_
     if no_db:
         log.info("Skipping DB insert (--no-db)")
     elif not findings.get("pdf_generated", True) and not findings.get("pdf_skipped_low_risk", False):
-        log.warning("Skipping DB insert: PDF generation failed")
+        raise RuntimeError("Initial PDF generation failed; result was not inserted into DB")
     else:
         html_candidate = Path(input_dir) / "article.html"
         if not html_candidate.exists():
@@ -113,9 +126,11 @@ def run_single(input_dir: str, output_dir: str, skip_refs: bool = False, author_
         html_path = str(html_candidate) if html_candidate.exists() else None
         try:
             insert_findings(findings, chinese_reports_dir=cn_dir, html_path=html_path,
-                            namespace=table_name)
+                            namespace=table_name,
+                            source_path=_source_path_for_root(Path(input_dir).parent))
         except Exception as e:
             log.error("DB insert failed: %s", e)
+            raise RuntimeError(f'Initial report DB write failed: {e}') from e
 
     total = findings["summary"]["total_issues"]
     high = findings["summary"]["high_severity"]
@@ -144,7 +159,107 @@ def _discover_papers(input_root: Path) -> list[Path]:
     return paper_dirs
 
 
-def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_workers: int = 4, author_type: str = "", force: bool = False, no_db: bool = False, report_namespace: str = "", table_root: str = "", table_name: str = "", resume_existing_output: bool = False, summary_tag: str = ""):
+def _complexity_profile(paper_dir: Path) -> tuple[bool, str]:
+    """Identify papers that should run in a disposable analysis process.
+
+    Native PDF/image/spreadsheet libraries can segfault.  A small preflight
+    keeps ordinary papers in the fast thread pool while isolating papers whose
+    input is likely to create a large native workload.
+    """
+    data_suffixes = {".xlsx", ".xls", ".csv", ".docx", ".fcs", ".sav", ".zip", ".rar", ".pdb", ".cif"}
+    image_suffixes = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".gif"}
+    data_files = []
+    image_files = []
+    data_bytes = 0
+    pdf_bytes = 0
+    for path in paper_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        if suffix in data_suffixes:
+            data_files.append(path)
+            data_bytes += size
+        elif suffix in image_suffixes:
+            image_files.append(path)
+        elif suffix == ".pdf":
+            pdf_bytes += size
+
+    reasons = []
+    if len(data_files) >= 5 or data_bytes >= 8 * 1024 * 1024:
+        reasons.append(f"source data {len(data_files)} files/{data_bytes / 1048576:.1f} MiB")
+    if len(image_files) >= 120:
+        reasons.append(f"standalone images {len(image_files)}")
+    if pdf_bytes >= 25 * 1024 * 1024:
+        reasons.append(f"PDFs {pdf_bytes / 1048576:.1f} MiB")
+    return bool(reasons), "; ".join(reasons)
+
+
+def _analyze_one_isolated(
+    paper_dir: Path,
+    output_dir: Path,
+    skip_refs: bool,
+    author_type: str,
+    table_name: str,
+) -> dict:
+    """Run one complex paper in a disposable child interpreter."""
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    tmp_dir = Path("data/tmp")
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", paper_dir.name)[:100]
+    log_path = tmp_dir / f"isolated_{safe}_{os.getpid()}.log"
+    cmd = [sys.executable, "-u", "main.py", "--input", str(paper_dir), "--no-db"]
+    if table_name:
+        cmd.extend(["--table-name", table_name])
+    else:
+        cmd.extend(["--output", str(output_dir.parent)])
+    if skip_refs:
+        cmd.append("--skip-refs")
+    if author_type:
+        cmd.extend(["--author-type", author_type])
+
+    env = os.environ.copy()
+    for key in (
+        "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS", "BLIS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+        "OPENCV_FOR_THREADS_NUM",
+    ):
+        env[key] = "1"
+    timeout = int(os.getenv("PAPER_COMPLEX_TIMEOUT", "3600"))
+    with log_path.open("a", encoding="utf-8") as log_file:
+        try:
+            completed = subprocess.run(
+                cmd,
+                cwd=str(Path(__file__).resolve().parent),
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                env=env,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"isolated analysis timed out after {timeout}s; log={log_path}") from exc
+    if completed.returncode != 0:
+        if completed.returncode < 0:
+            reason = f"signal {-completed.returncode}"
+        else:
+            reason = f"exit code {completed.returncode}"
+        raise RuntimeError(f"isolated analysis failed ({reason}); log={log_path}")
+
+    report_path = output_dir / "report.json"
+    if not report_path.is_file():
+        raise RuntimeError(f"isolated analysis produced no report.json; log={log_path}")
+    try:
+        return json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"isolated report is unreadable: {report_path}; log={log_path}") from exc
+
+
+def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_workers: int = 4, author_type: str = "", force: bool = False, no_db: bool = False, report_namespace: str = "", table_root: str = "", table_name: str = "", resume_existing_output: bool = False, summary_tag: str = "", isolate_complex: bool = True):
     input_root = Path(input_root)
     output_root = Path(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -175,7 +290,11 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
 
     if resume_existing_output:
         before = len(paper_dirs)
-        paper_dirs = [d for d in paper_dirs if not (paper_output_root / d.name / "report.json").exists()]
+        paper_dirs = [
+            d for d in paper_dirs
+            if not (paper_output_root / d.name / "report.json").exists()
+            and not (paper_output_root / d.name / "analysis_failed.json").exists()
+        ]
         skipped = before - len(paper_dirs)
         if skipped:
             log.info("Skipped %d papers with existing report.json, %d remaining", skipped, len(paper_dirs))
@@ -196,7 +315,15 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
         try:
             out = paper_output_root / paper_dir.name
             cn_dir = _chinese_reports_dir(str(output_root), report_namespace, table_root=table_root)
-            findings = _analyze_one(str(paper_dir), str(out), skip_refs=skip_refs, chinese_reports_dir=cn_dir, author_type=author_type)
+            complex_paper, complexity_reason = _complexity_profile(paper_dir)
+            if isolate_complex and complex_paper:
+                log.info("Using isolated process for complex paper %s (%s)", paper_dir.name, complexity_reason)
+                findings = _analyze_one_isolated(
+                    paper_dir, out, skip_refs=skip_refs, author_type=author_type,
+                    table_name=table_name,
+                )
+            else:
+                findings = _analyze_one(str(paper_dir), str(out), skip_refs=skip_refs, chinese_reports_dir=cn_dir, author_type=author_type)
             elapsed = time.time() - t0
 
             if excel_data:
@@ -205,7 +332,7 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
             if no_db:
                 pass
             elif not findings.get("pdf_generated", True) and not findings.get("pdf_skipped_low_risk", False):
-                log.warning("Skipping DB insert for %s: PDF generation failed", paper_dir.name)
+                raise RuntimeError("Initial PDF generation failed; result was not inserted into DB")
             else:
                 html_candidate = paper_dir / "article.html"
                 if not html_candidate.exists():
@@ -213,9 +340,11 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
                 html_path = str(html_candidate) if html_candidate.exists() else None
                 try:
                     insert_findings(findings, chinese_reports_dir=cn_dir, html_path=html_path,
-                                    namespace=table_name)
+                                    namespace=table_name,
+                                    source_path=_source_path_for_root(Path(input_root)))
                 except Exception as e:
                     log.error("DB insert failed for %s: %s", paper_dir.name, e)
+                    raise RuntimeError(f'Initial report DB write failed: {e}') from e
 
             return {
                 "paper": paper_dir.name,
@@ -229,6 +358,20 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
         except Exception as e:
             elapsed = time.time() - t0
             log.error("Failed to analyze %s: %s", paper_dir.name, e, exc_info=True)
+            if isolate_complex:
+                try:
+                    out = paper_output_root / paper_dir.name
+                    out.mkdir(parents=True, exist_ok=True)
+                    (out / "analysis_failed.json").write_text(
+                        json.dumps({
+                            "paper": paper_dir.name,
+                            "error": str(e),
+                            "time": time.time(),
+                        }, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except OSError:
+                    pass
             return {
                 "paper": paper_dir.name,
                 "status": "error",
@@ -323,6 +466,10 @@ def main():
                         help="In batch mode, skip paper directories that already have report.json in the output tree")
     parser.add_argument("--summary-tag", default="",
                         help="Suffix batch summary/failed files to avoid collisions when running sharded batches")
+    parser.add_argument("--isolate-complex", dest="isolate_complex", action="store_true", default=True,
+                        help="Run complex papers in disposable child processes (default: enabled)")
+    parser.add_argument("--no-isolate-complex", dest="isolate_complex", action="store_false",
+                        help="Disable automatic child-process isolation for complex papers")
     parser.add_argument("--table-name", default="",
                         help="Namespace ALL outputs under data/output/<table-name>/ (init/<slug>/, chinese_reports/, review_v2/). "
                              "When set, per-paper dir is <table>/init/<doi_slug>/. When unset, legacy flat layout is used.")
@@ -362,7 +509,7 @@ def main():
                   author_type=args.author_type, force=args.force, no_db=args.no_db,
                   report_namespace=args.report_namespace, table_root=table_root,
                   table_name=args.table_name, resume_existing_output=args.resume_existing_output,
-                  summary_tag=args.summary_tag)
+                  summary_tag=args.summary_tag, isolate_complex=args.isolate_complex)
 
 
 if __name__ == "__main__":

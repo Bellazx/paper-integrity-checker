@@ -46,6 +46,7 @@ async def _run_pipeline_inner(
     # Detection spawns a multi-process main.py per paper, so cap its fan-out lower than
     # review to avoid N×(--workers) subprocesses overwhelming the box.
     detect_workers = min(max_workers, 2)
+    report_namespace = f'{table_name}/{task_id}'
 
     # Stage 1: Detection (concurrent, capped at detect_workers)
     tm.update_task(
@@ -63,14 +64,22 @@ async def _run_pipeline_inner(
         nonlocal detect_done
         async with detect_sem:
             try:
-                findings = await run_detection_single(
-                    input_dir=paper.input_dir,
-                    output_dir=paper.output_dir,
-                    skip_refs=skip_refs,
-                    author_type=author_type,
-                    table_name=table_name,
-                    doi=paper.doi,
-                )
+                saved = Path(paper.output_dir) / 'report.json'
+                findings = None
+                if paper.status in {'detected', 'review_error', 'persist_error'} and saved.is_file():
+                    findings = json.loads(saved.read_text())
+                if findings is None:
+                    findings = await run_detection_single(
+                        input_dir=paper.input_dir,
+                        output_dir=paper.output_dir,
+                        skip_refs=skip_refs,
+                        author_type=author_type,
+                        table_name=table_name,
+                        doi=paper.doi,
+                        report_namespace=report_namespace,
+                    )
+                if findings.get('error') or not findings.get('paper') or 'summary' not in findings:
+                    raise RuntimeError('Detection did not produce valid findings')
 
                 report_json = Path(paper.output_dir) / "report.json"
                 paper.report_json = str(report_json) if report_json.exists() else ""
@@ -97,6 +106,7 @@ async def _run_pipeline_inner(
                     risk_level = overall.get("level", "低风险")
 
                 paper.status = "detected"
+                paper.error = ""
                 if risk_level == "高风险":
                     high_risk_papers.append(paper)
 
@@ -140,13 +150,19 @@ async def _run_pipeline_inner(
                         report_json_path=paper.report_json,
                         input_dir=paper.input_dir,
                         output_dir=paper.output_dir,
+                        resume=True,
                     )
                     review.setdefault("trigger", "auto_detection")
                     review["_input_dir"] = paper.input_dir
                     review["_report_json"] = paper.report_json
                     review_results.append(review)
+                    if review.get('trigger') == 'review_error':
+                        paper.status = 'review_error'
+                        paper.error = review.get('reason') or 'Review failed'
                 except Exception as e:
                     log.error("Review failed for %s: %s", paper.doi, e)
+                    paper.status = 'review_error'
+                    paper.error = str(e)
                     review_results.append({
                         "doi": paper.doi,
                         "result": "高风险",
@@ -162,12 +178,15 @@ async def _run_pipeline_inner(
                 tm.update_task(
                     task_id,
                     progress={"current": review_done, "total": len(high_risk_papers), "stage": "review"},
+                    papers=papers,
                 )
 
         await asyncio.gather(*(_review_one(p) for p in high_risk_papers))
 
     # Stage 3: Generate Reports
     report_paths = []
+    failed_reviews = [r for r in review_results if r.get('trigger') == 'review_error']
+    review_results = [r for r in review_results if r.get('trigger') != 'review_error']
     if review_results:
         tm.update_task(
             task_id,
@@ -176,16 +195,14 @@ async def _run_pipeline_inner(
             progress={"current": 0, "total": 1, "stage": "report"},
         )
 
+        task_dir = TASKS_DIR / task_id
         try:
-            task_dir = TASKS_DIR / task_id
-            report_paths = await generate_reports(review_results, task_dir, table_name)
-        except Exception as e:
-            log.error("Report generation failed: %s", e)
-            tm.update_task(
-                task_id,
-                status=TaskStatus.FAILED,
-                error=f"Report generation failed: {e}",
-            )
+            report_paths = await generate_reports(review_results, task_dir, table_name,
+                                                  report_namespace=report_namespace)
+        except Exception as exc:
+            log.error("Report generation failed: %s", exc)
+            tm.update_task(task_id, status=TaskStatus.FAILED,
+                           error=f"Report generation failed: {exc}")
             return
 
     # Done
@@ -198,16 +215,25 @@ async def _run_pipeline_inner(
         "detected_fail": len(detected_fail),
         "high_risk_detected": len(high_risk_papers),
         "reviewed": len(review_results),
+        "review_failed": len(failed_reviews),
         "confirmed_high": confirmed_high,
         "downgraded": downgraded,
         "reports_generated": len(report_paths),
         "review_skipped": skip_review,
     }
 
+    failures = []
+    if detected_fail:
+        failures.append(f'{len(detected_fail)} paper(s) failed detection: ' + '; '.join(p.error for p in detected_fail)[:1500])
+    if failed_reviews:
+        failures.append(f'{len(failed_reviews)} paper(s) failed review: ' + '; '.join(str(r.get('reason', '')) for r in failed_reviews)[:1500])
+    if not papers:
+        failures.append('No papers were available for processing')
     tm.update_task(
         task_id,
-        status=TaskStatus.COMPLETED,
-        stage="done",
+        status=TaskStatus.FAILED if failures else TaskStatus.COMPLETED,
+        stage="failed" if failures else "done",
+        error='; '.join(failures) if failures else None,
         result=result,
         papers=papers,
     )

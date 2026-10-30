@@ -13,13 +13,16 @@ import asyncio
 import glob
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, "/home/sjtu/paper-integrity-checker")
 from api.services.review import run_review_single
+from api.services.submission_policy import blocking_write
 from utils.paper_preprocessor import cleanup_review_artifacts
 
 # Ensure runtime dir on the 1T data disk exists before logging attaches its file handler
@@ -36,6 +39,10 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 BASE = Path("/home/sjtu/paper-integrity-checker")
+REPORT_PYTHON = os.environ.get(
+    "PAPER_CHECKER_PYTHON",
+    str(BASE / "venv" / "bin" / "python") if (BASE / "venv" / "bin" / "python").is_file() else sys.executable,
+)
 OUTPUT_DIR = BASE / "data" / "output" / "yujing_quanliang"  # per-table layout (screen_quanliang writes here)
 INPUT_DIR = BASE / "data" / "input"
 REVIEW_V2_DIR = BASE / "data" / "output" / "review_v2" / "yujing_quanliang"  # per-table isolation for review PDFs
@@ -44,7 +51,9 @@ REVIEW_V2_DIR.mkdir(parents=True, exist_ok=True)
 TMP_DIR = BASE / "data" / "tmp"
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 RESULTS_FILE = TMP_DIR / "rereview_voted_results.json"
-REPORT_SCRIPT = "/home/library/.claude/skills/paper-batch-review/scripts/generate_review_report.py"
+# Always use the project entrypoint so semantic coverage gaps are fail-closed
+# consistently with the API and scholar batch runner.
+REPORT_SCRIPT = str(BASE / "scripts" / "generate_review_report.py")
 CONCURRENCY = 5
 BATCH_SIZE = 5
 DEFAULT_TIME_BUDGET_MIN = 55.0
@@ -86,13 +95,23 @@ def load_done():
     if RESULTS_FILE.exists():
         with open(RESULTS_FILE) as f:
             results = json.load(f)
-        return {r["doi"] for r in results}, results
+        latest = {r['doi']: r for r in results}
+        return {doi for doi, r in latest.items()
+                if r.get('_publication_complete') and not _is_review_error(r)
+                and _published_pdf(r).is_file()}, results
     return set(), []
 
 
 def save_results(results):
-    with open(RESULTS_FILE, "w") as f:
+    temporary = RESULTS_FILE.with_suffix('.json.tmp')
+    with open(temporary, "w") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
+    temporary.replace(RESULTS_FILE)
+
+
+def _published_pdf(result):
+    from modules.chinese_report_generator import doi_to_slug
+    return REVIEW_V2_DIR / f"review_{doi_to_slug(result.get('doi') or '')}.pdf"
 
 
 # Markers that the review fell back to the internal-error placeholder. Any of
@@ -115,7 +134,7 @@ _REVIEW_ERROR_MARKERS = (
 def _is_review_error(result: dict) -> bool:
     if not isinstance(result, dict):
         return False
-    if result.get("trigger") == "review_error":
+    if result.get("trigger") in {"review_error", "report_not_found"}:
         return True
     text = "\n".join(str(result.get(key, "")) for key in (
         "trigger", "image_review", "data_review", "ref_review", "reason",
@@ -161,7 +180,9 @@ def generate_reports(batch_results: list[dict]):
     if not renderable:
         log.error("No renderable results in batch; skipping PDF+DB pass.")
         return
-    batch_file = str(TMP_DIR / f"rereview_batch_{int(time.time())}.json")
+    for item in batch_results:
+        item['_publication_complete'] = False
+    batch_file = str(TMP_DIR / f"rereview_batch_{uuid.uuid4().hex}.json")
     with open(batch_file, "w") as f:
         json.dump(renderable, f, ensure_ascii=False, indent=2)
 
@@ -169,7 +190,8 @@ def generate_reports(batch_results: list[dict]):
              len(renderable), len(failed))
     try:
         proc = subprocess.run(
-            [sys.executable, REPORT_SCRIPT, "--results", batch_file, "--output", str(REVIEW_V2_DIR)],
+            [REPORT_PYTHON, REPORT_SCRIPT, "--results", batch_file, "--output", str(REVIEW_V2_DIR),
+             '--table', 'yujing_quanliang', '--namespace', 'yujing_quanliang'],
             capture_output=True, text=True, timeout=300,
         )
         if proc.stdout:
@@ -177,6 +199,14 @@ def generate_reports(batch_results: list[dict]):
                 log.info("  %s", line)
         if proc.returncode != 0 and proc.stderr:
             log.warning("Report script stderr: %s", proc.stderr[-300:])
+        if proc.returncode == 0:
+            from api.services.report import _rendered_pdf_names
+            rendered = _rendered_pdf_names(proc.stdout)
+            for item in renderable:
+                path = _published_pdf(item)
+                if path.name in rendered and path.is_file():
+                    with path.open('rb') as source:
+                        item['_publication_complete'] = source.read(5) == b'%PDF-'
     except Exception as e:
         log.error("Report generation failed: %s", e)
 
@@ -189,7 +219,7 @@ async def process_one(doi: str, semaphore: asyncio.Semaphore) -> dict:
             return {
                 "doi": doi,
                 "result": "高风险",
-                "trigger": "report_not_found",
+                "trigger": "review_error",
                 "image_review": "未找到检测报告，无法复核。",
                 "data_review": "未找到检测报告，无法复核。",
                 "ref_review": "未找到检测报告。",
@@ -205,6 +235,7 @@ async def process_one(doi: str, semaphore: asyncio.Semaphore) -> dict:
                 report_json_path=report_path,
                 input_dir=input_dir,
                 output_dir=str(REVIEW_V2_DIR),
+                resume=True,
             )
             elapsed = time.time() - t0
             log.info("Done: %s → %s (vote: %s) in %.0fs",
@@ -354,7 +385,8 @@ async def main():
                 save_results(all_results)
 
                 if len(recent_results) >= max(1, args.batch_size):
-                    generate_reports(recent_results)
+                    await blocking_write(generate_reports, recent_results)
+                    save_results(all_results)
                     recent_results = []
 
                 high = sum(1 for r in all_results if r.get("result") == "高风险")
@@ -380,17 +412,20 @@ async def main():
             await asyncio.gather(*pending, return_exceptions=True)
         if recent_results:
             save_results(all_results)
-            generate_reports(recent_results)
+            await blocking_write(generate_reports, recent_results)
+            save_results(all_results)
 
     if stopped_for_budget:
-        done_after_run = {r.get("doi") for r in all_results}
+        done_after_run, _ = load_done()
         next_remaining = sum(1 for doi in all_dois if doi not in done_after_run)
         log.info(
             "=== STOPPED FOR TIME BUDGET: reviewed %d total, %d still remaining for next run ===",
             len(all_results), next_remaining,
         )
     else:
-        log.info("=== COMPLETE: %d papers reviewed ===", len(all_results))
+        published, _ = load_done()
+        log.info("=== FINISHED: %d published; %d require retry ===", len(published),
+                 sum(doi not in published for doi in all_dois))
 
     # Sweep stale review-render artifacts (default: 1h+ old) so the project
     # root doesn't accumulate hundreds of .tmp_*/.render_* dirs from prior

@@ -9,8 +9,9 @@ log = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are an expert in academic integrity and research misconduct detection.
 You analyze structured results from an automated paper analysis system and produce a professional,
-objective assessment report. Be specific about findings, cite exact locations (pages, columns, values),
-and assign clear severity levels. Write in English. Use markdown formatting."""
+objective assessment report. Write for a reviewer who is not familiar with detector jargon. Every
+retained issue must begin with its exact location and then explain the issue type, observed facts,
+practical significance, and verification basis. Write in clear English and use markdown formatting."""
 
 REPORT_TEMPLATE = """Based on the following automated analysis of an academic paper, generate a comprehensive
 integrity assessment report.
@@ -38,14 +39,24 @@ integrity assessment report.
 ---
 
 Please generate a structured report with the following sections:
-1. **Executive Summary** — Overall risk assessment (High/Medium/Low) with key findings in 2-3 sentences
+0. **Title** — The first line must be `# Paper Pecker Risk Alert Report`
+1. **Executive Summary** — Overall risk assessment (High/Low) with key findings in 2-3 sentences
 2. **Image Analysis** — Detail each suspicious image pair, what type of duplication was found, and its significance
 3. **Data Integrity** — Detail each tabular statistical anomaly or PDB/CIF structure-file anomaly, explain why it warrants review, and assess the strength of the evidence
 4. **Reference Verification** — Summarize reference issues, distinguish between serious (DOI not found) and minor (low match) issues
 5. **Overall Assessment** — Synthesize all findings into a final integrity risk rating with justification
 6. **Recommendations** — Specific next steps for further investigation
 
-Be objective and evidence-based. Avoid definitive accusations — use language like "suggests", "is consistent with", "warrants further investigation"."""
+For every retained issue, use these labels in this exact order:
+- **Location:** source filename, PDF page, figure/table/equation number; for source data also give workbook, sheet, columns, and row range; for citations give the reference number.
+- **Issue type:** use a plain-language category such as "equation result does not match the table" or "the same measurements appear under different experiments".
+- **What was found:** compare the paper-reported and independently checked values, labels, or images. For calculations show the formula, substituted values, intermediate result, reported result, and difference.
+- **Why it matters:** identify the affected parameter, comparison, figure, or conclusion. Do not merely say that it "affects reliability".
+- **Verification basis:** state which paper text, caption, source-data cells, original image, or calculation supports the finding.
+
+Do not use unexplained detector names or start with a formula. Be objective and evidence-based. Avoid
+definitive accusations; use neutral language such as "the published values are inconsistent" or
+"the available materials do not reproduce the reported result"."""
 
 
 def _format_image_findings(findings: list[dict]) -> str:
