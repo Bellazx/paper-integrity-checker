@@ -434,7 +434,7 @@ class Review:
         from api.services.review_validation import validate
         facts, evidence = self.facts(finals)
         _write_json(self.run_dir / "facts.json", facts)
-        draft, gaps = None, []
+        draft, gaps, best = None, [], None
         # Writing is cheap and must reflect the current facts: never replay a
         # cached draft from an earlier call.
         for stale in (self.run_dir / "sessions").glob("writer_*.json"):
@@ -449,8 +449,10 @@ class Review:
             outcome = await session.run(spec)
             parsed = _review_json(outcome.text or "") or _extract_json_from_text(outcome.text or "")
             if not isinstance(parsed, dict) or not any(parsed.get(f) for f in REVIEW_FIELDS):
-                gaps = ["输出不是有效 JSON 对象，请只输出 JSON"] + (
-                    [f"写作阶段模型服务异常：{outcome.error}"] if outcome.error else [])
+                # Keep the better earlier draft and its gaps for the next attempt.
+                gaps = [_writer_gap(g) for g in (best[1] if best else [])]
+                gaps.append("上一次没有输出 JSON。本阶段不能调用任何工具，直接输出完整 JSON 对象。")
+                draft = draft or (best[2] if best else None)
                 continue
             result = _normalize_review_result(parsed)
             result.update(doi=self.doi, **verdicts)
@@ -465,12 +467,30 @@ class Review:
                 return checked, []
             draft = {k: result.get(k) for k in ("image_review", "data_review", "ref_review", "methodology_review",
                                                  "reason", "trigger")}
-        return None, gaps
+            if best is None or len(gaps) < len(best[1]):
+                best = (result, gaps, draft)
+            gaps = [_writer_gap(g) for g in gaps]
+        return None, (best[1] if best else gaps)
+
+
+def _writer_gap(gap: str) -> str:
+    """Restate a validator message as an instruction the tool-less writer can act on."""
+    text = str(gap)
+    match = re.search(r"issue_index.*dimension (\w+)", text)
+    if match:
+        return (f"{match.group(1)} 维度：每个确认问题必须单独起一行，以“（编号）问题位置：”开头，"
+                "编号按给定事实中的“编号”依次写出，一个都不能合并或省略。")
+    if text.startswith("Duplicate issue numbers"):
+        return "同一维度内问题编号不能重复，按给定编号依次写。"
+    if text.startswith("Verdict must agree"):
+        return "verdict 必须与 result 一致（高风险→建议高风险，低风险→建议低风险）。"
+    return text
 
 
 REVIEW_FIELDS = ("image_review", "data_review", "ref_review", "methodology_review", "reason")
 DIMENSION_FIELD = {"image": "image_review", "data": "data_review", "ref": "ref_review", "methodology": "methodology_review"}
-ISSUE_HEAD = re.compile(r"(?<!\n)[ \t]*([（(]\d+[）)][ \t]*问题位置[：:])")
+# Any non-newline whitespace before an issue number (models often emit U+3000).
+ISSUE_HEAD = re.compile(r"(?<!\n)[^\S\n]*([（(]\d+[）)][^\S\n]*问题位置[：:])")
 
 
 def _review_json(text: str) -> dict | None:

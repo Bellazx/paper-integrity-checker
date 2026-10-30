@@ -235,7 +235,8 @@ dimension_verdicts：{json.dumps(verdicts['dimension_verdicts'], ensure_ascii=Fa
 """
     if gaps:
         body += ("\n## 上一稿未通过发布校验，需要修正的具体问题\n- " + "\n- ".join(gaps)
-                 + "\n只修正这些问题涉及的表述（补写遗漏的位置词、标签、编号或结论表述），不得新增未核实的事实。\n")
+                 + "\n只修正这些问题涉及的表述（补写遗漏的位置词、标签、编号或结论表述），不得新增未核实的事实。"
+                 "本阶段没有任何工具可用，不要尝试调用工具或查找程序，直接输出修正后的完整 JSON。\n")
     if draft:
         body += "\n## 上一稿\n```json\n" + json.dumps(draft, ensure_ascii=False) + "\n```\n"
     body += "\n现在只输出 JSON 对象。"

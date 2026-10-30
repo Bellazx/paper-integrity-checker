@@ -474,7 +474,7 @@ def test_stalled_session_gets_a_wrapup_that_keeps_its_findings(tmp_path, fake_cl
 
 def test_writer_output_normalization(tmp_path):
     text = ('先调用工具 {"command": "ls"} 然后输出：\n'
-            '{"doi": "x", "data_review": "（1）问题位置：Fig. 1。发现：a。（2）问题位置：Table 2。发现：b", '
+            '{"doi": "x", "data_review": "（1）问题位置：Fig. 1。发现：a。\u3000（2）问题位置：Table 2。发现：b", '
             '"image_review": "核查了全部图像", "ref_review": "r", "methodology_review": "m", "reason": "z"}')
     parsed = engine._review_json(text)
     assert parsed["doi"] == "x"
@@ -485,3 +485,8 @@ def test_writer_output_normalization(tmp_path):
     images = engine._bind_evidence(parsed, evidence)
     assert "\n\n（2）问题位置" in parsed["data_review"]
     assert [i["issue_index"] for i in images] == [2]
+
+
+def test_writer_gaps_are_restated_for_the_writer():
+    message = engine._writer_gap("Evidence needs a valid issue_index matching a numbered issue in dimension methodology")
+    assert "methodology" in message and "（编号）问题位置" in message and "issue_index" not in message
