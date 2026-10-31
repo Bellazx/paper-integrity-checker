@@ -43,6 +43,10 @@ INVESTIGATE_SOFT_SECONDS = _int("REVIEW_V3_INVESTIGATE_SOFT_SECONDS", 15 * 60)
 CHALLENGE_SOFT_SECONDS = _int("REVIEW_V3_CHALLENGE_SOFT_SECONDS", 24 * 60)
 ARBITRATE_SOFT_SECONDS = _int("REVIEW_V3_ARBITRATE_SOFT_SECONDS", 28 * 60)
 CALIBRATE_SOFT_SECONDS = _int("REVIEW_V3_CALIBRATE_SOFT_SECONDS", 31 * 60)
+
+# When the rules change, finished reviews can be re-graded from their saved
+# ledgers (calibration + writing only) instead of being investigated again.
+REGRADE = os.environ.get("REVIEW_V3_REGRADE", "0") == "1"
 SOFT_GRACE_SECONDS = _int("REVIEW_V3_SOFT_GRACE_SECONDS", 180)
 WRAPUP_TURNS = _int("REVIEW_V3_WRAPUP_TURNS", 6)
 WRAPUP_SECONDS = _int("REVIEW_V3_WRAPUP_SECONDS", 300)

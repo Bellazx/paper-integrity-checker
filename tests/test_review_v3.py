@@ -490,3 +490,21 @@ def test_writer_output_normalization(tmp_path):
 def test_writer_gaps_are_restated_for_the_writer():
     message = engine._writer_gap("Evidence needs a valid issue_index matching a numbered issue in dimension methodology")
     assert "methodology" in message and "（编号）问题位置" in message and "issue_index" not in message
+
+
+def test_regrade_redoes_calibration_and_writing_only(tmp_path, fake_cli, monkeypatch):
+    configure, calls = fake_cli
+    configure(investigator={"issue": {"high::data::0": "substantive"}},
+              challenger={"issue": {"high::data::0": "substantive"}},
+              calibrator={"issue": {"high::data::0": "substantive"}})
+    paper = _make_paper(tmp_path)
+    first = _run(paper, tmp_path, monkeypatch)
+    assert first["result"] == "高风险"
+    before = len(calls())
+    configure(calibrator={"issue": {"high::data::0": "minor"}})
+    monkeypatch.setattr(config, "REGRADE", True)
+    monkeypatch.setattr(engine, "rules_version", lambda: "changed")
+    second = _run(paper, tmp_path, monkeypatch, resume=True)
+    roles = [c["actor"].split(":")[0] for c in calls()[before:]]
+    assert set(roles) == {"calibrator", "writer"}
+    assert second["result"] == "低风险"

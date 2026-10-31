@@ -531,6 +531,24 @@ def _bind_evidence(result: dict, evidence: dict) -> list[dict]:
 
 # ------------------------------------------------------------------ entry
 
+def rules_version() -> str:
+    digest = hashlib.sha1()
+    for path in sorted(config.RULES_DIR.glob("*.md")):
+        digest.update(path.name.encode() + path.read_bytes())
+    return digest.hexdigest()[:12]
+
+
+def _start_regrade(run_dir: Path, final_path: Path) -> None:
+    """Keep the investigation; redo only severity calibration and writing."""
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    final_path.rename(final_path.with_name(f"final.{stamp}.json"))
+    calibration = run_dir / "ledgers" / "cal_all.json"
+    if calibration.exists():
+        calibration.rename(calibration.with_name(f"cal_all.{stamp}.json"))
+    session.reset("cal_all", run_dir)
+    log.info("regrading %s under rules %s", run_dir, rules_version())
+
+
 SYNTHETIC_PREFIXES = ("fig::", "image::", "ref::", "design::", "stats::", "data::forensic_scan", "new:")
 
 
@@ -582,9 +600,12 @@ async def _review(doi: str, report_json: str, input_dir: str, output_dir: str, r
 
     cached = _read_json(final_path)
     if isinstance(cached, dict) and cached.get("trigger") != "review_error":
-        checked, gaps = validate(cached, evidence)
-        if not gaps:
-            return checked
+        if config.REGRADE and state.get("rules_version") != rules_version():
+            _start_regrade(run_dir, final_path)
+        else:
+            checked, gaps = validate(cached, evidence)
+            if not gaps:
+                return checked
 
     review = Review(doi, report_json, input_dir, run_dir, deadline, started)
     try:
@@ -649,6 +670,8 @@ async def _review_phases(review: "Review", doi: str, evidence: dict, evidence_pa
     result["_review_metrics"] = {"timeline": {k: round(v, 1) for k, v in review.timeline.items()},
                                  "shards": pipeline, "disputes": len(disputes), "unresolved": len(unresolved)}
     _write_json(final_path, result)
+    state["rules_version"] = rules_version()
+    _write_json(state_path, state)
     return result
 
 
