@@ -508,3 +508,56 @@ def test_regrade_redoes_calibration_and_writing_only(tmp_path, fake_cli, monkeyp
     roles = [c["actor"].split(":")[0] for c in calls()[before:]]
     assert set(roles) == {"calibrator", "writer"}
     assert second["result"] == "低风险"
+
+
+def test_volume_pdf_is_scoped_to_the_chapter(tmp_path):
+    import fitz
+    from review_v3 import dossier
+    pdf = tmp_path / "input" / "volume.pdf"
+    pdf.parent.mkdir()
+    doc = fitz.open()
+    for number in range(1, 71):
+        page = doc.new_page()
+        page.insert_text((72, 72), f"Fig. {number % 7 + 1}. caption on page {number}")
+    # front matter, a part title, then three chapters
+    doc.set_toc([[1, "Preface", 1], [1, "Part A", 3], [1, "First Paper", 4], [1, "Second Paper", 20],
+                 [2, "1 Introduction", 21], [1, "Third Paper", 40], [1, "Author Index", 70]])
+    doc.save(str(pdf))
+    scope = dossier.chapter_scope(pdf, "10.1007/978-981-96-0000-0/2")
+    assert (scope["title"], scope["first"], scope["last"]) == ("Second Paper", 20, 39)
+    assert dossier.chapter_scope(pdf, "10.1109/abc.2020.1") is None
+    index = dossier.build(tmp_path / "work", "10.1007/978-981-96-0000-0/2", str(pdf.parent), "",
+                          {"paper": {"filepath": str(pdf), "title": "Volume Title"}})
+    assert index["paper"]["title"] == "Second Paper"
+    assert {c["page"] for c in index["captions"]} <= set(range(20, 40))
+    assert any("第 20–39 页" in w for w in index["warnings"])
+
+
+def test_core_claims_check_is_a_required_methodology_shard():
+    shards = checklist.build_shards({}, {"main_figure_numbers": [], "captions": [], "data_files": []})
+    claims = next(s for s in shards if s["kind"] == "claims")
+    assert claims["dimension"] == "methodology" and claims["items"][0]["id"] == "claims::core"
+    assert not engine._required_finding("claims::core")
+
+
+def test_ledger_keeps_conclusions_when_attachments_are_malformed(tmp_path):
+    run = tmp_path / "run"
+    (run / "ledgers").mkdir(parents=True)
+    (run / "dossier" / "renders").mkdir(parents=True)
+    (run / "dossier" / "renders" / "p2.png").write_bytes(b"png")
+    path = run / "ledgers" / "inv_c.json"
+    ledger.create(path, {"shard": "c"}, [{"id": "fig::1", "title": "Fig. 1（第2页）：图注核对"},
+                                         {"id": "fig::2", "title": "Fig. 2（第3页）：图注核对"}])
+    warnings = []
+    applied, errors = ledger.update(path, [
+        {"id": "fig::1", "status": "issue", "severity": "minor", "issue_type": "图注与正文不一致",
+         "finding": "图注与正文对象不同", "why": "影响理解", "basis": "第1、2页对照",
+         "evidence": ["p2.png", "missing.png"]},
+        {"id": "fig::2", "status": "cleared", "basis": "曲线与表 2 逐点一致，已核对", "evidence": {"file": "p2.png"}},
+    ], "t", warnings)
+    assert (applied, errors) == (2, [])
+    items = ledger.load(path)["items"]
+    assert items["fig::1"]["location"] == "Fig. 1（第2页）"
+    assert [Path(e["path"]).name for e in items["fig::1"]["evidence"]] == ["p2.png"]
+    assert items["fig::2"]["evidence"][0]["path"].endswith("p2.png")
+    assert warnings and "missing.png" in warnings[0]

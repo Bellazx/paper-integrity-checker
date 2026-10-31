@@ -48,7 +48,7 @@ CALIBRATE_SOFT_SECONDS = _int("REVIEW_V3_CALIBRATE_SOFT_SECONDS", 31 * 60)
 # ledgers (calibration + writing only) instead of being investigated again.
 REGRADE = os.environ.get("REVIEW_V3_REGRADE", "0") == "1"
 SOFT_GRACE_SECONDS = _int("REVIEW_V3_SOFT_GRACE_SECONDS", 180)
-WRAPUP_TURNS = _int("REVIEW_V3_WRAPUP_TURNS", 6)
+WRAPUP_TURNS = _int("REVIEW_V3_WRAPUP_TURNS", 8)
 WRAPUP_SECONDS = _int("REVIEW_V3_WRAPUP_SECONDS", 300)
 
 # Sharding.

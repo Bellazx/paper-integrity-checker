@@ -549,7 +549,7 @@ def _start_regrade(run_dir: Path, final_path: Path) -> None:
     log.info("regrading %s under rules %s", run_dir, rules_version())
 
 
-SYNTHETIC_PREFIXES = ("fig::", "image::", "ref::", "design::", "stats::", "data::forensic_scan", "new:")
+SYNTHETIC_PREFIXES = ("fig::", "image::", "ref::", "design::", "stats::", "claims::", "data::forensic_scan", "new:")
 
 
 def _required_finding(item_id: str) -> bool:

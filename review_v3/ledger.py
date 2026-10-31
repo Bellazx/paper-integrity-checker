@@ -72,6 +72,61 @@ def create(path: Path | str, meta: dict, items: list[dict]) -> dict:
         return data
 
 
+EVIDENCE_PATH_KEYS = ("path", "file", "png", "image", "screenshot")
+
+
+def _normalize(entry: dict, run_dir: Path) -> list[str]:
+    """Accept the shapes agents actually write; never reject a conclusion
+    because of its attachments. Returns warnings for what was dropped."""
+    warnings = []
+    item_id = str(entry.get("id") or "").strip()
+    for field in ("status", "severity", "dimension"):
+        if isinstance(entry.get(field), str):
+            entry[field] = entry[field].strip().lower()
+    for field in TEXT_FIELDS:
+        value = entry.get(field)
+        if isinstance(value, list):
+            entry[field] = "；".join(str(v) for v in value)
+        elif isinstance(value, dict):
+            entry[field] = json.dumps(value, ensure_ascii=False)
+        elif value is not None and not isinstance(value, str):
+            entry[field] = str(value)
+    evidence = entry.get("evidence")
+    if evidence is None:
+        return warnings
+    if isinstance(evidence, (str, dict)):
+        evidence = [evidence]
+    if not isinstance(evidence, list):
+        entry.pop("evidence")
+        return [f"{item_id}: evidence 无法识别，已忽略（结论已写入）"]
+    kept, dropped = [], []
+    for ev in evidence:
+        if isinstance(ev, str):
+            ev = {"path": ev}
+        if not isinstance(ev, dict):
+            dropped.append(str(ev)[:80])
+            continue
+        if ev.get("pdf_path"):
+            kept.append(ev)
+            continue
+        raw = next((ev[k] for k in EVIDENCE_PATH_KEYS if isinstance(ev.get(k), str) and ev[k].strip()), "")
+        candidates = [Path(raw.strip())] if raw else []
+        if raw and not Path(raw).is_absolute():
+            candidates += [run_dir / raw, run_dir / "dossier" / "renders" / Path(raw).name]
+        found = next((p for p in candidates if p.is_file()), None)
+        if found:
+            kept.append({**{k: v for k, v in ev.items() if k not in EVIDENCE_PATH_KEYS}, "path": str(found)})
+        else:
+            dropped.append(raw[:120] or json.dumps(ev, ensure_ascii=False)[:80])
+    if kept:
+        entry["evidence"] = kept
+    else:
+        entry.pop("evidence")
+    if dropped:
+        warnings.append(f"{item_id}: 以下截图不存在，已忽略（结论已写入，可用 pv3 render 生成后再补写）：" + "，".join(dropped[:5]))
+    return warnings
+
+
 def _validate_entry(entry: dict, known: dict, allow_new: bool) -> list[str]:
     errors = []
     item_id = str(entry.get("id") or "").strip()
@@ -99,24 +154,17 @@ def _validate_entry(entry: dict, known: dict, allow_new: bool) -> list[str]:
             errors.append(f"{item_id}: unresolved 必须在 note 中写明缺什么、为什么无法完成")
     if item_id.startswith("new:") and entry.get("dimension") not in DIMENSIONS:
         errors.append(f"{item_id}: 新发现必须给出 dimension=image/data/ref/methodology")
-    evidence = entry.get("evidence")
-    if evidence is not None:
-        if not isinstance(evidence, list):
-            errors.append(f"{item_id}: evidence 必须是列表")
-        else:
-            for ev in evidence:
-                if not isinstance(ev, dict) or not (ev.get("path") or ev.get("pdf_path")):
-                    errors.append(f"{item_id}: evidence 每项需含 path（截图文件）或 pdf_path+page+clip")
-                elif ev.get("path") and not Path(str(ev["path"])).is_file():
-                    errors.append(f"{item_id}: 截图文件不存在 {ev['path']}")
     return errors
 
 
-def update(path: Path | str, entries: list[dict], actor: str) -> tuple[int, list[str]]:
+def update(path: Path | str, entries: list[dict], actor: str,
+           warnings: list[str] | None = None) -> tuple[int, list[str]]:
     """Apply validated entries. Returns (applied_count, errors).
 
     Invalid entries are rejected individually; valid ones in the same call
     are still applied, so one malformed row does not lose a batch of work.
+    Attachments that cannot be used are dropped (reported in ``warnings``)
+    rather than rejecting the conclusion.
     """
     path = Path(path)
     if not isinstance(entries, list):
@@ -132,6 +180,13 @@ def update(path: Path | str, entries: list[dict], actor: str) -> tuple[int, list
             if not isinstance(entry, dict):
                 errors.append("每条记录必须是 JSON 对象")
                 continue
+            notes = _normalize(entry, path.parent.parent)
+            if warnings is not None:
+                warnings.extend(notes)
+            known = items.get(str(entry.get("id") or "").strip()) or {}
+            if entry.get("status") == "issue" and len(str(entry.get("location") or "").strip()) < 4 and known.get("title"):
+                # Checklist titles start with the location ("Fig. 3（第4页）：…").
+                entry["location"] = str(known["title"]).split("：")[0][:120]
             entry_errors = _validate_entry(entry, items, allow_new)
             if entry_errors:
                 errors.extend(entry_errors)

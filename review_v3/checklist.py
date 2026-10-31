@@ -22,6 +22,7 @@ SHARD_DIMENSION = {
     "consistency": "data",
     "ref": "ref",
     "methodology": "methodology",
+    "claims": "methodology",
 }
 
 _STRONG_TESTS = {
@@ -215,6 +216,12 @@ def build_shards(evidence: dict, dossier: dict) -> list[dict]:
     by_kind["methodology"].append({
         "id": "design::overall", "kind": "design", "required": True,
         "title": "研究设计：方法所述样本量/重复数/分组与结果和图注是否一致，时间线与伦理声明是否矛盾",
+    })
+    by_kind["claims"].append({
+        "id": "claims::core", "kind": "claims", "required": True,
+        "title": ("核心方法与核心主张：所提方法的关键公式（目标函数、约束、罚项/正则项符号与优化方向、"
+                  "变量定义与量纲）和算法步骤是否自洽、能否实现其声称的作用；摘要与结论的主要主张"
+                  "（改进幅度、优于基线、某现象被消除或不受影响）是否被本文自身的图表结果支持"),
     })
     by_kind["stats"].append({
         "id": "stats::overall", "kind": "stats", "required": True,

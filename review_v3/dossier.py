@@ -59,7 +59,42 @@ def _classify_caption(label: str) -> str:
     return "figure"
 
 
-def _extract_pdf(doc_id: str, path: Path, text_dir: Path) -> tuple[dict, list[dict], list[str]]:
+FRONT_MATTER_RE = re.compile(r"^(preface|organi[sz]ation|contents?\b|author index|index|foreword|committee)", re.I)
+CHAPTER_DOI_RE = re.compile(r"^10\.\d+/978-[\d-]+[/_](\d+)$")
+MIN_VOLUME_PAGES = 60
+
+
+def chapter_scope(path: Path, doi: str) -> dict | None:
+    """Page range of one chapter when the PDF is a whole proceedings volume or book.
+
+    The chapter DOI (10.1007/978-…/24) carries the chapter number; chapters are
+    the top-level bookmarks with at least 3 pages, skipping front matter and
+    part titles.
+    """
+    match = CHAPTER_DOI_RE.match(str(doi or "").strip())
+    if not match:
+        return None
+    import fitz
+    try:
+        with fitz.open(str(path)) as doc:
+            if doc.page_count < MIN_VOLUME_PAGES:
+                return None
+            pages, toc = doc.page_count, doc.get_toc()
+    except Exception as exc:
+        log.warning("chapter scope: cannot read %s: %s", path, exc)
+        return None
+    top = [(re.sub(r"\s+", " ", title).strip(), page) for level, title, page in toc if level == 1 and page > 0]
+    spans = [(title, start, (top[i + 1][1] - 1) if i + 1 < len(top) else pages) for i, (title, start) in enumerate(top)]
+    chapters = [s for s in spans if s[2] - s[1] >= 2 and not FRONT_MATTER_RE.match(s[0])]
+    number = int(match.group(1))
+    if not 1 <= number <= len(chapters):
+        return None
+    title, first, last = chapters[number - 1]
+    return {"doc": "main", "chapter": number, "title": title, "first": first, "last": last, "volume_pages": pages}
+
+
+def _extract_pdf(doc_id: str, path: Path, text_dir: Path,
+                 scope: dict | None = None) -> tuple[dict, list[dict], list[str]]:
     import fitz
     captions, warnings = [], []
     info = {"id": doc_id, "path": str(path), "name": path.name, "pages": 0}
@@ -77,7 +112,8 @@ def _extract_pdf(doc_id: str, path: Path, text_dir: Path) -> tuple[dict, list[di
         if doc.page_count > limit:
             warnings.append(f"{path.name}: 共 {doc.page_count} 页，仅抽取前 {limit} 页文本")
         chars = 0
-        for number in range(limit):
+        numbers = range(scope["first"] - 1, scope["last"]) if scope else range(limit)
+        for number in numbers:
             try:
                 text = doc[number].get_text("text")
             except Exception as exc:
@@ -101,7 +137,7 @@ def _extract_pdf(doc_id: str, path: Path, text_dir: Path) -> tuple[dict, list[di
                     "text": (match.group("rest") or "").strip()[:300],
                 })
         info["text_chars"] = chars
-        if limit and chars < 200 * limit * 0.1:
+        if len(numbers) and chars < 200 * len(numbers) * 0.1:
             warnings.append(f"{path.name}: 可抽取文本很少，可能是扫描件，需要看渲染图")
     return info, captions, warnings
 
@@ -217,8 +253,15 @@ def build(workdir: Path, doi: str, input_dir: str, report_json: str, evidence: d
         pdfs.insert(0, main)
     ordered = ([main] if main else []) + [p for p in pdfs if p != main]
     docs, captions, warnings = [], [], []
+    scope = chapter_scope(main, doi) if main is not None else None
+    if scope:
+        warnings.append(
+            f"主 PDF 是整卷论文集（共 {scope['volume_pages']} 页），本论文是其中第 {scope['chapter']} 章"
+            f"「{scope['title']}」，位于 PDF 第 {scope['first']}–{scope['last']} 页。只核查这些页；"
+            "其他章节的图表、参考文献和初检告警不属于本论文，相关条目写 not_applicable 并说明")
     for index, path in enumerate(ordered):
-        info, doc_captions, doc_warnings = _extract_pdf(_doc_id(index, path, main), path, text_dir)
+        doc_id = _doc_id(index, path, main)
+        info, doc_captions, doc_warnings = _extract_pdf(doc_id, path, text_dir, scope if doc_id == "main" else None)
         docs.append(info)
         captions.extend(doc_captions)
         warnings.extend(doc_warnings)
@@ -234,18 +277,28 @@ def build(workdir: Path, doi: str, input_dir: str, report_json: str, evidence: d
                            and c["number"].isdigit() and "supplementary" not in c["label"].lower()
                            and "extended" not in c["label"].lower()},
                           key=int)
+    paper = {k: (evidence.get("paper") or report.get("paper") or {}).get(k)
+             for k in ("title", "journal", "doi", "total_pages")}
+    image_alerts = _image_alerts(report)
+    if scope:
+        paper["title"], paper["journal"] = scope["title"], paper.get("journal") or paper.get("title")
+        inside = [a for a in image_alerts
+                  if any(isinstance(p, int) and scope["first"] <= p <= scope["last"] for p in a.get("pages") or [])]
+        if len(inside) < len(image_alerts):
+            warnings.append(f"初检图像告警 {len(image_alerts)} 条中 {len(image_alerts) - len(inside)} 条完全位于本章页码之外，已排除")
+        image_alerts = inside
     index = {
         "doi": doi,
         "input_dir": str(input_path),
         "report_json": report_json,
-        "paper": {k: (evidence.get("paper") or report.get("paper") or {}).get(k)
-                  for k in ("title", "journal", "doi", "total_pages")},
+        "paper": paper,
+        "scope": scope,
         "docs": docs,
         "captions": captions,
         "main_figure_numbers": main_figures,
         "data_files": _data_files(input_path) if input_path.is_dir() else [],
         "sheets": _compact_inventory(evidence),
-        "image_alerts": _image_alerts(report),
+        "image_alerts": image_alerts,
         "reference_alerts": _reference_alerts(report),
         "content_screening": report.get("content_screening") or {},
         "analysis_warnings": [str(w)[:300] for w in (report.get("analysis_warnings") or [])][:40],

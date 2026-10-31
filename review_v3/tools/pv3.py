@@ -543,16 +543,21 @@ def cmd_ledger(args):
         _emit("\n".join(out))
         return
     raw = sys.stdin.read() if not args.file else Path(args.file).read_text(encoding="utf-8")
+    from review_v3.prompts import LEDGER_FORMAT
     try:
         entries = json.loads(raw)
     except ValueError as exc:
-        sys.exit(f"JSON 解析失败：{exc}")
+        print(f"JSON 解析失败：{exc}\n{LEDGER_FORMAT}")
+        sys.exit(2)
+    warnings: list[str] = []
     applied, errors = ledger.update(path, entries if isinstance(entries, list) else [entries],
-                                    os.environ.get("PV3_ACTOR", "agent"))
+                                    os.environ.get("PV3_ACTOR", "agent"), warnings)
     counts = ledger.counts(ledger.load(path))
     print(f"已写入 {applied} 条；台账剩余未处理 {counts['open']} / {counts['total']}")
+    if warnings:
+        print("提示：\n- " + "\n- ".join(warnings))
     if errors:
-        print("以下记录被拒绝，请修正后重新提交：\n- " + "\n- ".join(errors))
+        print("以下记录被拒绝，请修正后重新提交：\n- " + "\n- ".join(errors) + "\n" + LEDGER_FORMAT)
         sys.exit(2)
 
 
