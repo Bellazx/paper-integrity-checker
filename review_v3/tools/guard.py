@@ -31,6 +31,53 @@ SENSITIVE = re.compile(r"review_artifacts|review_v2|review_reports|/memory/|\.cl
 SKILL_TOOL = re.compile(r"\.claude/skills/paper-batch-review/scripts/(?:forensic_checks|scan_columns)\.py")
 
 
+WRITE_CALLS = re.compile(
+    r"savefig|\.save\(|imwrite|imsave|write_text|write_bytes|to_csv|to_excel|np\.save|"
+    r"open\([^)]*['\"][wax]b?\+?['\"]")
+RELATIVE_WRITE = re.compile(
+    r"(?:savefig|\.save|imwrite|imsave|to_csv|to_excel|np\.save|write_text|write_bytes)\(\s*f?['\"](?!/)"
+    r"|open\(\s*f?['\"](?!/)[^'\"]*['\"]\s*,\s*['\"][wax]"
+    r"|(?:^|[\s;&|])(?:cp|mv)\s[^;&|\n]*\s\.(?:/|\s|$)")
+COPY_COMMANDS = {"cp", "mv", "ln", "install", "rsync"}       # the last argument is written
+TOUCH_COMMANDS = {"rm", "touch", "mkdir", "tee", "rmdir"}  # every argument is written
+
+
+def _writes_input(command: str) -> bool:
+    """True when a Bash command would create or change files in the paper's
+    input directory (redirection into it, a file command targeting it, or a
+    write call while working inside it). The input must stay as delivered:
+    its contents identify the review run."""
+    import shlex
+    input_dir = (os.environ.get("PV3_INPUT_DIR") or "").rstrip("/")
+    if not input_dir:
+        return False
+    inside = lambda token: token == input_dir or token.startswith(input_dir + "/")
+    if re.search(r">>?\s*['\"]?" + re.escape(input_dir), command):
+        return True
+    for segment in re.split(r"[;&|\n]+", command):
+        try:
+            tokens = shlex.split(segment)
+        except ValueError:
+            tokens = segment.split()
+        if not tokens:
+            continue
+        name = os.path.basename(tokens[0])
+        args = [t for t in tokens[1:] if not t.startswith("-")]
+        if name in COPY_COMMANDS and args and inside(args[-1]):
+            return True
+        if name in TOUCH_COMMANDS and any(inside(a) for a in args):
+            return True
+    for line in command.splitlines():
+        if input_dir in line and WRITE_CALLS.search(line.replace(input_dir, "")) and not re.search(
+                r"fitz\.open|read_|load|imread|Image\.open", line.split(input_dir)[0][-40:]):
+            return True
+    # After `cd <input>`, relative writes land in the input directory.
+    for chunk in re.split(r"(?:^|[\s;&|])(?=cd\s)", command):
+        if re.match(r"cd\s+['\"]?" + re.escape(input_dir), chunk) and RELATIVE_WRITE.search(chunk):
+            return True
+    return False
+
+
 def _strip_allowed(text: str) -> str:
     for prefix in ALLOWED_PREFIXES:
         text = text.replace(prefix.rstrip("/"), "<allowed>")
@@ -46,6 +93,9 @@ def check(tool: str, payload: dict) -> str | None:
             return None
         return f"只能读取本论文材料与资料包目录：{target} 不在允许范围内"
     if tool == "Bash":
+        if _writes_input(str(payload.get("command") or "")):
+            return ("不要在论文原始材料目录中写入或修改文件（原始材料必须保持原样）。"
+                    "截图请用 pv3 render/view 生成，脚本与中间文件请写到 /tmp 或资料包目录。")
         command = _strip_allowed(str(payload.get("command") or ""))
         for pattern in FORBIDDEN:
             if pattern.search(command):

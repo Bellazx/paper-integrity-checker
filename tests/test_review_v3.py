@@ -579,3 +579,39 @@ def test_duplicate_issues_from_two_shards_are_reported_once():
     assert [r["id"] for r in issues] == ["new:a", "fig::5"]
     assert [e["path"] for e in issues[0]["evidence"]] == ["a.png", "b.png"]
     assert any(r["id"] == "x" for r in merged)
+
+
+def test_guard_keeps_the_input_directory_read_only(monkeypatch):
+    from review_v3.tools import guard
+    monkeypatch.setenv("PV3_INPUT_DIR", "/data/in/paper")
+    monkeypatch.setattr(guard, "ALLOWED_PREFIXES", ["/data/in/paper", "/tmp/"])
+    blocked = [
+        "python3 -c \"import matplotlib; plt.savefig('/data/in/paper/fig3.png')\"",
+        "pdftoppm -png x.pdf > /data/in/paper/p.png",
+        "cp /tmp/a.png /data/in/paper/",
+        "cd /data/in/paper && python3 - <<'EOF'\nimg.save('crop.png')\nEOF",
+    ]
+    allowed = [
+        "pdftotext -layout /data/in/paper/main.pdf - | head",
+        "python3 -c \"import fitz; d=fitz.open('/data/in/paper/main.pdf'); print(d.page_count)\"",
+        "cp /data/in/paper/main.pdf /tmp/x.pdf",
+    ]
+    assert all(guard.check("Bash", {"command": c}) for c in blocked)
+    assert not any(guard.check("Bash", {"command": c}) for c in allowed)
+
+
+def test_input_identity_ignores_files_written_during_review(tmp_path):
+    report = tmp_path / "report.json"
+    report.write_text("{}")
+    paper = tmp_path / "in"
+    paper.mkdir()
+    (paper / "main.pdf").write_bytes(b"%PDF")
+    old = report.stat().st_mtime - 3600
+    os.utime(paper / "main.pdf", (old, old))
+    before = engine._identity("10.1/x", str(report), str(paper))
+    (paper / "arb_fig3.png").write_bytes(b"png")
+    later = report.stat().st_mtime + 600
+    os.utime(paper / "arb_fig3.png", (later, later))
+    assert engine._identity("10.1/x", str(report), str(paper)) == before
+    (paper / "extra.xlsx").write_bytes(b"data")
+    assert engine._identity("10.1/x", str(report), str(paper)) != before

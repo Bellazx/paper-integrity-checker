@@ -33,18 +33,33 @@ def _slug(doi: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in doi)[:80] or "paper"
 
 
+SCRATCH_SUFFIXES = {".png", ".jpg", ".jpeg", ".py", ".txt", ".json", ".npy", ".log", ".html"}
+
+
 def _identity(doi: str, report_json: str, input_dir: str) -> str:
+    """Stable id of the review inputs. Directory mtimes are not used, and
+    scratch-type files newer than the initial report are ignored, so a stray
+    file written during a review cannot make its resume start over."""
     parts = [doi.lower()]
-    for value in (report_json, input_dir):
-        path = Path(value or "")
-        try:
-            stat = path.stat()
-            parts.append(f"{path.resolve()}|{stat.st_size}|{int(stat.st_mtime)}")
-        except OSError:
-            parts.append(str(path))
+    report_mtime = None
+    path = Path(report_json or "")
+    try:
+        stat = path.stat()
+        report_mtime = stat.st_mtime
+        parts.append(f"{path.resolve()}|{stat.st_size}|{int(stat.st_mtime)}")
+    except OSError:
+        parts.append(str(path))
+    parts.append(str(Path(input_dir or "").resolve()) if input_dir else "")
     if input_dir and Path(input_dir).is_dir():
-        files = sorted(str(p.relative_to(input_dir)) + f":{p.stat().st_size}"
-                       for p in Path(input_dir).rglob("*") if p.is_file())
+        files = []
+        for p in Path(input_dir).rglob("*"):
+            if not p.is_file():
+                continue
+            st = p.stat()
+            if report_mtime and st.st_mtime > report_mtime + 60 and p.suffix.lower() in SCRATCH_SUFFIXES:
+                continue
+            files.append(str(p.relative_to(input_dir)) + f":{st.st_size}")
+        files.sort()
         parts.append(hashlib.sha1("\n".join(files).encode()).hexdigest())
     return hashlib.sha1("|".join(parts).encode()).hexdigest()[:12]
 
@@ -603,6 +618,12 @@ def _required_finding(item_id: str) -> bool:
 def _run_dir(output_dir: str, doi: str, report_json: str, input_dir: str, resume: bool) -> Path:
     base = Path(output_dir) if output_dir else config.BASE_DIR / "data" / "output" / "review_v3"
     paper_dir = base / "review_v3" / f"{_slug(doi)}_{_identity(doi, report_json, input_dir)}"
+    if config.REGRADE and not (paper_dir / "current").is_file():
+        # Regrading keeps an existing investigation: use this paper's latest
+        # investigated run even if it was recorded under another input id.
+        runs = [run for run in (base / "review_v3").glob(f"{_slug(doi)}_*/run_*") if (run / "finals.json").is_file()]
+        if runs:
+            return max(runs, key=lambda run: (run / "finals.json").stat().st_mtime)
     paper_dir.mkdir(parents=True, exist_ok=True)
     pointer = paper_dir / "current"
     if resume and pointer.is_file():
@@ -646,6 +667,8 @@ async def _review(doi: str, report_json: str, input_dir: str, output_dir: str, r
     if isinstance(cached, dict) and cached.get("trigger") != "review_error":
         if config.REGRADE and state.get("rules_version") != rules_version():
             _start_regrade(run_dir, final_path)
+            state["regrading"] = True
+            _write_json(state_path, state)
         else:
             checked, gaps = validate(cached, evidence)
             if not gaps:
@@ -668,14 +691,17 @@ async def _review_phases(review: "Review", doi: str, evidence: dict, evidence_pa
     finals, disputes = review.merge()
     round_no = int(state.get("arbitration_rounds", 0)) + 1
     # Earlier calls' arbitration results still count on resume.
+    # A regrade keeps the investigation as it was: the last arbitration
+    # outcome stands (including "unresolved") and no new round is started.
+    regrading = bool(state.get("regrading"))
     for previous in range(1, round_no):
         for dim in DIMENSIONS:
             for item_id, record in (ledger.load(review.ledger_path(f"arb{previous}", dim)).get("items") or {}).items():
-                if record.get("status") not in ("open", "unresolved"):
+                if record.get("status") not in ("open", "unresolved") or (regrading and record.get("status") == "unresolved"):
                     finals[item_id] = {**{k: record.get(k) for k in ("id", "title", "members")},
                                        "dimension": record.get("dimension") or dim, **_compact(record)}
     disputes = [d for d in disputes if d["id"] not in finals]
-    if disputes:
+    if disputes and not regrading:
         state["arbitration_rounds"] = round_no
         _write_json(state_path, state)
         decided = await review.arbitrate(disputes, round_no)
@@ -686,6 +712,9 @@ async def _review_phases(review: "Review", doi: str, evidence: dict, evidence_pa
             first = item.get("first") or {}
             if first and (first.get("status") == "issue") != (record.get("status") == "issue"):
                 memory.record_lesson(doi, item.get("shard", ""), item, first, record)
+    for item in disputes if regrading else []:
+        finals[item["id"]] = {**{k: item.get(k) for k in ("id", "title", "kind", "members", "shard")},
+                              "dimension": item["dimension"], "status": "unresolved", "note": "仲裁未完成"}
     review.timeline["arbitration"] = time.monotonic() - started - review.timeline["shards"]
 
     finals = await review.calibrate(finals)
@@ -715,6 +744,7 @@ async def _review_phases(review: "Review", doi: str, evidence: dict, evidence_pa
                                  "shards": pipeline, "disputes": len(disputes), "unresolved": len(unresolved)}
     _write_json(final_path, result)
     state["rules_version"] = rules_version()
+    state.pop("regrading", None)
     _write_json(state_path, state)
     return result
 
