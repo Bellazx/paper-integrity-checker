@@ -50,11 +50,12 @@ SCHEMA = """每个候选格式：
  "description":"具体的A与B冲突及有限影响，不泛化研究失效",
  "scope":"为什么两处是同一对象、指标、实验和统计范围",
  "evidence":[{"page":1,"source_id":"材料中已有的原文位置编号"}, ...],
- "calculation":null或{"operation":"mean/weighted_mean/sum/difference/relative_change/ratio_percent",
+ "calculation":null或{"operation":"mean/weighted_mean/sum/difference/relative_change/ratio/ratio_percent",
    "operands":[{"value":"12.30","page":1,"source_id":"包含此数值的位置编号","exact":false}, ...],
    "reported":{"value":"13.00","page":1,"source_id":"包含报告数值的位置编号","exact":false}}}
 数值用字符串保留精度，不加%符号。difference=第1项减第2项；
-relative_change=(第2项-第1项)/第1项*100；ratio_percent=第1项/第2项*100。
+relative_change=(第2项-第1项)/第1项*100；ratio=第1项/第2项（倍数，如“3倍”“three times”“3-fold”）；
+ratio_percent=第1项/第2项*100（仅用于报告值是百分比的情形，倍数不能用它）。
 加权平均用weighted_mean，operands填原始均值，并增加等长weights列表；每个权重也含
 value/page/source_id/exact。value只填原文数字，禁止填写乘除表达式或自行算出的中间值。
 exact仅当原文明确是精确的离散计数（如样本数）时为true；整数百分率仍有舍入误差。
@@ -299,6 +300,65 @@ def _ground(item, pages):
         raise ContentScreenIncomplete(f"PDF第{number}页引文无法对照原文")
 
 
+_UNITS = ["two", "three", "four", "five", "six", "seven", "eight", "nine"]
+_TEENS = ["ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+          "sixteen", "seventeen", "eighteen", "nineteen"]
+_TENS = ["twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
+_SPELLED = {word: i + 2 for i, word in enumerate(_UNITS)}
+_SPELLED.update({word: i + 10 for i, word in enumerate(_TEENS)})
+_SPELLED.update({word: 10 * (i + 2) for i, word in enumerate(_TENS)})
+_SPELLED["twice"] = 2
+_SPELLED_PATTERN = re.compile(
+    r"(?<![A-Za-z-])(?P<tens>" + "|".join(_TENS) + r")[-\s](?P<unit>one|" + "|".join(_UNITS)
+    + r")(?:fold)?(?![A-Za-z-])|(?<![A-Za-z-])(?P<word>" + "|".join(_SPELLED)
+    + r")(?:fold)?(?![A-Za-z]|-(?:one|" + "|".join(_UNITS) + r")\b)", re.IGNORECASE)
+
+
+def _spelled_numbers(text):
+    """Integers written as words ("three times", "fivefold", "twenty-one").
+
+    "one" alone is excluded: as a pronoun ("one of the", "no one") it would
+    ground any value of 1 and defeat the fabricated-number check.
+    """
+    tokens = []
+    for match in _SPELLED_PATTERN.finditer(text):
+        if match.group("tens"):
+            unit = match.group("unit").lower()
+            tokens.append(str(_SPELLED[match.group("tens").lower()]
+                              + (1 if unit == "one" else _SPELLED[unit])))
+        else:
+            tokens.append(str(_SPELLED[match.group("word").lower()]))
+    return tokens
+
+
+_COMPARATIVE_MULTIPLE = re.compile(
+    r"(?<![\w.])(?P<n>[\w.]+?)[-\s]?(?:times|fold)\s+(?P<word>[a-z]+)", re.IGNORECASE)
+_CHINESE_COMPARATIVE_MULTIPLE = re.compile(
+    r"(?:高|大|快|多|强|长|增加|提高|增长|提升|升高)(?:了|出)?\s*(?P<n>\d+(?:\.\d+)?)\s*倍")
+
+
+def _comparative_multiple(text, value):
+    """Whether text states ``value`` as "N times faster/larger than".
+
+    Only this comparative form reads either as N-fold or as an increase of N.
+    "N times as fast as" and "是…的N倍" are unambiguous N-fold statements.
+    """
+    def same(token):
+        token = token.lower()
+        number = _SPELLED.get(token, token)
+        try:
+            return Decimal(str(number)) == Decimal(str(value))
+        except ArithmeticError:
+            return False
+    text = text.replace("−", "-")
+    for match in _COMPARATIVE_MULTIPLE.finditer(text):
+        word = match.group("word").lower()
+        if (same(match.group("n")) and (word in {"more", "less"} or word.endswith("er"))
+                and word not in {"over", "under", "per", "after"}):
+            return True
+    return any(same(m.group("n")) for m in _CHINESE_COMPARATIVE_MULTIPLE.finditer(text))
+
+
 def _number(item, pages):
     _ground(item, pages)
     literal = item.get("value")
@@ -312,6 +372,7 @@ def _number(item, pages):
     number_text = re.sub(r"(?<!\d)\d{1,3}(?:,\d{3})+(?:\.\d+)?(?!\d)",
                          lambda m: m.group().replace(',', ''), number_text)
     tokens = re.findall(r"(?<![\d.])-?(?:\d+(?:\.\d+)?|\.\d+)(?![\d.])", number_text)
+    tokens += _spelled_numbers(number_text)
     literal_decimal = Decimal(literal)
     matches = [token for token in tokens if Decimal(token) == literal_decimal]
     scientific_matches = []
@@ -390,12 +451,14 @@ def recalculate(calculation, pages):
     elif op == "difference" and len(xs) == 2:
         expected = xs[0] - xs[1]
         error = sum(e for _, e in values)
-    elif op in ("relative_change", "ratio_percent") and len(xs) == 2:
+    elif op in ("relative_change", "ratio", "ratio_percent") and len(xs) == 2:
         denominator = 0 if op == "relative_change" else 1
         if abs(xs[denominator]) <= values[denominator][1]:
             raise ContentScreenIncomplete("分母区间包含0")
         def calc(a, b):
-            return (b - a) / a * 100 if op == "relative_change" else a / b * 100
+            if op == "relative_change":
+                return (b - a) / a * 100
+            return a / b * (1 if op == "ratio" else 100)
         expected = calc(*xs)
         corners = [calc(xs[0] + s * values[0][1], xs[1] + t * values[1][1])
                    for s in (-1, 1) for t in (-1, 1)]
@@ -403,8 +466,14 @@ def recalculate(calculation, pages):
     else:
         raise ContentScreenIncomplete("不支持的计算方式")
     tolerance = error + reported_error + 1e-8
+    mismatch = abs(expected - actual) > tolerance
+    # "N times faster/larger than" reads either as N-fold or as an increase of
+    # N. When the ratio fits the second reading it is a wording ambiguity that
+    # needs clarification, never a numeric conflict for the high-risk gate.
+    ambiguous = (op == "ratio" and mismatch and abs(expected - 1 - actual) <= tolerance
+                 and _comparative_multiple(calculation["reported"]["quote"], actual))
     return {"operation": op, "values": xs, "weights": weights, "reported": actual, "calculated": expected,
-            "rounding_bound": tolerance, "mismatch": abs(expected - actual) > tolerance}
+            "rounding_bound": tolerance, "mismatch": mismatch, "ambiguous_multiple": ambiguous}
 
 
 def _checked(request, prompt, validate, *, repair_request=None):
@@ -573,7 +642,7 @@ def screen_manuscript(pdf_path, *, request=None):
             for checks in pool.map(verify_chunk, chunks):
                 for check in checks:
                     decisions.setdefault(check["id"], []).append(check)
-    issues, seen, unresolved = [], set(), []
+    issues, seen, unresolved = [], {}, []
     for candidate in candidates:
         checks = decisions[candidate["id"]]
         verdicts = {c["verdict"] for c in checks}
@@ -601,29 +670,52 @@ def screen_manuscript(pdf_path, *, request=None):
         if calculation:
             # Different columns may share the same source row. They must not
             # collapse merely because their evidence locators are identical.
-            key = ('arithmetic', tuple(sorted({e['page'] for e in candidate['evidence']})),
+            # A wording ambiguity is one finding however many places repeat
+            # the same multiple (e.g. caption and main text), so its key
+            # ignores pages and the extra locations are merged below.
+            pages_key = (() if calculation.get('ambiguous_multiple')
+                         else tuple(sorted({e['page'] for e in candidate['evidence']})))
+            key = ('arithmetic', pages_key,
                    calculation['operation'], tuple(calculation['values']),
                    tuple(calculation.get('weights') or []), calculation['reported'])
         else:
             key = tuple(sorted((e["page"], _normal(e["quote"])) for e in candidate["evidence"]))
         if key in seen:
+            merged = seen[key]
+            if merged is not None:
+                if candidate['location'] not in merged['location']:
+                    merged['location'] += '；' + candidate['location']
+                known = {(e['page'], e.get('source_id'), e.get('quote')) for e in merged['details']['evidence']}
+                merged['details']['evidence'] += [
+                    e for e in candidate['evidence']
+                    if (e['page'], e.get('source_id'), e.get('quote')) not in known]
             continue
-        seen.add(key)
         description = candidate["description"]
-        if calculation:
+        severity = candidate.get("severity", "high")
+        if calculation and calculation.get("ambiguous_multiple"):
+            # The model's text asserts a conflict; replace it with what the
+            # numbers establish so the report does not overstate the finding.
+            calculated, reported = calculation['calculated'], calculation['reported']
+            description = (f"所引数值之比为{calculated:.4g}倍，即高出{calculated - 1:.4g}倍；"
+                           f"原文写作{reported:.6g}倍。若原文指“高出{reported:.6g}倍”则与数据相符，"
+                           f"若指“是对方的{reported:.6g}倍”则不符。措辞存在两种理解，"
+                           "需作者说明所指是倍数还是增加量；不作为数值冲突。")
+            severity = "low"
+        elif calculation:
             description += (f" 程序复算为{calculation['calculated']:.6g}，报告值为"
                             f"{calculation['reported']:.6g}，差异超过显示精度的舍入范围。")
         issues.append({"test": "verified_manuscript_content_conflict",
                        # Keep editorial errata visible without letting them
                        # enter the high-risk gate. Serious typos are marked
                        # high by the model and remain reviewable.
-                       "severity": candidate.get("severity", "high"),
+                       "severity": severity,
                        "location": candidate["location"], "description": description,
                        "details": {"source_pdf": str(Path(pdf_path).resolve()),
                                    "page": candidate["evidence"][0]["page"],
-                                   "scope": candidate["scope"], "evidence": candidate["evidence"],
+                                   "scope": candidate["scope"], "evidence": list(candidate["evidence"]),
                                    "calculation": calculation, "verification": checks,
                                    "verification_status": "source_grounded_and_counterchecked"}})
+        seen[key] = issues[-1] if calculation and calculation.get('ambiguous_multiple') else None
     if unresolved:
         warnings.append(f"另有{len(unresolved)}项内容候选待复审核清；未将这些候选计为已确认风险")
     audit = {"status": "needs_review" if unresolved else "complete", "pages_checked": [p["page"] for p in pages],

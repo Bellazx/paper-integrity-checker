@@ -555,7 +555,7 @@ def multiple_paper(tmp_path, phrase):
         doc.new_page().insert_textbox(fitz.Rect(40, 40, 540, 750), caption)
         doc.save(path)
     item = lambda v, quote=fits: {"page": 1, "quote": quote, "value": v}
-    reported = {"three times larger": "3", "two times larger": "2"}[phrase]
+    reported = {"three times larger": "3", "two times larger": "2", "three times as fast as": "3"}[phrase]
     found = {"id": "c1", "kind": "arithmetic", "location": "PDF第1页图注",
              "description": "斜率之比约为4.03，并非正文所称3倍。", "scope": "同一功率下两种模式的速度比",
              "evidence": [{"page": 1, "quote": claim}, {"page": 1, "quote": fits}],
@@ -575,8 +575,11 @@ def test_ambiguous_multiple_is_a_low_severity_clarification(tmp_path):
     assert assessment(issues)["level"] != "高风险"
 
 
-def test_multiple_matching_neither_reading_stays_a_conflict(tmp_path):
-    path, found = multiple_paper(tmp_path, "two times larger")
+@pytest.mark.parametrize("phrase", ["two times larger", "three times as fast as"])
+def test_unambiguous_or_unmatched_multiple_stays_a_conflict(tmp_path, phrase):
+    # "two times larger" fits neither reading of 4.03; "three times as fast
+    # as" can only mean 3-fold, so 4.03 is a real conflict.
+    path, found = multiple_paper(tmp_path, phrase)
     request, _ = responder(candidates=[found], evidence=found["evidence"])
     issues, _, _ = screen.screen_manuscript(path, request=request)
     assert issues[0]["severity"] == "high"
@@ -614,3 +617,17 @@ def test_ambiguous_multiple_repeated_in_caption_and_text_is_one_issue(tmp_path):
     assert issues[0]["location"] == "PDF第1页图注；PDF第2页正文"
     assert {e["page"] for e in issues[0]["details"]["evidence"]} == {1, 2}
     assert len(audit["candidates"][0]["evidence"]) == 2  # audit record left untouched
+
+
+@pytest.mark.parametrize("text,value,expected", [
+    ("swims three times faster than the pusher", "3", True),
+    ("a threefold higher yield than", "3", True),
+    ("3-fold more active than", "3", True),
+    ("A比B高3倍", "3", True),
+    ("提高了3倍", "3", True),
+    ("three times as fast as the pusher", "3", False),
+    ("A是B的3倍", "3", False),
+    ("three times faster than the pusher", "4", False),
+])
+def test_only_comparative_multiples_are_ambiguous(text, value, expected):
+    assert screen._comparative_multiple(text, value) is expected

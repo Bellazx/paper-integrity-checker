@@ -105,6 +105,11 @@ async def run(engine, doi, label, prompt, max_turns, allowed_tools=('Bash', 'Rea
             and metrics[-1].get('phase') == 2
             and metrics[-1].get('subtype') == 'error_max_turns'):
         start = 2
+        state['legacy_output_correction'] = True
+    if (start >= 3 and not state.get('completed_result')
+            and not state.get('output_gaps')
+            and not any(item.get('phase') == 2 for item in metrics)):
+        start = 2
     session = state.get('session_id') or str(uuid.uuid4())
     last_error = state.get('last_error', 'review session exhausted')
     output_gaps = state.get('output_gaps') or []
@@ -115,6 +120,20 @@ async def run(engine, doi, label, prompt, max_turns, allowed_tools=('Bash', 'Rea
     if (start >= 3 and output_gaps and not state.get('post_validation_recovery_attempted')):
         start = 1
         state['post_validation_recovery_attempted'] = True
+    # A finalizer can correctly preserve a review_error when the evidence is
+    # still incomplete.  Its checkpoint is nevertheless at phase 3, so a
+    # later task retry must reopen the focused recovery phase instead of
+    # returning the same fallback without starting a CLI process.  This is
+    # granted once, so repeated retries cannot keep refunding the recovery
+    # budget; a migrated legacy finalizer already used its one correction.
+    if (start >= 3 and not state.get('completed_result')
+            and not output_gaps and metrics
+            and any(item.get('phase') == 2 for item in metrics)
+            and not state.get('continuation_attempts')
+            and not state.get('legacy_output_correction')
+            and last_error not in {'', 'review session exhausted'}):
+        start = 1
+        state['continuation_attempts'] = int(state.get('continuation_attempts', 0)) + 1
     # A resumed builder allocates a different random draft filename. Keep the
     # original path with the session so a saved result remains recoverable.
     state.setdefault('preflight', preflight_paths(prompt))
@@ -154,6 +173,9 @@ async def run(engine, doi, label, prompt, max_turns, allowed_tools=('Bash', 'Rea
         '保持每类必查线索的具体结论与依据；只整理既有事实，不补造证据。'
         '若证据包含有HIGH的正文内容冲突，必须在data_review或reason中明确写出“内容冲突”或“正文不一致”，'
         '并紧接着给出该项属于异常/问题、可解释或正常的明确结论；不能只描述位置而省略结论。'
+        '每个维度的确认问题必须用可识别的阿拉伯编号（如（1）、（2）或1.、2.）独立起段，'
+        '并让evidence_images和excel_evidence_regions中的issue_index严格对应该维度的问题编号；'
+        '不要只使用“一、二、三”作为问题编号。'
     )
     scheduled_prompt = prompt + (
         '\n本阶段只有Bash和Read工具；Write和Edit不可用。保存草稿请通过Bash执行。'
@@ -215,6 +237,8 @@ async def run(engine, doi, label, prompt, max_turns, allowed_tools=('Bash', 'Rea
         output_only = not allowed_tools or phase == 2 or (phase == 1 and schema_only_gaps(output_gaps))
         if output_gaps:
             instruction += '\n发布校验尚未通过：' + json.dumps(output_gaps, ensure_ascii=False)
+        if phase == 1 and last_error not in {'', 'review session exhausted'}:
+            instruction += '\n上一次恢复未完成的具体记录（仅作为交接信息，必须继续核查）：' + last_error[:12000]
         if output_only and state.get('candidate_result'):
             instruction += ('\n下方为本会话已有的完整草稿；仅修复字段、编号和截图对应关系，'
                             '不得新增未经核查的事实。必须直接输出完整JSON：\n'

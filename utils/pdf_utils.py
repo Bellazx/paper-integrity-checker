@@ -180,13 +180,16 @@ def extract_images(pdf_path: str, output_dir: str, min_size: int = 200,
     return images
 
 
-def extract_standalone_images(paper_dir: str, output_dir: str, min_size: int = 200, max_images: int = 30, extra_image_dirs: list[str] | None = None) -> list[ExtractedImage]:
+def extract_standalone_images(paper_dir: str, output_dir: str, min_size: int = 200, max_images: int = 30, extra_image_dirs: list[str] | None = None,
+                              extra_image_files: list[str] | None = None) -> list[ExtractedImage]:
     """Load standalone image files (TIF/TIFF/JPEG/PNG/GIF) from paper directory.
 
     extra_image_dirs: optional list of additional directories whose image files
-    should be included in the scan (e.g. an `<output_dir>/images/` populated
-    by the docx extractor that lives inside the recursion guard's exclusion
-    zone).
+    should be included in the scan.
+    extra_image_files: individual files to include, e.g. the images the docx
+    extractor wrote into `<output_dir>/images/` during this run. Prefer this
+    over scanning that folder, which also holds PDF extractions left by an
+    earlier, interrupted run.
     """
     import cv2
     from PIL import Image
@@ -212,6 +215,7 @@ def extract_standalone_images(paper_dir: str, output_dir: str, min_size: int = 2
         for ext in img_extensions:
             img_files.extend(ep.glob(f"*{ext}"))
             img_files.extend(ep.glob(f"*{ext.upper()}"))
+    img_files.extend(Path(f) for f in extra_image_files or [] if Path(f).is_file())
 
     seen_paths = set()
     seen_file_fingerprints: set[tuple[int, str]] = set()

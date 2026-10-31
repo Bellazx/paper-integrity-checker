@@ -376,8 +376,11 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
         log.warning("docx image extraction failed: %s", _e)
         docx_imgs = []
 
+    # Only this run's docx images: <output_dir>/images may still hold PDF
+    # extractions from an interrupted run, which would otherwise be re-read as
+    # page-0 standalone images and shadow the real supplementary extraction.
     standalone = extract_standalone_images(paper_dir, output_dir, max_images=50,
-                                            extra_image_dirs=[str(Path(output_dir) / "images")])
+                                            extra_image_files=[str(p) for p in docx_imgs])
     if standalone:
         if images:
             existing_image_paths = set()
