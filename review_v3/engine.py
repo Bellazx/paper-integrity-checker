@@ -379,7 +379,8 @@ class Review:
     def facts(self, finals: dict) -> tuple[dict, dict]:
         """Writer input and deterministic evidence binding per dimension."""
         out, evidence = {}, {}
-        ordered = sorted(finals.values(), key=lambda r: (0 if r.get("severity") == "substantive" else 1))
+        ordered = sorted(_dedupe_issues(list(finals.values())),
+                         key=lambda r: (0 if r.get("severity") == "substantive" else 1))
         for dim in DIMENSIONS:
             issues, cleared, missing, unresolved = [], [], [], []
             evidence[dim] = []
@@ -531,8 +532,13 @@ def _bind_evidence(result: dict, evidence: dict) -> list[dict]:
 
 # ------------------------------------------------------------------ entry
 
+# Bump when writer-side logic changes what a report says (e.g. issue merging),
+# so a regrade pass rewrites reports produced before the change.
+REPORT_LOGIC_VERSION = "2"
+
+
 def rules_version() -> str:
-    digest = hashlib.sha1()
+    digest = hashlib.sha1(REPORT_LOGIC_VERSION.encode())
     for path in sorted(config.RULES_DIR.glob("*.md")):
         digest.update(path.name.encode() + path.read_bytes())
     return digest.hexdigest()[:12]
@@ -547,6 +553,44 @@ def _start_regrade(run_dir: Path, final_path: Path) -> None:
         calibration.rename(calibration.with_name(f"cal_all.{stamp}.json"))
     session.reset("cal_all", run_dir)
     log.info("regrading %s under rules %s", run_dir, rules_version())
+
+
+ANCHOR_RE = re.compile(r"(?:Fig(?:ure)?\.?|Table|表|图|条目|文献|Ref\.?)\s*(S?\d+)", re.I)
+NUMBER_RE = re.compile(r"[−-]?\d+(?:[.,:;]\d+)+|\d{3,}")
+
+
+def _issue_signature(record: dict) -> tuple[set, set]:
+    location = str(record.get("location") or "")
+    anchors = {m.group(0)[:1].lower() + m.group(1) for m in ANCHOR_RE.finditer(location)}
+    numbers = set(NUMBER_RE.findall(str(record.get("finding") or "").replace("−", "-")))
+    return anchors, numbers
+
+
+def _dedupe_issues(records: list[dict]) -> list[dict]:
+    """Merge issues that several shards recorded for the same problem (same
+    figure/table/reference anchor and the smaller finding's key numbers
+    contained in the other), so the report states each problem once. The
+    verdict is computed from finals and is unaffected."""
+    issues = [r for r in records if r.get("status") == "issue"]
+    rank = sorted(issues, key=lambda r: (r.get("severity") != "substantive", -len(str(r.get("finding") or ""))))
+    kept: list[dict] = []
+    for record in rank:
+        anchors, numbers = _issue_signature(record)
+        target = None
+        for other in kept:
+            other_anchors, other_numbers = _issue_signature(other)
+            if not anchors & other_anchors or len(numbers) < 3:
+                continue
+            if len(numbers & other_numbers) / len(numbers) >= 0.7:
+                target = other
+                break
+        if target is None:
+            kept.append(dict(record))
+        else:
+            target["evidence"] = (target.get("evidence") or []) + [
+                ev for ev in record.get("evidence") or [] if ev not in (target.get("evidence") or [])]
+            log.info("merged duplicate issue %s into %s", record.get("id"), target.get("id"))
+    return kept + [r for r in records if r.get("status") != "issue"]
 
 
 SYNTHETIC_PREFIXES = ("fig::", "image::", "ref::", "design::", "stats::", "claims::", "data::forensic_scan", "new:")

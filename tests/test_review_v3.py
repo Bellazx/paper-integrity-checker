@@ -561,3 +561,21 @@ def test_ledger_keeps_conclusions_when_attachments_are_malformed(tmp_path):
     assert [Path(e["path"]).name for e in items["fig::1"]["evidence"]] == ["p2.png"]
     assert items["fig::2"]["evidence"][0]["path"].endswith("p2.png")
     assert warnings and "missing.png" in warnings[0]
+
+
+def test_duplicate_issues_from_two_shards_are_reported_once():
+    base = {"status": "issue", "dimension": "data", "issue_type": "结果块重复", "why": "w", "basis": "b"}
+    finals = [
+        {**base, "id": "new:a", "severity": "substantive", "location": "第7页 Table 3 的 MI 区块",
+         "finding": "两行均为 −0.88（−20.26至18.50）、P=0.93，固定效应 14.95（8.37至21.53）", "evidence": [{"path": "a.png"}]},
+        {**base, "id": "new:b", "severity": "substantive", "location": "正文第7页 Table 3",
+         "finding": "MI 两个模型块均印出 −0.88（−20.26至18.50）与 14.95（8.37至21.53）", "evidence": [{"path": "b.png"}]},
+        {**base, "id": "fig::5", "severity": "minor", "location": "第9页 Figure 5",
+         "finding": "界值 0.89、0.92、0.95 与图注 0.89 and 0.95"},
+        {"id": "x", "status": "cleared", "basis": "ok"},
+    ]
+    merged = engine._dedupe_issues(finals)
+    issues = [r for r in merged if r["status"] == "issue"]
+    assert [r["id"] for r in issues] == ["new:a", "fig::5"]
+    assert [e["path"] for e in issues[0]["evidence"]] == ["a.png", "b.png"]
+    assert any(r["id"] == "x" for r in merged)
