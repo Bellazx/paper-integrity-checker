@@ -723,3 +723,12 @@ def test_late_phase_still_gets_its_floor(tmp_path, monkeypatch):
     deadline = review._phase_deadline("arbitrate")
     assert deadline >= _time.monotonic() + config.PHASE_FLOOR_SECONDS["arbitrate"] - 1
     assert review._phase_deadline("investigate") < _time.monotonic()  # no floor for the first phase
+
+
+def test_substantive_label_contradicting_its_own_impact_statement_is_minor():
+    base = {"status": "issue", "severity": "substantive"}
+    assert engine._admits_minor({**base, "category": "S4", "why": "属正文派生量标签错位，不支持判为实质问题"})
+    assert engine._admits_minor({**base, "category": "S3", "why": "表述过宽，结论方向未被推翻"})
+    # Data authenticity and genuine carrier conflicts keep their label.
+    assert not engine._admits_minor({**base, "category": "S1", "why": "两模型结果块逐位相同；论文结论方向不变"})
+    assert not engine._admits_minor({**base, "category": "S2", "why": "MI 结果块复用，不是规范问题；结论方向不变"})

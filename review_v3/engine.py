@@ -422,6 +422,13 @@ class Review:
                     updated = {**before, "status": "issue",
                                "severity": categories.severity(record.get("category")) or record.get("severity"),
                                "category": record.get("category"), "category_reason": record.get("why")}
+                    if _admits_minor(updated):
+                        # The record itself says the issue does not carry the
+                        # verdict; a substantive label on it is a contradiction.
+                        log.info("DOI=%s %s: category %s contradicts its own impact statement; minor",
+                                 self.doi, item_id, updated.get("category"))
+                        updated["category_conflict"] = updated.get("category")
+                        updated["severity"] = "minor"
                 if (before.get("severity"), before.get("status")) != (updated.get("severity"), updated.get("status")):
                     updated["calibrated_from"] = {"status": before.get("status"), "severity": before.get("severity")}
                 out[item_id] = updated
@@ -959,6 +966,24 @@ def _start_regrade(run_dir: Path, final_path: Path, calibration: bool = True) ->
             ledger_file.rename(ledger_file.with_name(f"cal_all.{stamp}.json"))
         session.reset("cal_all", run_dir)
     log.info("regrading %s under rules %s (calibration %s)", run_dir, rules_version(), "redone" if calibration else "kept")
+
+
+MINOR_ADMISSION = re.compile(r"(?:按|定为|定级为|属于?|作为|登记为|归为)\s*规范问题|不支持(?:判为|认定为|定为|判定为)?(?:“?有风险”?|实质)"
+                             r"|(?:判|按|定为?)\s*minor|不构成实质")
+DIRECTION_KEPT = re.compile(r"结论方向(?:不变|未变|未被推翻|未反转|没有反转|未改变)|不改变(?:任何)?(?:比较|排序|结论|推荐)")
+
+
+def _admits_minor(record: dict) -> bool:
+    """A substantive label whose own impact statement says otherwise.
+
+    Data-authenticity issues (S1) stand regardless of the conclusion's
+    direction; a refuted claim (S3) cannot coexist with "direction unchanged"."""
+    if record.get("severity") != "substantive" or record.get("category") == "S1":
+        return False
+    text = f"{record.get('why') or ''}\n{record.get('category_reason') or ''}"
+    if MINOR_ADMISSION.search(text.replace("不是规范问题", "").replace("不属于规范问题", "")):
+        return True
+    return record.get("category") == "S3" and bool(DIRECTION_KEPT.search(text))
 
 
 def _categorized(record: dict) -> bool:
