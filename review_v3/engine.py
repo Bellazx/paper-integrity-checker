@@ -115,7 +115,8 @@ class Review:
         self.soft = {"investigate": origin + config.INVESTIGATE_SOFT_SECONDS,
                      "challenge": origin + config.CHALLENGE_SOFT_SECONDS,
                      "arbitrate": origin + config.ARBITRATE_SOFT_SECONDS,
-                     "calibrate": origin + config.CALIBRATE_SOFT_SECONDS}
+                     "calibrate": origin + config.CALIBRATE_SOFT_SECONDS,
+                     "evidence": origin + config.EVIDENCE_SOFT_SECONDS}
         self.timeline: dict[str, float] = {}
 
     # -- setup
@@ -381,13 +382,44 @@ class Review:
         for item_id, record in decided.items():
             if record.get("status") in ("issue", "cleared") and item_id in out:
                 before = out[item_id]
-                updated = {**before, **_compact(record)}
                 if record.get("status") == "cleared":
+                    updated = {**before, **_compact(record)}
                     updated.pop("severity", None)
+                    updated.pop("category", None)
+                else:
+                    # The category reason justifies the severity; the reader-facing
+                    # description of the issue stays as the investigation wrote it.
+                    updated = {**before, "status": "issue", "severity": record.get("severity"),
+                               "category": record.get("category"), "category_reason": record.get("why")}
                 if (before.get("severity"), before.get("status")) != (updated.get("severity"), updated.get("status")):
                     updated["calibrated_from"] = {"status": before.get("status"), "severity": before.get("severity")}
                 out[item_id] = updated
         log.info("DOI=%s calibration %s", self.doi, outcome.status)
+        return out
+
+    async def capture(self, finals: dict) -> dict:
+        """Every risk issue in the report carries a local screenshot of the
+        cited values; issues that lack one get a short capture session."""
+        need = [r for r in finals.values() if _is_issue(r, "substantive")
+                and not any(isinstance(ev, dict) and ledger.is_crop(ev.get("path", "")) and Path(ev["path"]).is_file()
+                            for ev in r.get("evidence") or [])]
+        if not need:
+            return finals
+        path = self.ledger_path("evd", "all")
+        ledger.create(path, {"shard": "evidence", "role": "evidence", "allow_new": False, "require_crop": True},
+                      [{"id": r["id"], "title": r.get("title") or r["id"], "dimension": r.get("dimension"),
+                        "first": _compact(r)} for r in need])
+        spec = self._spec("evd_all", prompts.evidence(self.dossier, need), path,
+                          config.MAX_CHUNKS_EVIDENCE, "evidence", "evidence")
+        outcome = await session.run(spec)
+        out = dict(finals)
+        for item_id, record in (ledger.load(path).get("items") or {}).items():
+            crops = [ev for ev in record.get("evidence") or [] if isinstance(ev, dict) and ledger.is_crop(ev.get("path", ""))]
+            if record.get("status") == "issue" and crops and item_id in out:
+                out[item_id] = {**out[item_id], "evidence": crops}
+        missing = [r["id"] for r in need if not any(ledger.is_crop(ev.get("path", "")) for ev in out[r["id"]].get("evidence") or []
+                                                     if isinstance(ev, dict))]
+        log.info("DOI=%s evidence capture %s; still without screenshot: %s", self.doi, outcome.status, missing)
         return out
 
     # -- verdict and writing
@@ -407,15 +439,19 @@ class Review:
         ordered = sorted(_dedupe_issues(list(finals.values())),
                          key=lambda r: (0 if r.get("severity") == "substantive" else 1))
         for dim in DIMENSIONS:
-            issues, cleared, missing, unresolved = [], [], [], []
+            issues, corrections, cleared, missing, unresolved = [], [], [], [], []
             evidence[dim] = []
             for record in ordered:
                 if (record.get("dimension") if record.get("dimension") in DIMENSIONS else "data") != dim:
                     continue
                 status = record.get("status")
-                if status == "issue":
+                if status == "issue" and record.get("severity") != "substantive":
+                    corrections.append({"位置": str(record.get("location", ""))[:160],
+                                        "问题": str(record.get("issue_type", ""))[:80],
+                                        "要点": str(record.get("finding", ""))[:300]})
+                elif status == "issue":
                     number = len(issues) + 1
-                    issues.append({"编号": number, "严重程度": "实质问题" if record.get("severity") == "substantive" else "规范问题",
+                    issues.append({"编号": number,
                                    **{k: record.get(k, "") for k in ("location", "issue_type", "finding", "why", "basis")}})
                     for ev in record.get("evidence") or []:
                         if isinstance(ev, dict):
@@ -428,7 +464,7 @@ class Review:
                     missing.append({"条目": record.get("title", record["id"])[:200], "依据": str(record.get("basis", ""))[:300]})
                 elif status == "unresolved":
                     unresolved.append({"条目": record.get("title", record["id"])[:200], "说明": str(record.get("note", ""))[:300]})
-            out[dim] = {"issues": issues, "cleared": cleared, "not_applicable": missing}
+            out[dim] = {"风险问题": issues, "需作者更正事项": corrections, "cleared": cleared, "not_applicable": missing}
             if unresolved:
                 out[dim]["未能完成的核查（如实说明为核查范围限制）"] = unresolved
         return out, evidence
@@ -488,6 +524,7 @@ class Review:
             result["evidence_images"] = _bind_evidence(result, evidence)
             result = _clean_internal_references(result)
             checked, gaps = validate(result, self.evidence)
+            gaps = gaps + _wording_gaps(result)
             _write_json(self.run_dir / f"writer_{attempt}.json", {"result": result, "gaps": gaps})
             if not gaps:
                 return checked, []
@@ -497,6 +534,22 @@ class Review:
                 best = (result, gaps, draft)
             gaps = [_writer_gap(g) for g in gaps]
         return None, (best[1] if best else gaps)
+
+
+# Review-process and grading vocabulary must not reach a published report.
+BANNED_TERMS = ("降级", "升级为", "定级", "改判", "复核过程", "此前判定", "原判", "初检报告", "原报告", "初审",
+                "仲裁", "校准", "核查人", "核验人", "台账", "实质问题", "规范问题", "严重程度", "数据载体",
+                "次要信息", "排除线索", "按实质", "按规范")
+CATEGORY_CODE = re.compile(r"(?<![A-Za-z0-9])[SM](?:[1-9]|10)(?![0-9A-Za-z])\s*(?:类|类别)")
+
+
+def _wording_gaps(result: dict) -> list[str]:
+    text = "\n".join(str(result.get(f) or "") for f in REVIEW_FIELDS + ("trigger",))
+    found = [term for term in BANNED_TERMS if term in text]
+    if CATEGORY_CODE.search(text):
+        found.append("类别代码")
+    return [f"报告中出现了不应出现的用语：{'、'.join(found)}。改用平实表述：只写论文中的事实、影响和需要作者说明的事项，"
+            "有风险的写“有风险”，其余写“未发现风险”或“需作者更正”。"] if found else []
 
 
 def _writer_gap(gap: str) -> str:
@@ -559,25 +612,43 @@ def _bind_evidence(result: dict, evidence: dict) -> list[dict]:
 
 # Bump when writer-side logic changes what a report says (e.g. issue merging),
 # so a regrade pass rewrites reports produced before the change.
-REPORT_LOGIC_VERSION = "2"
+REPORT_LOGIC_VERSION = "3"
+REPORT_RULES = ("writing.md",)
 
 
-def rules_version() -> str:
-    digest = hashlib.sha1(REPORT_LOGIC_VERSION.encode())
-    for path in sorted(config.RULES_DIR.glob("*.md")):
+def _digest(paths, seed: str = "") -> str:
+    digest = hashlib.sha1(seed.encode())
+    for path in sorted(paths):
         digest.update(path.name.encode() + path.read_bytes())
     return digest.hexdigest()[:12]
 
 
-def _start_regrade(run_dir: Path, final_path: Path) -> None:
-    """Keep the investigation; redo only severity calibration and writing."""
+def calibration_version() -> str:
+    """Rules that decide severities (everything except report writing)."""
+    return _digest([p for p in config.RULES_DIR.glob("*.md") if p.name not in REPORT_RULES]
+                   + [Path(__file__).with_name("categories.py")])
+
+
+def report_version() -> str:
+    """Rules that only change how the report is written and illustrated."""
+    return _digest([config.RULES_DIR / name for name in REPORT_RULES], REPORT_LOGIC_VERSION)
+
+
+def rules_version() -> str:
+    return f"{calibration_version()}.{report_version()}"
+
+
+def _start_regrade(run_dir: Path, final_path: Path, calibration: bool = True) -> None:
+    """Keep the investigation; redo severity calibration (when its rules
+    changed), screenshots and writing."""
     stamp = time.strftime("%Y%m%d_%H%M%S")
     final_path.rename(final_path.with_name(f"final.{stamp}.json"))
-    calibration = run_dir / "ledgers" / "cal_all.json"
-    if calibration.exists():
-        calibration.rename(calibration.with_name(f"cal_all.{stamp}.json"))
-    session.reset("cal_all", run_dir)
-    log.info("regrading %s under rules %s", run_dir, rules_version())
+    if calibration:
+        ledger_file = run_dir / "ledgers" / "cal_all.json"
+        if ledger_file.exists():
+            ledger_file.rename(ledger_file.with_name(f"cal_all.{stamp}.json"))
+        session.reset("cal_all", run_dir)
+    log.info("regrading %s under rules %s (calibration %s)", run_dir, rules_version(), "redone" if calibration else "kept")
 
 
 ANCHOR_RE = re.compile(r"(?:Fig(?:ure)?\.?|Table|表|图|条目|文献|Ref\.?)\s*(S?\d+)", re.I)
@@ -680,7 +751,8 @@ async def _review(doi: str, report_json: str, input_dir: str, output_dir: str, r
         _write_json(state_path, state)
     if isinstance(cached, dict) and cached.get("trigger") != "review_error":
         if config.REGRADE and state.get("rules_version") != rules_version():
-            _start_regrade(run_dir, final_path)
+            _start_regrade(run_dir, final_path,
+                           calibration=state.get("calibration_version") != calibration_version())
             state["regrading"] = True
             _write_json(state_path, state)
         else:
@@ -732,6 +804,7 @@ async def _review_phases(review: "Review", doi: str, evidence: dict, evidence_pa
     review.timeline["arbitration"] = time.monotonic() - started - review.timeline["shards"]
 
     finals = await review.calibrate(finals)
+    finals = await review.capture(finals)
     review.timeline["calibrate"] = time.monotonic() - started - review.timeline["shards"] - review.timeline.get("arbitration", 0)
     verdicts = review.verdicts(finals)
     unresolved = [r for r in finals.values() if r.get("status") == "unresolved"]
@@ -756,8 +829,11 @@ async def _review_phases(review: "Review", doi: str, evidence: dict, evidence_pa
     result["_engine"] = "v3"
     result["_review_metrics"] = {"timeline": {k: round(v, 1) for k, v in review.timeline.items()},
                                  "shards": pipeline, "disputes": len(disputes), "unresolved": len(unresolved)}
+    result.setdefault("_report_json", review.report_json)
+    result.setdefault("_input_dir", review.input_dir)
     _write_json(final_path, result)
     state["rules_version"] = rules_version()
+    state["calibration_version"] = calibration_version()
     state.pop("regrading", None)
     _write_json(state_path, state)
     return result

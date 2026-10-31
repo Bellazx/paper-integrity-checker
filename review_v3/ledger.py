@@ -11,6 +11,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -127,7 +128,16 @@ def _normalize(entry: dict, run_dir: Path) -> list[str]:
     return warnings
 
 
-def _validate_entry(entry: dict, known: dict, allow_new: bool, require_category: bool = False) -> list[str]:
+CROP_NAME = re.compile(r"_c\d+_\d+_\d+_\d+_d\d+\.png$|^view_.*\.png$")
+
+
+def is_crop(path: str) -> bool:
+    """A local screenshot (pv3 render --clip or pv3 view), not a whole page."""
+    return bool(CROP_NAME.search(Path(str(path)).name))
+
+
+def _validate_entry(entry: dict, known: dict, allow_new: bool, require_category: bool = False,
+                    require_crop: bool = False) -> list[str]:
     errors = []
     item_id = str(entry.get("id") or "").strip()
     if not item_id:
@@ -147,6 +157,11 @@ def _validate_entry(entry: dict, known: dict, allow_new: bool, require_category:
             errors.append(f"{item_id}: issue 必须给出 category（{'/'.join(CATEGORIES)} 之一），定级由类别决定")
         else:
             entry["category"], entry["severity"] = code, severity(code)
+    if status == "issue" and require_crop:
+        crops = [ev for ev in entry.get("evidence") or [] if isinstance(ev, dict) and is_crop(ev.get("path", ""))]
+        if not crops:
+            errors.append(f"{item_id}: 需要至少一张局部截图（pv3 render <doc> <页> --clip x0,y0,x1,y1 生成，"
+                          "整页截图不算），在 evidence 中给出 path 与 caption")
     if status == "issue":
         if entry.get("severity") not in SEVERITIES:
             errors.append(f"{item_id}: issue 必须给出 severity=substantive 或 minor")
@@ -197,10 +212,13 @@ def update(path: Path | str, entries: list[dict], actor: str,
                 for field in ("location", "issue_type", "finding", "why", "basis"):
                     if len(str(entry.get(field) or "").strip()) < 4 and known["first"].get(field):
                         entry[field] = known["first"][field]
+                if not data.get("require_category") and not entry.get("severity") and known["first"].get("severity"):
+                    entry["severity"] = known["first"]["severity"]
             if entry.get("status") == "issue" and len(str(entry.get("location") or "").strip()) < 4 and known.get("title"):
                 # Checklist titles start with the location ("Fig. 3（第4页）：…").
                 entry["location"] = str(known["title"]).split("：")[0][:120]
-            entry_errors = _validate_entry(entry, items, allow_new, bool(data.get("require_category")))
+            entry_errors = _validate_entry(entry, items, allow_new, bool(data.get("require_category")),
+                                           bool(data.get("require_crop")))
             if entry_errors:
                 errors.extend(entry_errors)
                 continue

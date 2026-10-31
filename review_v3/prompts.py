@@ -221,6 +221,35 @@ EOF
 （location、issue_type、finding、basis 不写时沿用原记录。）"""
 
 
+def evidence(dossier: dict, items: list[dict]) -> str:
+    rows = [f"- `{item['id']}`：位置：{str(item.get('location', ''))[:200]}\n  要点：{str(item.get('finding', ''))[:300]}"
+            for item in items]
+    return f"""你负责为复核报告中的风险问题制作证据截图。每条问题都必须附上能直接看清问题的原文局部截图。
+
+## 论文
+{_paper_block(dossier)}
+
+{TOOL_HELP}
+
+## 截图要求
+- 截取问题所指的原文局部：表格要包含表头、行名和涉及的单元格；图要包含坐标轴、刻度、图例和涉及的面板；正文要包含涉及的句子。整页截图不算。
+- 问题涉及两处（如表与图、正文与补充表）时，分别截两张，每张一个说明。
+- 做法：先 `pv3 locate <doc> <页> '<关键文字>'` 找到坐标，再 `pv3 render <doc> <页> --clip x0,y0,x1,y1 --dpi 200` 生成截图，用 Read 打开确认截图里能看到问题涉及的数值和文字；看不全就调整范围重截。源数据表格问题可用 `pv3 view <图片> --box ...` 裁剪已有图片。
+- caption 用一句话说明这张截图显示了什么（如“第7页 Table 3 MI 区块：两个模型的系数与区间逐位相同”）。
+- 只做截图，不重新核查问题本身。
+
+写入格式（每条问题一条记录）：
+pv3 ledger update <<'EOF'
+[{{"id": "条目id", "status": "issue", "evidence": [{{"path": "pv3 render 输出的截图路径", "caption": "截图说明"}}]}}]
+EOF
+
+## 需要截图的问题（{len(items)} 条）
+{chr(10).join(rows)}
+
+全部写入后运行 `pv3 ledger show --open` 确认，然后回复“完成”。
+"""
+
+
 def calibrator_continue(open_ids: list[str], wrapup: bool = False) -> str:
     shown = "、".join(open_ids[:60])
     template = ",\n ".join(f'{{"id": "{i}", "status": "issue", "category": "…", "why": "…"}}' for i in open_ids[:60])
@@ -267,7 +296,7 @@ result：{verdicts['result']}
 verdict：{verdicts['verdict']}
 dimension_verdicts：{json.dumps(verdicts['dimension_verdicts'], ensure_ascii=False)}
 
-## 已核实的事实（按维度；issues 按给定编号写，cleared/not_applicable 按类简写但须提及 cite 中的位置词）
+## 已核实的事实（按维度；“风险问题”按给定编号逐条写，“需作者更正事项”合并为一段，cleared/not_applicable 一句带过但须提及 cite 中的位置词）
 ```json
 {json.dumps(facts, ensure_ascii=False, indent=1)}
 ```

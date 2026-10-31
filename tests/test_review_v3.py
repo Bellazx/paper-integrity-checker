@@ -277,7 +277,9 @@ def test_engine_minor_issue_does_not_raise_risk(tmp_path, fake_cli, monkeypatch)
               calibrator={"issue": {"high::data::0": "minor"}})
     paper = _make_paper(tmp_path)
     result = _run(paper, tmp_path, monkeypatch)
-    assert result["result"] == "低风险" and "问题位置" in result["data_review"]
+    # Minor issues are listed once as corrections, not as numbered risk points.
+    assert result["result"] == "低风险" and "另需作者更正" in result["data_review"]
+    assert "问题位置" not in result["data_review"]
 
 
 def test_engine_unfinished_checks_never_publish_low_risk(tmp_path, fake_cli, monkeypatch):
@@ -384,7 +386,7 @@ def test_engine_calibration_can_downgrade_to_minor(tmp_path, fake_cli, monkeypat
               challenger={"issue": {"high::data::0": "substantive"}},
               calibrator={"issue": {"high::data::0": "minor"}})
     result = _run(_make_paper(tmp_path), tmp_path, monkeypatch)
-    assert result["result"] == "低风险" and "问题位置" in result["data_review"]
+    assert result["result"] == "低风险" and "另需作者更正" in result["data_review"]
     assert any(c["actor"] == "calibrator" for c in calls())
     finals = json.loads(Path(result["_review_workdir"], "finals.json").read_text())
     assert finals["finals"]["high::data::0"]["calibrated_from"]["severity"] == "substantive"
@@ -504,6 +506,7 @@ def test_regrade_redoes_calibration_and_writing_only(tmp_path, fake_cli, monkeyp
     configure(calibrator={"issue": {"high::data::0": "minor"}})
     monkeypatch.setattr(config, "REGRADE", True)
     monkeypatch.setattr(engine, "rules_version", lambda: "changed")
+    monkeypatch.setattr(engine, "calibration_version", lambda: "changed")
     second = _run(paper, tmp_path, monkeypatch, resume=True)
     roles = [c["actor"].split(":")[0] for c in calls()[before:]]
     assert set(roles) == {"calibrator", "writer"}
@@ -635,3 +638,23 @@ def test_calibration_severity_follows_the_category(tmp_path):
     assert (items["a"]["category"], items["a"]["severity"]) == ("M1", "minor")
     assert items["b"]["severity"] == "substantive" and items["b"]["finding"] == first["finding"]
     assert all(code in categories.table() for code in categories.CATEGORIES)
+
+
+def test_report_only_change_rewrites_without_recalibrating(tmp_path, fake_cli, monkeypatch):
+    configure, calls = fake_cli
+    configure(investigator={"issue": {"high::data::0": "substantive"}},
+              challenger={"issue": {"high::data::0": "substantive"}},
+              calibrator={"issue": {"high::data::0": "substantive"}})
+    paper = _make_paper(tmp_path)
+    assert _run(paper, tmp_path, monkeypatch)["result"] == "高风险"
+    before = len(calls())
+    monkeypatch.setattr(config, "REGRADE", True)
+    monkeypatch.setattr(engine, "report_version", lambda: "new-format")
+    again = _run(paper, tmp_path, monkeypatch, resume=True)
+    assert {c["actor"].split(":")[0] for c in calls()[before:]} == {"writer"}
+    assert again["result"] == "高风险" and again.get("_report_json")
+
+
+def test_report_wording_check_flags_process_terms():
+    assert engine._wording_gaps({"reason": "该问题按实质问题处理，属 S2 类"})
+    assert not engine._wording_gaps({"reason": "Table 3 两个模型的系数逐位相同，需作者说明。最终判定：建议高风险"})
