@@ -714,3 +714,12 @@ def test_report_is_assembled_from_facts_when_the_writer_keeps_failing(tmp_path, 
     assert result["trigger"] != "review_error" and result["result"] == "高风险"
     assert result["_report_source"] == "template"
     assert "（1）问题位置：" in result["data_review"] and "最终判定：建议高风险" in result["reason"]
+
+
+def test_late_phase_still_gets_its_floor(tmp_path, monkeypatch):
+    import time as _time
+    review = engine.Review("10.1/x", "", str(tmp_path), tmp_path, None, _time.monotonic() - 3600)
+    # The arbitration box (42 min after the start) passed long ago.
+    deadline = review._phase_deadline("arbitrate")
+    assert deadline >= _time.monotonic() + config.PHASE_FLOOR_SECONDS["arbitrate"] - 1
+    assert review._phase_deadline("investigate") < _time.monotonic()  # no floor for the first phase

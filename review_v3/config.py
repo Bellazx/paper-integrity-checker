@@ -40,17 +40,22 @@ CHUNK_TIMEOUT_SECONDS = _int("REVIEW_V3_CHUNK_TIMEOUT_SECONDS", 900)
 
 # Phase time boxes, measured from the start of the review (seconds). When a
 # phase's box closes, each running session gets one short wrap-up chunk.
-INVESTIGATE_SOFT_SECONDS = _int("REVIEW_V3_INVESTIGATE_SOFT_SECONDS", 15 * 60)
-CHALLENGE_SOFT_SECONDS = _int("REVIEW_V3_CHALLENGE_SOFT_SECONDS", 24 * 60)
-ARBITRATE_SOFT_SECONDS = _int("REVIEW_V3_ARBITRATE_SOFT_SECONDS", 28 * 60)
+INVESTIGATE_SOFT_SECONDS = _int("REVIEW_V3_INVESTIGATE_SOFT_SECONDS", 20 * 60)
+CHALLENGE_SOFT_SECONDS = _int("REVIEW_V3_CHALLENGE_SOFT_SECONDS", 32 * 60)
+ARBITRATE_SOFT_SECONDS = _int("REVIEW_V3_ARBITRATE_SOFT_SECONDS", 42 * 60)
 # Follow-up for must-check findings still open after arbitration: small
 # batches in parallel, each with its own time box, at most this many rounds.
 COMPLETE_BATCH = _int("REVIEW_V3_COMPLETE_BATCH", 6)
 COMPLETE_ROUNDS = _int("REVIEW_V3_COMPLETE_ROUNDS", 2)
 COMPLETE_SECONDS = _int("REVIEW_V3_COMPLETE_SECONDS", 15 * 60)
 MAX_CHUNKS_COMPLETE = _int("REVIEW_V3_MAX_CHUNKS_COMPLETE", 8)
-CALIBRATE_SOFT_SECONDS = _int("REVIEW_V3_CALIBRATE_SOFT_SECONDS", 31 * 60)
-EVIDENCE_SOFT_SECONDS = _int("REVIEW_V3_EVIDENCE_SOFT_SECONDS", 34 * 60)
+CALIBRATE_SOFT_SECONDS = _int("REVIEW_V3_CALIBRATE_SOFT_SECONDS", 46 * 60)
+EVIDENCE_SOFT_SECONDS = _int("REVIEW_V3_EVIDENCE_SOFT_SECONDS", 50 * 60)
+# A late phase still gets this much time from its own start when earlier
+# phases ran over (the whole-paper deadline remains the hard limit).
+PHASE_FLOOR_SECONDS = {"arbitrate": _int("REVIEW_V3_ARBITRATE_FLOOR_SECONDS", 8 * 60),
+                       "calibrate": _int("REVIEW_V3_CALIBRATE_FLOOR_SECONDS", 5 * 60),
+                       "evidence": _int("REVIEW_V3_EVIDENCE_FLOOR_SECONDS", 4 * 60)}
 
 # When the rules change, finished reviews can be re-graded from their saved
 # ledgers (calibration + writing only) instead of being investigated again.

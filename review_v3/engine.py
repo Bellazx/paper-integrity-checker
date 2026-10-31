@@ -208,13 +208,22 @@ class Review:
     def ledger_path(self, role: str, name: str) -> Path:
         return self.run_dir / "ledgers" / f"{role}_{name}.json"
 
+    def _phase_deadline(self, phase: str) -> float | None:
+        """The phase's time box, extended to its floor when it starts late."""
+        soft = self.soft.get(phase)
+        floor = config.PHASE_FLOOR_SECONDS.get(phase)
+        if soft is not None and floor:
+            soft = max(soft, time.monotonic() + floor)
+            self.soft[phase] = soft
+        return soft
+
     def _spec(self, name: str, prompt: str, ledger_path: Path, max_chunks: int, actor: str,
               phase: str) -> session.SessionSpec:
         def open_ids(_state):
             return [item["id"] for item in ledger.open_items(ledger.load(ledger_path))]
         return session.SessionSpec(
             name=name, workdir=self.run_dir, prompt=prompt, actor=actor, ledger_path=ledger_path,
-            max_chunks=max_chunks, deadline=self.deadline, soft_deadline=self.soft.get(phase),
+            max_chunks=max_chunks, deadline=self.deadline, soft_deadline=self._phase_deadline(phase),
             continue_prompt=lambda state: prompts.investigator_continue(state, open_ids(state)),
             restart_prompt=lambda state: prompt + prompts.restart_note(),
             wrapup_prompt=lambda state: prompts.wrapup(open_ids(state)),
