@@ -591,6 +591,7 @@ class Review:
                 if not isinstance(result.get(field), str):
                     result[field] = "" if result.get(field) is None else json.dumps(result[field], ensure_ascii=False)
             result["evidence_images"] = _bind_evidence(result, evidence)
+            result = _disclose_unverified(result, finals)
             result = _clean_internal_references(result)
             checked, gaps = validate(result, self.evidence)
             if gaps:
@@ -643,14 +644,44 @@ GAP_FIELD = {"data": "data_review", "image": "image_review", "image_splicing": "
              "methodology": "methodology_review"}
 
 
+def _reader_title(title: str) -> str:
+    """A checklist title in reader-facing words (no detector names)."""
+    match = re.match(r"(?:初检HIGH发现：|同类告警 \d+ 项：)\w+/(\w+)，(?:位置 )?(.*)", title)
+    if match:
+        where = re.sub(r"（按类核查[^）]*）", "", match.group(2)).strip()
+        return f"{TEST_LABELS.get(match.group(1), '数值规律')}（{where[:70]}）"
+    title = re.sub(r"[（(][^）)]*pv3[^）)]*[）)]", "", title)
+    return re.sub(r"^源数据审计：\w+，", "源数据核查：", title)[:80]
+
+
+def _disclose_unverified(result: dict, finals: dict) -> dict:
+    """State in the report which must-check screening hits stayed unverified,
+    so a verdict that rests only on the verified findings says so."""
+    out = dict(result)
+    by_dim: dict[str, list[str]] = {}
+    for record in finals.values():
+        if record.get("status") in ("open", "unresolved") and _required_finding(record["id"]):
+            dim = record.get("dimension") if record.get("dimension") in DIMENSIONS else "data"
+            by_dim.setdefault(dim, []).append(_reader_title(str(record.get("title") or record["id"])))
+    for dim, titles in by_dim.items():
+        field = DIMENSION_FIELD[dim]
+        text = str(out.get(field) or "")
+        if "未能完成" in text:
+            continue
+        shown = "；".join(titles[:6]) + (f"等 {len(titles)} 项" if len(titles) > 6 else "")
+        out[field] = (text.rstrip() + f"\n以下自动筛查提示补查后仍未能完成逐项核对，本节结论依据已核实的内容作出，"
+                      f"这些提示不作为问题依据：{shown}。").strip()
+    return out
+
+
 def _coverage_patch(result: dict, gaps: list[str], finals: dict, evidence: dict) -> tuple[dict, list[str]]:
-    """Answer coverage gaps from the verified conclusions themselves.
+    """Answer coverage gaps from the recorded conclusions themselves.
 
     The publication gate asks that every class of high-priority screening hit
-    be named with a conclusion. When the writer leaves one out but the item
-    was verified, one sentence stating that conclusion is added. Items that
-    were never verified are left as gaps: nothing is reported as checked
-    unless it was."""
+    be named with a conclusion. When the writer leaves one out, one sentence
+    stating the recorded outcome is added: the verified conclusion, or that
+    the hits could not be checked and do not support the verdict. Nothing is
+    reported as checked unless it was."""
     high = evidence.get("high_findings") or []
     members: dict[str, dict] = {}
     for record in finals.values():
@@ -672,7 +703,7 @@ def _coverage_patch(result: dict, gaps: list[str], finals: dict, evidence: dict)
             remaining.append(gap)
             continue
         records = [members[i] for i in ids if i in members]
-        if not records or any(r.get("status") in ("open", "unresolved") for r in records):
+        if not records:
             remaining.append(gap)
             continue
         locations = []
@@ -684,7 +715,11 @@ def _coverage_patch(result: dict, gaps: list[str], finals: dict, evidence: dict)
                 locations.append(part)
         where = "、".join(locations[:4]) or "相关位置"
         issues = [r for r in records if r.get("status") == "issue"]
-        if issues:
+        unverified = [r for r in records if r.get("status") in ("open", "unresolved")]
+        if unverified and not issues:
+            sentence = (f"自动筛查提示的{label}（{where}，共{len(ids)}项）补查后仍未能完成逐项核对，"
+                        "本次结论依据已核实的内容作出，这些提示不作为问题依据。")
+        elif issues:
             sentence = f"自动筛查提示的{label}（{where}）存在问题：{str(issues[0].get('issue_type') or '')[:40]}，见上文。"
         else:
             basis = str(records[0].get("basis") or "").split("。")[0]
@@ -959,16 +994,16 @@ async def _review_phases(review: "Review", doi: str, evidence: dict, evidence_pa
     review.timeline["calibrate"] = time.monotonic() - started - review.timeline["shards"] - review.timeline.get("arbitration", 0)
     verdicts = review.verdicts(finals)
     unresolved = [r for r in finals.values() if r.get("status") == "unresolved"]
-    # Deterministic must-check findings may not stay open under a "no risk"
-    # verdict; open synthetic checks are disclosed as scope limitations.
+    # Must-check findings still open after the completion pass do not stop
+    # publication: the verdict rests on everything that was verified, and the
+    # report states which screening hits could not be checked (policy agreed
+    # with the user, 2026-10-31).
     blocking = [r for r in unresolved if _required_finding(r["id"])]
     _write_json(run_dir / "finals.json", {"verdicts": verdicts, "finals": finals, "pipeline": pipeline,
                                           "disputes": len(disputes), "timeline": review.timeline})
-    if blocking and verdicts["result"] == "低风险":
-        names = "；".join(str(r.get("title") or r["id"])[:80] for r in blocking[:8])
-        failed = _fallback(doi, f"{len(blocking)} 项必查发现未能完成核查（{names}）；检查点已保留，可续跑")
-        failed["_unresolved_items"] = [r["id"] for r in blocking]
-        return failed
+    if blocking:
+        log.warning("DOI=%s publishing with %d must-check item(s) unverified after completion: %s",
+                    doi, len(blocking), [r["id"] for r in blocking][:8])
 
     result, gaps = await review.write(finals, verdicts)
     review.timeline["write"] = (time.monotonic() - started - review.timeline["shards"]

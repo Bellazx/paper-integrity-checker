@@ -282,13 +282,15 @@ def test_engine_minor_issue_does_not_raise_risk(tmp_path, fake_cli, monkeypatch)
     assert "问题位置" not in result["data_review"]
 
 
-def test_engine_unfinished_checks_never_publish_low_risk(tmp_path, fake_cli, monkeypatch):
+def test_engine_unfinished_checks_are_disclosed_not_blocking(tmp_path, fake_cli, monkeypatch):
     configure, _ = fake_cli
     configure(investigator="noop", challenger="noop", arbiter="noop")
     paper = _make_paper(tmp_path)
     result = _run(paper, tmp_path, monkeypatch)
-    assert result["trigger"] == "review_error"
-    assert result["_unresolved_items"]
+    # Still unverified after the completion pass: the verdict rests on what was
+    # verified and the report says which screening hits were not checked.
+    assert result["trigger"] != "review_error" and result["result"] == "低风险"
+    assert "未能完成" in result["data_review"] or "未完成" in result["data_review"]
 
 
 def test_engine_resume_returns_validated_final_without_model_calls(tmp_path, fake_cli, monkeypatch):
@@ -690,7 +692,8 @@ def test_coverage_gap_is_answered_from_verified_conclusions_only():
             "未对HIGH发现给出结论: data/terminal_digit (共1项)"]
     patched, rest = engine._coverage_patch({"data_review": "本节结论：未发现风险。"}, gaps, finals, evidence)
     assert "跨行数值偏移（Table_5 (cols 4-6)" in patched["data_review"] and "已核对" in patched["data_review"]
-    assert rest == [gaps[1]]  # never reported as checked when it was not
+    # An unverified hit is disclosed as not checked, never as checked.
+    assert rest == [] and "末位数字分布（Sheet2，共1项）补查后仍未能完成逐项核对" in patched["data_review"]
 
 
 def test_existing_ledger_gains_items_found_later(tmp_path):
