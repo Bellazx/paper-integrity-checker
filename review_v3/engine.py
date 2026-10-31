@@ -213,7 +213,7 @@ class Review:
         early enough for grading, and grading early enough for writing."""
         if self.deadline is None:
             return None
-        if phase in ("calibrate", "evidence"):
+        if phase in ("calibrate", "judge", "evidence"):
             return self.deadline - config.GRADING_RESERVE_SECONDS
         return self.deadline - config.FINISH_RESERVE_SECONDS
 
@@ -488,6 +488,53 @@ class Review:
                         closed += 1
             log.info("DOI=%s completion round %d: %d/%d must-check item(s) closed", self.doi, round_no, closed, len(pending))
         return finals
+
+    async def judge(self, finals: dict) -> dict:
+        """Final review: every issue that would make the paper high-risk is
+        checked against the paper by the judge model (Opus), which confirms the
+        category or reclassifies it. Issues it does not reach keep the
+        calibrated grade."""
+        if not config.JUDGE_ENABLED:
+            return finals
+        issues = [r for r in finals.values() if _is_issue(r, "substantive")]
+        if not issues:
+            return finals
+        path = self.ledger_path("jdg", "all")
+        created = ledger.create(path, {"shard": "judge", "role": "judge", "allow_new": False, "require_category": True},
+                                [{"id": r["id"], "title": r.get("title") or r["id"], "dimension": r.get("dimension"),
+                                  "first": {**_compact(r), "category": r.get("category"),
+                                            "category_reason": r.get("category_reason")}} for r in issues])
+        if created.get("added"):
+            session.reset("jdg_all", self.run_dir)
+        # Related findings give the judge the context the calibrator had.
+        related = [r for r in finals.values() if r.get("status") == "issue" and not _is_issue(r, "substantive")]
+        spec = self._spec("jdg_all", prompts.judge(self.dossier, issues, related), path,
+                          config.MAX_CHUNKS_JUDGE, "judge", "judge")
+        spec.profile, spec.chunk_turns = "judge", config.JUDGE_CHUNK_TURNS
+        spec.soft_deadline = time.monotonic() + 12 * 60
+        spec.continue_prompt = lambda state: prompts.calibrator_continue(
+            [item["id"] for item in ledger.open_items(ledger.load(path))])
+        spec.wrapup_prompt = lambda state: prompts.calibrator_continue(
+            [item["id"] for item in ledger.open_items(ledger.load(path))], wrapup=True)
+        outcome = await session.run(spec)
+        out = dict(finals)
+        for item_id, record in (ledger.load(path).get("items") or {}).items():
+            if item_id not in out or not _categorized(record):
+                continue
+            before = out[item_id]
+            if record.get("status") == "cleared":
+                updated = {**before, "status": "cleared", "basis": record.get("basis") or before.get("basis")}
+                updated.pop("severity", None)
+            else:
+                updated = {**before, "severity": categories.severity(record.get("category")),
+                           "category": record.get("category"), "category_reason": record.get("why")}
+            updated["judged_from"] = {"status": before.get("status"), "category": before.get("category")}
+            out[item_id] = updated
+        changed = [i for i in out if out[i].get("judged_from") and
+                   (out[i].get("status"), out[i].get("severity")) != ("issue", "substantive")]
+        log.info("DOI=%s final review %s: %d substantive issue(s) checked, %d not upheld %s",
+                 self.doi, outcome.status, len(issues), len(changed), changed[:6])
+        return out
 
     async def capture(self, finals: dict) -> dict:
         """Every risk issue in the report carries a local screenshot of the
@@ -951,10 +998,15 @@ def _digest(paths, seed: str = "") -> str:
     return digest.hexdigest()[:12]
 
 
+JUDGE_VERSION = "1"
+
+
 def calibration_version() -> str:
-    """Rules that decide severities (everything except report writing)."""
+    """Rules that decide severities (everything except report writing),
+    including whether and with which model the final review runs."""
+    seed = f"judge:{JUDGE_VERSION}:{config.JUDGE_MODEL}" if config.JUDGE_ENABLED else ""
     return _digest([p for p in config.RULES_DIR.glob("*.md") if p.name not in REPORT_RULES]
-                   + [Path(__file__).with_name("categories.py")])
+                   + [Path(__file__).with_name("categories.py")], seed)
 
 
 def report_version() -> str:
@@ -976,6 +1028,10 @@ def _start_regrade(run_dir: Path, final_path: Path, calibration: bool = True) ->
         if ledger_file.exists():
             ledger_file.rename(ledger_file.with_name(f"cal_all.{stamp}.json"))
         session.reset("cal_all", run_dir)
+        judge_file = run_dir / "ledgers" / "jdg_all.json"
+        if judge_file.exists():
+            judge_file.rename(judge_file.with_name(f"jdg_all.{stamp}.json"))
+        session.reset("jdg_all", run_dir)
     log.info("regrading %s under rules %s (calibration %s)", run_dir, rules_version(), "redone" if calibration else "kept")
 
 
@@ -1156,6 +1212,7 @@ async def _review_phases(review: "Review", doi: str, evidence: dict, evidence_pa
     finals = await review.complete(finals)
 
     finals = await review.calibrate(finals)
+    finals = await review.judge(finals)
     finals = await review.capture(finals)
     review.timeline["calibrate"] = time.monotonic() - started - review.timeline["shards"] - review.timeline.get("arbitration", 0)
     verdicts = review.verdicts(finals)

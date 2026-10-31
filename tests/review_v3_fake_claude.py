@@ -85,7 +85,11 @@ def main():
             return
         write_report(prompt)
         return
-    behaviour = scenario.get(actor, scenario.get(role, "clear_all"))
+    behaviour = scenario.get(actor, scenario.get(role, "uphold" if role == "judge" else "clear_all"))
+    if behaviour == "uphold":  # judge default: confirm what calibration decided
+        data = json.loads(Path(os.environ["PV3_LEDGER"]).read_text())
+        behaviour = {"issue": {i["id"]: (i.get("first") or {}).get("severity", "substantive")
+                               for i in data["items"].values()}}
     if "收尾" in prompt and scenario.get("wrapup"):
         behaviour = scenario["wrapup"]
     data = json.loads(Path(os.environ["PV3_LEDGER"]).read_text())

@@ -256,6 +256,44 @@ EOF
 """
 
 
+def judge(dossier: dict, items: list[dict], related: list[dict]) -> str:
+    from review_v3.categories import table
+    rows = [f"- `{item['id']}`（{item.get('category')}，{item.get('dimension')}）：{str(item.get('location', ''))[:160]}"
+            f" —— {str(item.get('issue_type', ''))[:80]}" for item in items]
+    context = [f"- {str(r.get('location', ''))[:100]}：{str(r.get('issue_type', ''))[:60]}（{r.get('category') or '规范问题'}）"
+               for r in related[:30]]
+    return f"""你是学术论文诚信复核的终审人员。下列问题已被前序核查定为实质问题，一旦成立，这篇论文会被判为“有风险”。
+你的任务是逐条核对论文原文，确认每条问题是否属实、属于哪一类。不要相信前序核查的转述，以原文为准。
+
+## 论文
+{_paper_block(dossier)}
+
+{TOOL_HELP}
+
+{rule('calibrate').replace('{table}', table())}
+
+## 终审要求
+- 对每条问题：先用 `pv3 item <id>` 读前序记录（字段 first），再打开原文对应页、表、图核实关键数值（`pv3 page`、`pv3 render --clip`、Read 查看图片；必要时自己写脚本复算）。
+- 判断：问题本身是否属实（数值有没有读错、有没有把不同的量当成同一个量）；若属实，它属于哪个类别。只有所有条件都满足才定 S 类。
+- 问题不成立（读错、误解）→ status=cleared，basis 写明原文实际是什么。属实但属于规范问题 → status=issue，category 填 M 类。确为实质问题 → status=issue，category 填 S 类。
+- why 写明你核实到的原文数值和定类理由（一到三句）。
+
+写入格式：
+pv3 ledger update <<'EOF'
+[{{"id": "条目id", "status": "issue", "category": "S2 或 M4 等", "why": "核实到的原文与定类理由"}},
+ {{"id": "条目id", "status": "cleared", "basis": "原文实际是什么，为什么不成立"}}]
+EOF
+
+## 待终审的问题（{len(items)} 条）
+{chr(10).join(rows)}
+
+## 同一论文中已定为规范问题的其他发现（供参考，不需处理）
+{chr(10).join(context) or '（无）'}
+
+全部写入后运行 `pv3 ledger show --open` 确认，然后回复“完成”。
+"""
+
+
 def calibrator_continue(open_ids: list[str], wrapup: bool = False) -> str:
     shown = "、".join(open_ids[:60])
     template = ",\n ".join(f'{{"id": "{i}", "status": "issue", "category": "…", "why": "…"}}' for i in open_ids[:60])

@@ -21,6 +21,13 @@ def _int(name: str, default: int) -> int:
 # Model: one configuration for API and batch.
 MODEL = os.environ.get("REVIEW_V3_MODEL", "MiniMax-M3.1-Flash").strip()
 SETTINGS_FILE = os.environ.get("REVIEW_V3_SETTINGS_FILE", "/home/library/.claude/settings-mm.json").strip()
+# Final review of substantive findings (user decision 2026-10-31): Opus checks
+# every issue that would make a paper high-risk; everything else stays on MODEL.
+JUDGE_MODEL = os.environ.get("REVIEW_V3_JUDGE_MODEL", "claude-opus-5-5").strip()
+JUDGE_SETTINGS_FILE = os.environ.get("REVIEW_V3_JUDGE_SETTINGS_FILE", "/home/library/.claude/settings-cc.json").strip()
+JUDGE_ENABLED = os.environ.get("REVIEW_V3_JUDGE", "1") != "0"
+MAX_CHUNKS_JUDGE = _int("REVIEW_V3_MAX_CHUNKS_JUDGE", 4)
+JUDGE_CHUNK_TURNS = _int("REVIEW_V3_JUDGE_CHUNK_TURNS", 20)
 
 # Progress-driven budget. A session runs CHUNK_TURNS turns at a time and is
 # extended only while its ledger keeps closing items.

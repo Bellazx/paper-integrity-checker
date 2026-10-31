@@ -61,17 +61,22 @@ def runtime_cwd() -> Path:
     return path
 
 
-def settings_file() -> str:
-    """settings-mm.json plus the PreToolUse guard that keeps sessions on this paper."""
+PROFILES = {"default": lambda: (config.MODEL, config.SETTINGS_FILE),
+            "judge": lambda: (config.JUDGE_MODEL, config.JUDGE_SETTINGS_FILE)}
+
+
+def settings_file(profile: str = "default") -> str:
+    """The profile's settings file plus the PreToolUse guard that keeps sessions on this paper."""
+    source = PROFILES[profile]()[1]
     try:
-        base = json.loads(Path(config.SETTINGS_FILE).read_text(encoding="utf-8")) if config.SETTINGS_FILE else {}
+        base = json.loads(Path(source).read_text(encoding="utf-8")) if source else {}
     except (OSError, ValueError):
         base = {}
     guard = f"{config.PYTHON} -I {config.PACKAGE_DIR / 'tools' / 'guard.py'}"
     base["hooks"] = {"PreToolUse": [{"matcher": "Bash|Read", "hooks": [{"type": "command", "command": guard}]}]}
     # Permissions come only from the CLI flags of each session.
     base.pop("permissions", None)
-    path = runtime_cwd() / "settings_v3.json"
+    path = runtime_cwd() / ("settings_v3.json" if profile == "default" else f"settings_v3_{profile}.json")
     text = json.dumps(base, ensure_ascii=False, indent=1)
     if not path.exists() or path.read_text(encoding="utf-8") != text:
         tmp = path.with_suffix(f".{os.getpid()}.tmp")
@@ -120,6 +125,7 @@ class SessionSpec:
     # already known and the session ends, so later phases keep their time.
     soft_deadline: float | None = None
     wrapup_prompt: Callable[[dict], str] | None = None
+    profile: str = "default"  # "judge": final review model
 
 
 @dataclass
@@ -185,10 +191,11 @@ async def _kill(proc) -> None:
 
 async def _invoke(spec: SessionSpec, message: str, session_id: str, resume: bool, turns: int,
                   wrapping: bool = False) -> dict:
-    command = [find_cli(), "-p", message, "--model", config.MODEL, "--output-format", "json",
+    model = PROFILES[spec.profile]()[0]
+    command = [find_cli(), "-p", message, "--model", model, "--output-format", "json",
                "--max-turns", str(turns), "--disable-slash-commands",
                "--resume" if resume else "--session-id", session_id]
-    command += ["--settings", settings_file()]
+    command += ["--settings", settings_file(spec.profile)]
     if spec.tools:
         command += ["--tools", "Bash,Read", "--allowedTools", "Bash", "Read"]
         for directory in [spec.workdir, *spec.read_dirs]:

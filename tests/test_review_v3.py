@@ -746,3 +746,26 @@ def test_investigation_stops_before_the_paper_deadline(tmp_path):
     review = engine.Review("10.1/x", "", str(tmp_path), tmp_path, _time.monotonic() + 3600, _time.monotonic())
     assert review._hard_deadline("investigate") == review.deadline - config.FINISH_RESERVE_SECONDS
     assert review._hard_deadline("calibrate") == review.deadline - config.GRADING_RESERVE_SECONDS
+
+
+def test_final_review_by_judge_can_overturn_a_substantive_issue(tmp_path, fake_cli, monkeypatch):
+    configure, calls = fake_cli
+    configure(investigator={"issue": {"high::data::0": "substantive"}},
+              challenger={"issue": {"high::data::0": "substantive"}},
+              calibrator={"issue": {"high::data::0": "substantive"}},
+              judge={"issue": {"high::data::0": "minor"}})
+    result = _run(_make_paper(tmp_path), tmp_path, monkeypatch)
+    assert result["result"] == "低风险" and "另需作者更正" in result["data_review"]
+    judge_calls = [c for c in calls() if c["actor"] == "judge"]
+    assert judge_calls and judge_calls[0]["model"] == config.JUDGE_MODEL
+
+
+def test_final_review_upholding_keeps_high_risk(tmp_path, fake_cli, monkeypatch):
+    configure, calls = fake_cli
+    configure(investigator={"issue": {"high::data::0": "substantive"}},
+              challenger={"issue": {"high::data::0": "substantive"}},
+              calibrator={"issue": {"high::data::0": "substantive"}})
+    result = _run(_make_paper(tmp_path), tmp_path, monkeypatch)
+    assert result["result"] == "高风险"
+    models = {c["actor"].split(":")[0]: c["model"] for c in calls()}
+    assert models["judge"] == config.JUDGE_MODEL and models["investigator"] == config.MODEL
