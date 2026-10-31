@@ -380,10 +380,12 @@ class Review:
             # One short follow-up for what the first session did not reach.
             rest_path = self.ledger_path("cal", "rest")
             rest = [r for r in issues if r["id"] in left]
-            ledger.create(rest_path, {"shard": "calibrate_rest", "role": "calibrator", "allow_new": False,
-                                      "require_category": True},
-                          [{"id": r["id"], "title": r.get("title") or r["id"], "dimension": r.get("dimension"),
-                            "first": _compact(r)} for r in rest])
+            created = ledger.create(rest_path, {"shard": "calibrate_rest", "role": "calibrator", "allow_new": False,
+                                                "require_category": True},
+                                    [{"id": r["id"], "title": r.get("title") or r["id"], "dimension": r.get("dimension"),
+                                      "first": _compact(r)} for r in rest])
+            if created.get("added"):
+                session.reset("cal_rest", self.run_dir)
             rest_spec = self._spec("cal_rest", prompts.calibrator(self.dossier, rest), rest_path, 2, "calibrator", "evidence")
             rest_spec.continue_prompt = lambda state: prompts.calibrator_continue(
                 [item["id"] for item in ledger.open_items(ledger.load(rest_path))])
@@ -417,6 +419,51 @@ class Review:
         log.info("DOI=%s calibration %s", self.doi, outcome.status)
         return out
 
+    async def complete(self, finals: dict) -> dict:
+        """Must-check findings still without a conclusion get a follow-up:
+        small batches in parallel, each with its own time box. A paper is
+        never published low-risk with such items open, so finishing them is
+        what keeps a review from ending in an error."""
+        by_id = {item["id"]: (shard, item) for shard in self.shards for item in shard["items"]}
+        for round_no in range(1, config.COMPLETE_ROUNDS + 1):
+            pending = [r for r in finals.values()
+                       if r.get("status") in ("unresolved", "open") and _required_finding(r["id"]) and r["id"] in by_id]
+            if not pending:
+                break
+            batches: dict[str, list[dict]] = {}
+            for record in pending:
+                shard, _ = by_id[record["id"]]
+                batches.setdefault(shard["kind"], []).append(record)
+            jobs = []
+            for kind, records in batches.items():
+                for start in range(0, len(records), config.COMPLETE_BATCH):
+                    jobs.append((kind, records[start:start + config.COMPLETE_BATCH]))
+            self.soft["complete"] = time.monotonic() + config.COMPLETE_SECONDS
+
+            async def one(number: int, kind: str, records: list[dict]) -> dict:
+                name = f"fin{round_no}_{number}"
+                path = self.ledger_path(f"fin{round_no}", str(number))
+                items = [{**self._ledger_item(by_id[r["id"]][1], by_id[r["id"]][0]), "first": _compact(r)}
+                         for r in records]
+                ledger.create(path, {"shard": name, "role": "investigator", "dimension": by_id[records[0]["id"]][0]["dimension"],
+                                     "allow_new": True}, items)
+                shard = {"id": name, "kind": kind, "dimension": by_id[records[0]["id"]][0]["dimension"],
+                         "items": [by_id[r["id"]][1] for r in records]}
+                prompt = prompts.investigator(shard, self.dossier, self.hints.get(by_id[records[0]["id"]][0]["id"], ""))
+                prompt += prompts.completion_note()
+                await session.run(self._spec(name, prompt, path, config.MAX_CHUNKS_COMPLETE, f"investigator:{name}", "complete"))
+                return ledger.load(path).get("items") or {}
+
+            results = await asyncio.gather(*(one(n, kind, records) for n, (kind, records) in enumerate(jobs, start=1)))
+            closed = 0
+            for items in results:
+                for item_id, record in items.items():
+                    if item_id in finals and record.get("status") in ("issue", "cleared", "not_applicable"):
+                        finals[item_id] = {**finals[item_id], **_compact(record)}
+                        closed += 1
+            log.info("DOI=%s completion round %d: %d/%d must-check item(s) closed", self.doi, round_no, closed, len(pending))
+        return finals
+
     async def capture(self, finals: dict) -> dict:
         """Every risk issue in the report carries a local screenshot of the
         cited values; issues that lack one get a short capture session."""
@@ -426,9 +473,11 @@ class Review:
         if not need:
             return finals
         path = self.ledger_path("evd", "all")
-        ledger.create(path, {"shard": "evidence", "role": "evidence", "allow_new": False, "require_crop": True},
-                      [{"id": r["id"], "title": r.get("title") or r["id"], "dimension": r.get("dimension"),
-                        "first": _compact(r)} for r in need])
+        created = ledger.create(path, {"shard": "evidence", "role": "evidence", "allow_new": False, "require_crop": True},
+                                [{"id": r["id"], "title": r.get("title") or r["id"], "dimension": r.get("dimension"),
+                                  "first": _compact(r)} for r in need])
+        if created.get("added"):
+            session.reset("evd_all", self.run_dir)
         spec = self._spec("evd_all", prompts.evidence(self.dossier, need), path,
                           config.MAX_CHUNKS_EVIDENCE, "evidence", "evidence")
         outcome = await session.run(spec)
@@ -544,6 +593,11 @@ class Review:
             result["evidence_images"] = _bind_evidence(result, evidence)
             result = _clean_internal_references(result)
             checked, gaps = validate(result, self.evidence)
+            if gaps:
+                patched, rest = _coverage_patch(result, gaps, finals, self.evidence)
+                if len(rest) < len(gaps):
+                    result = patched
+                    checked, gaps = validate(result, self.evidence)
             gaps = gaps + _wording_gaps(result)
             _write_json(self.run_dir / f"writer_{attempt}.json", {"result": result, "gaps": gaps})
             if not gaps:
@@ -570,6 +624,77 @@ def _wording_gaps(result: dict) -> list[str]:
         found.append("类别代码")
     return [f"报告中出现了不应出现的用语：{'、'.join(found)}。改用平实表述：只写论文中的事实、影响和需要作者说明的事项，"
             "有风险的写“有风险”，其余写“未发现风险”或“需作者更正”。"] if found else []
+
+
+HIGH_GAP = re.compile(r"未对HIGH发现给出结论: (\w+)/(\S+) \(共(\d+)项\)")
+CLASS_GAPS = {"末位数字异常": ("trailing_digit", "末位数字"), "跨行伪重复": ("passage_offset", "跨行伪重复"),
+              "小数精度不一致": ("decimal", "小数精度")}
+TEST_LABELS = {
+    "passage_offset_pattern": "跨行数值偏移", "trailing_digit_uniformity": "末位数字规律", "terminal_digit": "末位数字分布",
+    "cross_group_duplicate": "不同组之间的重复数值", "cross_sheet_row_duplicate": "跨表整行重复",
+    "cross_sheet_column_duplicate": "跨表整列重复", "rowwise_value_reuse": "行内数值复用",
+    "short_curve_duplicate": "短序列逐值相同", "decimal_injection": "小数尾数规律", "decimal_uniformity": "小数位数一致性",
+    "value_recycling": "重复值", "fixed_ratio_series": "固定比例序列", "full_duplicate": "图像重复",
+    "partial_region": "图像局部相似", "splicing": "图像拼接", "low_match_score": "参考文献匹配度低",
+    "linear_dependency": "列间线性相关", "coefficient_of_variation": "变异系数异常", "sd_regularity": "标准差规律",
+}
+GAP_FIELD = {"data": "data_review", "image": "image_review", "image_splicing": "image_review",
+             "reference": "ref_review", "ref": "ref_review", "manuscript": "methodology_review",
+             "methodology": "methodology_review"}
+
+
+def _coverage_patch(result: dict, gaps: list[str], finals: dict, evidence: dict) -> tuple[dict, list[str]]:
+    """Answer coverage gaps from the verified conclusions themselves.
+
+    The publication gate asks that every class of high-priority screening hit
+    be named with a conclusion. When the writer leaves one out but the item
+    was verified, one sentence stating that conclusion is added. Items that
+    were never verified are left as gaps: nothing is reported as checked
+    unless it was."""
+    high = evidence.get("high_findings") or []
+    members: dict[str, dict] = {}
+    for record in finals.values():
+        for member in record.get("members") or [record.get("id")]:
+            members[str(member)] = record
+    out, remaining = dict(result), []
+    for gap in gaps:
+        match = HIGH_GAP.match(gap)
+        cls = next((v for k, v in CLASS_GAPS.items() if k in gap and gap.startswith("未说明")), None)
+        if match:
+            dim, test = match.group(1), match.group(2)
+            ids = [f"high::{h.get('dim')}::{i}" for i, h in enumerate(high)
+                   if (h.get("dim"), h.get("test") or h.get("match_type") or h.get("issue_type")) == (dim, test)]
+            label = TEST_LABELS.get(test, "数值规律")
+        elif cls:
+            dim, label = "data", cls[1]
+            ids = [record_id for record_id in members if cls[0] in record_id]
+        else:
+            remaining.append(gap)
+            continue
+        records = [members[i] for i in ids if i in members]
+        if not records or any(r.get("status") in ("open", "unresolved") for r in records):
+            remaining.append(gap)
+            continue
+        locations = []
+        for i in ids:
+            index = int(i.rsplit("::", 1)[-1]) if i.startswith("high::") else None
+            location = str((high[index] if index is not None and index < len(high) else {}).get("location") or "")
+            part = location.split("/")[1].strip() if "/" in location else location.strip()
+            if part and part not in locations:
+                locations.append(part)
+        where = "、".join(locations[:4]) or "相关位置"
+        issues = [r for r in records if r.get("status") == "issue"]
+        if issues:
+            sentence = f"自动筛查提示的{label}（{where}）存在问题：{str(issues[0].get('issue_type') or '')[:40]}，见上文。"
+        else:
+            basis = str(records[0].get("basis") or "").split("。")[0]
+            if len(basis) > 90:
+                cut = max(basis.rfind("；", 0, 90), basis.rfind("，", 0, 90))
+                basis = basis[:cut] if cut > 20 else basis[:90]
+            sentence = f"自动筛查提示的{label}（{where}，共{len(ids)}项）已核对，属正常：{basis}。"
+        field = GAP_FIELD.get(dim, "data_review")
+        out[field] = (str(out.get(field) or "").rstrip() + "\n" + sentence).strip()
+    return out, remaining
 
 
 def _writer_gap(gap: str) -> str:
@@ -827,6 +952,7 @@ async def _review_phases(review: "Review", doi: str, evidence: dict, evidence_pa
         finals[item["id"]] = {**{k: item.get(k) for k in ("id", "title", "kind", "members", "shard")},
                               "dimension": item["dimension"], "status": "unresolved", "note": "仲裁未完成"}
     review.timeline["arbitration"] = time.monotonic() - started - review.timeline["shards"]
+    finals = await review.complete(finals)
 
     finals = await review.calibrate(finals)
     finals = await review.capture(finals)

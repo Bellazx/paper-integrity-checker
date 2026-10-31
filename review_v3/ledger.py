@@ -57,12 +57,19 @@ def load(path: Path | str) -> dict:
 
 
 def create(path: Path | str, meta: dict, items: list[dict]) -> dict:
-    """Create a ledger once. An existing ledger is kept (resume)."""
+    """Create a ledger once. An existing ledger is kept (resume); items it does
+    not have yet are added as open, so later findings still get handled.
+    ``added`` in the returned dict counts those (not stored)."""
     path = Path(path)
     with _locked(path):
         existing = _read(path)
         if existing.get("items"):
-            return existing
+            new = [item for item in items if item["id"] not in existing["items"]]
+            for item in new:
+                existing["items"][item["id"]] = {"status": "open", **item}
+            if new:
+                _write(path, existing)
+            return {**existing, "added": len(new)}
         data = dict(meta)
         data["items"] = {}
         for item in items:

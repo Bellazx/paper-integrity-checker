@@ -135,6 +135,12 @@ def wrapup(open_ids: list[str]) -> str:
             "若有记录被拒绝，按提示修正后再提交一次。写完即结束。")
 
 
+def completion_note() -> str:
+    return ("\n\n## 补查说明\n这些条目在此前的核查中因时间不够没有完成（`pv3 item <id>` 的 first 字段有此前的进展）。"
+            "本轮只处理这些条目，每条都必须写入结论：先打开条目指向的位置看原值，能判断的立即写 issue/cleared/not_applicable；"
+            "同一类告警可以按类写一条结论，但 basis 要列出覆盖的 sheet/列和代表原值。不要展开与这些条目无关的核查。\n")
+
+
 def restart_note() -> str:
     return ("\n\n## 续接说明\n上一段会话已中断。台账中已有的结论有效，不要重复核查；"
             "先运行 `pv3 ledger show --open`，只处理未处理的条目。\n")

@@ -669,3 +669,34 @@ def test_guard_reads_heredoc_bodies_as_data_and_keeps_calibration_offline(monkey
     assert guard.check("Bash", {"command": "pv3 crossref --doi 10.1/x"})
     monkeypatch.setenv("PV3_ACTOR", "investigator:ref")
     assert guard.check("Bash", {"command": "pv3 crossref --doi 10.1/x"}) is None
+
+
+def test_unfinished_must_check_items_are_completed_instead_of_erroring(tmp_path, fake_cli, monkeypatch):
+    configure, calls = fake_cli
+    # Every regular stage stalls; only the follow-up batch reaches a conclusion.
+    configure(investigator="noop", challenger="noop", arbiter="noop", **{"investigator:fin1_1": "clear_all"})
+    result = _run(_make_paper(tmp_path), tmp_path, monkeypatch)
+    assert result["trigger"] != "review_error" and result["result"] == "低风险"
+    assert any(c["actor"] == "investigator:fin1_1" for c in calls())
+
+
+def test_coverage_gap_is_answered_from_verified_conclusions_only():
+    evidence = {"high_findings": [{"dim": "data", "test": "passage_offset_pattern", "location": "s.xlsx / Table_5 (cols 4-6)"},
+                                  {"dim": "data", "test": "terminal_digit", "location": "s.xlsx / Sheet2"}]}
+    finals = {"group::a": {"id": "group::a", "status": "cleared", "members": ["high::data::0"],
+                           "basis": "逐行复现告警行对，为不同研究的相同计数。"},
+              "high::data::1": {"id": "high::data::1", "status": "unresolved", "note": "未完成"}}
+    gaps = ["未对HIGH发现给出结论: data/passage_offset_pattern (共1项)",
+            "未对HIGH发现给出结论: data/terminal_digit (共1项)"]
+    patched, rest = engine._coverage_patch({"data_review": "本节结论：未发现风险。"}, gaps, finals, evidence)
+    assert "跨行数值偏移（Table_5 (cols 4-6)" in patched["data_review"] and "已核对" in patched["data_review"]
+    assert rest == [gaps[1]]  # never reported as checked when it was not
+
+
+def test_existing_ledger_gains_items_found_later(tmp_path):
+    path = tmp_path / "l.json"
+    ledger.create(path, {"shard": "x"}, [{"id": "a", "title": "A"}])
+    ledger.update(path, [{"id": "a", "status": "cleared", "basis": "核对第2页表1，数值一致"}], "t")
+    again = ledger.create(path, {"shard": "x"}, [{"id": "a", "title": "A"}, {"id": "b", "title": "B"}])
+    items = ledger.load(path)["items"]
+    assert again["added"] == 1 and items["a"]["status"] == "cleared" and items["b"]["status"] == "open"
