@@ -208,6 +208,15 @@ class Review:
     def ledger_path(self, role: str, name: str) -> Path:
         return self.run_dir / "ledgers" / f"{role}_{name}.json"
 
+    def _hard_deadline(self, phase: str) -> float | None:
+        """Paper deadline minus the time later phases need: investigation stops
+        early enough for grading, and grading early enough for writing."""
+        if self.deadline is None:
+            return None
+        if phase in ("calibrate", "evidence"):
+            return self.deadline - config.GRADING_RESERVE_SECONDS
+        return self.deadline - config.FINISH_RESERVE_SECONDS
+
     def _phase_deadline(self, phase: str) -> float | None:
         """The phase's time box, extended to its floor when it starts late."""
         soft = self.soft.get(phase)
@@ -223,7 +232,7 @@ class Review:
             return [item["id"] for item in ledger.open_items(ledger.load(ledger_path))]
         return session.SessionSpec(
             name=name, workdir=self.run_dir, prompt=prompt, actor=actor, ledger_path=ledger_path,
-            max_chunks=max_chunks, deadline=self.deadline, soft_deadline=self._phase_deadline(phase),
+            max_chunks=max_chunks, deadline=self._hard_deadline(phase), soft_deadline=self._phase_deadline(phase),
             continue_prompt=lambda state: prompts.investigator_continue(state, open_ids(state)),
             restart_prompt=lambda state: prompt + prompts.restart_note(),
             wrapup_prompt=lambda state: prompts.wrapup(open_ids(state)),

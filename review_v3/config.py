@@ -74,6 +74,10 @@ MAX_SESSIONS = _int("REVIEW_V3_MAX_SESSIONS", 48)
 
 # Whole-paper wall clock (seconds). 0 disables.
 PAPER_TIMEOUT_SECONDS = _int("REVIEW_PAPER_TIMEOUT_SECONDS", 90 * 60)
+# Investigation-type phases stop this long before the paper deadline so that
+# grading, screenshots and writing always run and a report is published.
+FINISH_RESERVE_SECONDS = _int("REVIEW_V3_FINISH_RESERVE_SECONDS", 15 * 60)
+GRADING_RESERVE_SECONDS = _int("REVIEW_V3_GRADING_RESERVE_SECONDS", 6 * 60)
 
 # Memory retrieval.
 MEMORY_DIR = Path(os.environ.get(

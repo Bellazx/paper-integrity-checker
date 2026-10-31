@@ -739,3 +739,10 @@ def test_correction_points_are_not_read_as_risk_issues():
     text = ("本节结论：有风险。\n（1）问题位置：Table 3\n问题类型：x\n发现：y\n为什么重要：z\n核查依据：w\n"
             "另需作者更正：\n① 位置：第2页 Fig. 1；问题：图注写 Fig. 3；请改为 Fig. 2。\n② 位置：文献 [4]；问题：作者缺失。")
     assert [m.group(1) for m in _ISSUE_START.finditer(text)] == ["1"]
+
+
+def test_investigation_stops_before_the_paper_deadline(tmp_path):
+    import time as _time
+    review = engine.Review("10.1/x", "", str(tmp_path), tmp_path, _time.monotonic() + 3600, _time.monotonic())
+    assert review._hard_deadline("investigate") == review.deadline - config.FINISH_RESERVE_SECONDS
+    assert review._hard_deadline("calibrate") == review.deadline - config.GRADING_RESERVE_SECONDS
