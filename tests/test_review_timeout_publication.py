@@ -136,3 +136,22 @@ def test_invalid_paper_does_not_block_other_publications(tmp_path, monkeypatch):
     assert publisher.sys.argv == argv
     failures = json.loads(path.with_suffix('.publication_failures.json').read_text())
     assert [x['doi'] for x in failures] == ['bad','error']
+
+
+def test_generated_page_evidence_gets_issue_indices():
+    from scripts.generate_review_report import _attach_generated_evidence_indices
+
+    info = {
+        'methodology_review': (
+            '（1）问题位置：论文第12页式(1)。问题类型：公式不一致。'
+            '\n\n（2）问题位置：论文第17页方法段。问题类型：物种不一致。'
+        ),
+    }
+    items = [
+        {'dimension': 'methodology', 'caption': '页面证据：论文第12页；具体位置见问题说明。'},
+        {'dimension': 'methodology', 'caption': '页面证据：论文第17页；具体位置见问题说明。'},
+    ]
+
+    result = _attach_generated_evidence_indices(info, items)
+
+    assert [item['issue_index'] for item in result] == [1, 2]

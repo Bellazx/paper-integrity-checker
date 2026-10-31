@@ -80,6 +80,21 @@ def test_completed_at_arrival_requires_fresh_workflow(setup, verdict):
     assert not old.superseded_by
 
 
+def test_failed_at_arrival_reuses_unfinished_checkpoint(setup):
+    manager, make, _ = setup
+    old = make(OLD, status=TaskStatus.FAILED)
+    old.result = {'detection_reports': [{
+        'submission_no': OLD, 'fold_name': None,
+        'chushen_result': '高风险', 'review_result': None,
+    }]}
+    new = make(NEW, status=TaskStatus.EXTRACTING)
+    asyncio.run(policy.prepare_submission(new.task_id, manager))
+    assert old.status == TaskStatus.SUPERSEDED
+    assert new.papers[0].reused_from_task_id == old.task_id
+    assert new.papers[0].submission_decision == 'resume_unfinished'
+    assert new.papers[0].output_dir == old.papers[0].output_dir
+
+
 @pytest.mark.parametrize('change', ['material', 'rules', 'author'])
 def test_incompatible_active_submission_is_replaced_without_cache(setup, change):
     manager, make, _ = setup
@@ -264,8 +279,11 @@ def test_review_process_cancellation_kills_tool_children():
             await _kill_and_reap_process(proc)
             assert proc.returncode is not None
             for _ in range(20):
-                stat = Path(f'/proc/{child}/stat')
-                if not stat.exists() or stat.read_text().split()[2] == 'Z':
+                try:
+                    state = Path(f'/proc/{child}/stat').read_text().split()[2]
+                except (FileNotFoundError, ProcessLookupError):
+                    return  # reaped, possibly between lookup and read
+                if state == 'Z':
                     return
                 await asyncio.sleep(0.05)
             raise AssertionError('review tool child is still running after cancellation')

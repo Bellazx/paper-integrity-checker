@@ -91,7 +91,12 @@ def main():
     entries = []
     issues = behaviour.get("issue", {}) if isinstance(behaviour, dict) else {}
     for item in open_items:
-        if item["id"] in issues:
+        if item["id"] in issues and data.get("require_category"):
+            # Calibration answers with a category; severity follows from it.
+            entries.append({"id": item["id"], "status": "issue",
+                            "category": "S2" if issues[item["id"]] == "substantive" else "M1",
+                            "why": "按类别定级"})
+        elif item["id"] in issues:
             entries.append({"id": item["id"], "status": "issue", "severity": issues[item["id"]],
                             "location": "data.xlsx / sheet Sheet1 / B2:B9，Fig. 1",
                             "issue_type": "不同实验使用了相同数据", "finding": "两组 8 个测量值逐值相同",

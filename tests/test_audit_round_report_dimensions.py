@@ -34,6 +34,6 @@ def test_coverage_index_does_not_confirm_dismissed_findings():
     ]}
     module.add_coverage_notes(item, evidence, '高风险',
                               {'image': '建议低风险', 'data': '建议高风险'})
-    assert '非已确认问题' in item['image_review']
+    assert '不是已确认问题' in item['image_review']
     assert '不表示每项均已确认异常' in item['data_review']
     assert '经复核已纳入总体风险判断' not in str(item)

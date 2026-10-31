@@ -155,6 +155,35 @@ def test_structured_detail_and_contradiction_are_caught_before_render():
     assert any('inconsistent review JSON' in gap for gap in gaps)
 
 
+def test_highrisk_dimension_lowrisk_text_is_not_paper_level_contradiction():
+    result = dict(_result(), result='高风险', verdict='建议高风险')
+    result['reason'] = (
+        '数据维度确认一项实质问题，支持高风险。\n'
+        '图像维度建议低风险；故该维度无已确认风险证据但存在覆盖限制。\n'
+        '4. 参考文献维度（建议低风险）。\n'
+        '最终判定：数据问题支持建议高风险。'
+    )
+    _, gaps = validate(result, {'high_findings': []})
+    assert not any('inconsistent review JSON' in gap for gap in gaps)
+
+
+def test_passage_offset_synonyms_satisfy_high_category_coverage():
+    result = dict(_result(), result='低风险', verdict='建议低风险')
+    result['data_review'] = '表内行块重复属于行序整理问题，已核查代表样本并判定为可解释。'
+    result['dimension_verdicts'] = {
+        'image': '建议低风险', 'data': '建议低风险',
+        'ref': '建议低风险', 'methodology': '建议低风险',
+    }
+    evidence = {
+        'high_findings': [],
+        'deterministic_findings': {
+            'passage_offset_pattern': [{'severity': 'high'}],
+        },
+    }
+    _, gaps = validate(result, evidence)
+    assert not any('跨行伪重复' in gap for gap in gaps)
+
+
 def test_detector_channel_type_accepts_explicit_channel_review():
     result = _result()
     result['data_review'] = '已核查 Fig3e 的两个独立通道，重复数值源于相同横轴；测量值各自不同，未见异常。'
@@ -178,3 +207,49 @@ def test_highrisk_coverage_gap_enters_repair(monkeypatch, tmp_path):
     assert judge.await_count == 2
     assert judge.await_args.kwargs['coverage_gaps']
     assert final['trigger'] == 'review_error'
+
+
+def test_resume_uses_cached_highrisk_verifier_before_cli(monkeypatch, tmp_path):
+    inputs = tmp_path / 'input'; inputs.mkdir()
+    outputs = tmp_path / 'output'; outputs.mkdir()
+    report = outputs / 'report.json'; report.write_text('{}')
+    evidence = tmp_path / 'evidence.json'
+    evidence.write_text(json.dumps({'deterministic_findings': {}}))
+    artifacts = review._review_artifacts_dir(str(outputs))
+    state_path = review._review_state_path('10.1/test', str(report), str(inputs), artifacts)
+    state = review._new_review_state('10.1/test', str(report), str(inputs))
+
+    def staged(risk, trigger='review'):
+        value = _result()
+        value.update(result=risk, verdict='建议' + risk, trigger=trigger)
+        value['data_review'] = (
+            '问题位置：Fig. 2。问题类型：跨实验重复。'
+            '具体情况：两列四个数值逐值相同。为什么重要：独立实验需要说明。'
+            '核查依据：读取源数据并逐值比对。'
+        )
+        value['dimension_verdicts']['data'] = '建议' + risk
+        return value
+
+    state['stages'] = {
+        'evidence_path': str(evidence),
+        'source_data_audit_seed': staged('高风险', 'source_audit'),
+        'reviewer1_validated': staged('低风险'),
+        'reviewer2_validated': staged('高风险'),
+        'final': review._fallback_result('10.1/test', 'old synthesis failure'),
+    }
+    review._save_review_state(state_path, state)
+    monkeypatch.setattr(review, '_preprocess_review_input_dir', lambda _: None)
+    monkeypatch.setattr(review, '_source_data_audit_highrisk_review_result',
+                        lambda *args: staged('高风险', 'source_audit'))
+    forbidden = AsyncMock(side_effect=AssertionError('cached recovery must not start CLI'))
+    for name in ('_run_with_retry', '_run_lowrisk_verifier_with_retry', '_run_judge'):
+        monkeypatch.setattr(review, name, forbidden)
+
+    recovered = asyncio.run(review._run_review_single_impl(
+        '10.1/test', str(report), str(inputs), str(outputs), resume=True,
+    ))
+    assert recovered['result'] == '高风险'
+    assert recovered['trigger'] == 'review'
+    assert forbidden.await_count == 0
+    saved = json.loads(state_path.read_text())
+    assert saved['stages']['decision']['flow'] == 'resumed_cached_highrisk_verifier'

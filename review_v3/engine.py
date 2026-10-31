@@ -90,7 +90,7 @@ def _is_issue(record: dict, severity: str | None = None) -> bool:
 
 
 def _compact(record: dict) -> dict:
-    keep = ("status", "severity", "dimension", "location", "issue_type", "finding", "why", "basis", "note", "evidence")
+    keep = ("status", "severity", "category", "dimension", "location", "issue_type", "finding", "why", "basis", "note", "evidence")
     return {k: record[k] for k in keep if record.get(k)}
 
 
@@ -360,13 +360,23 @@ class Review:
         issues = [r for r in finals.values() if r.get("status") == "issue"]
         if not issues:
             return finals
+        issues.sort(key=lambda r: r.get("severity") != "substantive")
         path = self.ledger_path("cal", "all")
-        ledger.create(path, {"shard": "calibrate", "role": "calibrator", "allow_new": False},
+        ledger.create(path, {"shard": "calibrate", "role": "calibrator", "allow_new": False, "require_category": True},
                       [{"id": r["id"], "title": r.get("title") or r["id"], "dimension": r.get("dimension"),
                         "first": _compact(r)} for r in issues])
-        outcome = await session.run(self._spec("cal_all", prompts.calibrator(self.dossier, issues), path,
-                                               config.MAX_CHUNKS_CALIBRATE, "calibrator", "calibrate"))
+        spec = self._spec("cal_all", prompts.calibrator(self.dossier, issues), path,
+                          config.MAX_CHUNKS_CALIBRATE, "calibrator", "calibrate")
+
+        def open_ids(_state):
+            return [item["id"] for item in ledger.open_items(ledger.load(path))]
+        spec.continue_prompt = lambda state: prompts.calibrator_continue(open_ids(state))
+        spec.wrapup_prompt = lambda state: prompts.calibrator_continue(open_ids(state), wrapup=True)
+        outcome = await session.run(spec)
         decided = ledger.load(path).get("items") or {}
+        left = [i for i, r in decided.items() if r.get("status") not in ("issue", "cleared")]
+        if left:
+            log.warning("DOI=%s calibration left %d issue(s) uncategorized: %s", self.doi, len(left), left[:8])
         out = dict(finals)
         for item_id, record in decided.items():
             if record.get("status") in ("issue", "cleared") and item_id in out:

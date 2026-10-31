@@ -71,13 +71,16 @@ def test_max_turns_gets_bounded_targeted_recovery_before_finalizer(tmp_path, mon
 def test_outer_retry_cannot_reset_durable_phase_budget(tmp_path, monkeypatch):
     from scripts import scholar_1027_cli
     monkeypatch.setattr(scholar_1027_cli, 'prior_session', lambda *a: None)
-    commands = mock_cli(monkeypatch, [(1, {'is_error': True, 'subtype': 'error_max_turns'})] * 3)
+    commands = mock_cli(monkeypatch, [(1, {'is_error': True, 'subtype': 'error_max_turns'})] * 5)
     e = engine(tmp_path)
     for _ in range(2):
         install(e, tmp_path, runner.save, runner.load)
         out = asyncio.run(e._run_claude_prompt('x', 'review', 'prompt', 80))
         assert out['trigger'] == 'review_error' and out['_retry_exhausted']
-    assert len(commands) == 3
+    # The second invocation resumes the exhausted checkpoint with focused
+    # recovery and finalization; it must not restart the 80-turn research pass.
+    assert len(commands) == 5
+    assert [c[c.index('--max-turns') + 1] for c in commands] == ['80', '12', '6', '12', '6']
 
 
 def test_resume_successful_phase_does_not_rerun_tools(tmp_path, monkeypatch):
@@ -107,6 +110,56 @@ def test_validation_gap_after_finalization_gets_one_focused_repair(tmp_path, mon
     assert out['result'] == '高风险'
     assert calls[0][calls[0].index('--max-turns') + 1] == '12'
     assert checkpoints[0]['post_validation_recovery_attempted']
+
+
+def test_interrupted_finalization_resumes_output_only_phase(tmp_path, monkeypatch):
+    calls = mock_cli(monkeypatch, [
+        (0, {'result': json.dumps({'doi': 'x', 'result': '低风险'})}),
+    ])
+    out = asyncio.run(review_cli.run(
+        engine(tmp_path), 'x', 'review', 'prompt', 36,
+        state={
+            'phase': 3,
+            'session_id': 'saved',
+            'finalization_version': 2,
+            'last_error': 'error_max_turns',
+            'phase_metrics': [
+                {'phase': 0, 'subtype': 'error_max_turns'},
+                {'phase': 1, 'subtype': 'error_max_turns'},
+            ],
+        },
+    ))
+    assert out['result'] == '低风险'
+    assert len(calls) == 1
+    assert calls[0][calls[0].index('--max-turns') + 1] == '6'
+    assert calls[0][calls[0].index('--tools') + 1] == ''
+
+
+def test_completed_finalization_error_reopens_focused_recovery(tmp_path, monkeypatch):
+    calls = mock_cli(monkeypatch, [
+        (0, {'result': json.dumps({'doi': 'x', 'result': '高风险'})}),
+    ])
+    checkpoints = []
+    out = asyncio.run(review_cli.run(
+        engine(tmp_path), 'x', 'review', 'prompt', 36,
+        state={
+            'phase': 3,
+            'session_id': 'saved',
+            'finalization_version': 2,
+            'last_error': '上次未完成：主图逐图核查尚未完成',
+            'phase_metrics': [
+                {'phase': 0, 'subtype': 'error_max_turns'},
+                {'phase': 1, 'subtype': 'error_max_turns'},
+                {'phase': 2, 'subtype': 'success'},
+            ],
+        },
+        persist=lambda value: checkpoints.append(dict(value)),
+    ))
+    assert out['result'] == '高风险'
+    assert len(calls) == 1
+    assert calls[0][calls[0].index('--max-turns') + 1] == '12'
+    assert calls[0][calls[0].index('--tools') + 1] == 'Bash,Read'
+    assert checkpoints[0]['continuation_attempts'] == 1
 
 
 def test_phases_use_shared_deadline_with_bounded_investigation(tmp_path, monkeypatch):
@@ -251,3 +304,15 @@ def test_consensus_after_transport_failure_still_requires_real_coverage(tmp_path
     with pytest.raises(RuntimeError, match='incomplete'):
         asyncio.run(runner.review({'doi': 'x', 'source': str(tmp_path)}, tmp_path))
     assert not (tmp_path / 'results.json').exists()
+
+
+def test_finalizer_continuation_is_granted_only_once(tmp_path, monkeypatch):
+    forbidden = AsyncMock(side_effect=AssertionError('continuation budget already used'))
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', forbidden)
+    out = asyncio.run(review_cli.run(engine(tmp_path), 'x', 'review', 'prompt', 36, state={
+        'phase': 3, 'session_id': 'saved', 'finalization_version': 2,
+        'continuation_attempts': 1, 'last_error': '上次未完成：主图逐图核查尚未完成',
+        'phase_metrics': [{'phase': 1, 'subtype': 'error_max_turns'},
+                          {'phase': 2, 'subtype': 'success'}],
+    }))
+    assert out['trigger'] == 'review_error'

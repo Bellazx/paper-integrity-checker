@@ -615,3 +615,23 @@ def test_input_identity_ignores_files_written_during_review(tmp_path):
     assert engine._identity("10.1/x", str(report), str(paper)) == before
     (paper / "extra.xlsx").write_bytes(b"data")
     assert engine._identity("10.1/x", str(report), str(paper)) != before
+
+
+def test_calibration_severity_follows_the_category(tmp_path):
+    from review_v3 import categories
+    path = tmp_path / "ledgers" / "cal_all.json"
+    path.parent.mkdir()
+    first = {"status": "issue", "severity": "substantive", "location": "Table 2", "issue_type": "单格不闭合",
+             "finding": "合计 8,524 与分项 8,516 差 8", "why": "主表", "basis": "逐行相加"}
+    ledger.create(path, {"shard": "calibrate", "require_category": True},
+                  [{"id": "a", "title": "A", "first": first}, {"id": "b", "title": "B", "first": first}])
+    applied, errors = ledger.update(path, [{"id": "a", "status": "issue", "severity": "substantive"}], "cal")
+    assert applied == 0 and "category" in errors[0]
+    applied, errors = ledger.update(path, [
+        {"id": "a", "status": "issue", "category": "m1", "severity": "substantive", "why": "孤立小差异，不改变结论"},
+        {"id": "b", "status": "issue", "category": "S3", "why": "结论方向被表 3 否定"}], "cal")
+    items = ledger.load(path)["items"]
+    assert (applied, errors) == (2, [])
+    assert (items["a"]["category"], items["a"]["severity"]) == ("M1", "minor")
+    assert items["b"]["severity"] == "substantive" and items["b"]["finding"] == first["finding"]
+    assert all(code in categories.table() for code in categories.CATEGORIES)

@@ -133,6 +133,40 @@ class MultiDimensionReviewTest(unittest.IsolatedAsyncioTestCase):
             run.assert_awaited_once()
             self.assertEqual("完整四维复核结果", result["reason"])
 
+    async def test_highrisk_verifier_with_seed_skips_duplicate_synthesis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_dir = root / "input"
+            output_dir = root / "output"
+            input_dir.mkdir()
+            output_dir.mkdir()
+            report = root / "report.json"
+            report.write_text("{}")
+            evidence_path = root / "evidence.json"
+            evidence_path.write_text(json.dumps(_evidence()))
+            low = _complete_result("低风险")
+            high = _complete_result("高风险")
+            high["trigger"] = "独立高风险复核"
+            high["reason"] = (
+                "问题位置：MOESM10_ESM.xlsx 工作表 Fig. 5h。"
+                "问题类型：跨处理组数值派生。发现：逐周逐只呈精确常数差。"
+                "为什么重要：独立重复的独立性基础不成立。"
+                "核查依据：逐列计算相关系数和斜率均为1。"
+            )
+            with mock.patch.object(review, "REVIEW_STATE_DIR", root / "state"), \
+                 mock.patch.object(review, "_ensure_evidence_bundle", return_value=str(evidence_path)), \
+                 mock.patch.object(review, "_source_data_audit_highrisk_review_result", return_value=high), \
+                 mock.patch.object(review, "_validate_review_result", side_effect=lambda *args: args[3]), \
+                 mock.patch.object(review, "_run_with_retry", new_callable=mock.AsyncMock, return_value=low), \
+                 mock.patch.object(review, "_run_lowrisk_verifier_with_retry", new_callable=mock.AsyncMock, return_value=high), \
+                 mock.patch.object(review, "_run_judge", new_callable=mock.AsyncMock) as judge:
+                result = await review.run_review_single(
+                    "10.1/test", str(report), str(input_dir), str(output_dir)
+                )
+
+            judge.assert_not_awaited()
+            self.assertEqual("高风险", result["result"])
+
     def test_high_risk_with_missing_dimensions_has_coverage_gaps(self):
         partial = _complete_result()
         partial["image_review"] = ""

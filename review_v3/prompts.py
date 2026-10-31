@@ -213,25 +213,43 @@ def arbiter(dimension: str, dossier: dict, items: list[dict]) -> str:
 """
 
 
+CALIBRATE_FORMAT = """写入格式：
+pv3 ledger update <<'EOF'
+[{"id": "条目id", "status": "issue", "category": "类别代码（如 S2、M1）", "why": "为什么属于这一类"},
+ {"id": "条目id", "status": "cleared", "basis": "核实后问题不成立的原因"}]
+EOF
+（location、issue_type、finding、basis 不写时沿用原记录。）"""
+
+
+def calibrator_continue(open_ids: list[str], wrapup: bool = False) -> str:
+    shown = "、".join(open_ids[:60])
+    template = ",\n ".join(f'{{"id": "{i}", "status": "issue", "category": "…", "why": "…"}}' for i in open_ids[:60])
+    head = ("现在需要收尾，不要再打开原文或运行计算。" if wrapup else "继续。")
+    return (f"{head}还有 {len(open_ids)} 条问题没有写入类别：{shown}。根据 `pv3 item <id>` 中已有的记录直接分类，"
+            f"一次写入：\npv3 ledger update <<'EOF'\n[{template}]\nEOF\n"
+            "category 填类别代码（S1–S6、M1–M10）；问题不成立的改为 status=cleared 并写 basis。")
+
+
 def calibrator(dossier: dict, items: list[dict]) -> str:
-    rows = [f"- `{item['id']}`（{item.get('severity')}，{item.get('dimension')}）：{str(item.get('location', ''))[:120]}"
-            f" —— {str(item.get('issue_type', ''))[:60]}" for item in items]
+    from review_v3.categories import table
+    rows = [f"- `{item['id']}`（当前：{'实质问题' if item.get('severity') == 'substantive' else '规范问题'}，"
+            f"{item.get('dimension')}）：{str(item.get('location', ''))[:120]} —— {str(item.get('issue_type', ''))[:60]}"
+            for item in items]
     return f"""你是学术论文诚信复核的定级复核人员。
 
 ## 论文
 {_paper_block(dossier)}
 
 {TOOL_HELP}
-{rule('common')}
 
-{rule('grading')}
+{rule('calibrate').replace('{table}', table())}
 
-{rule('calibrate')}
+{CALIBRATE_FORMAT}
 
-## 待定级的问题（{len(items)} 项）
+## 待定级的问题（{len(items)} 项，已按当前定级排序）
 {chr(10).join(rows)}
 
-完成后运行 `pv3 ledger show --open` 确认，然后回复“完成”。
+全部写入后运行 `pv3 ledger show --open` 确认，然后回复“完成”。
 """
 
 

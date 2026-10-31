@@ -17,7 +17,7 @@ from pathlib import Path
 STATUSES = ("open", "issue", "cleared", "not_applicable", "unresolved")
 CLOSED = {"issue", "cleared", "not_applicable", "unresolved"}
 SEVERITIES = ("substantive", "minor")
-TEXT_FIELDS = ("location", "issue_type", "finding", "why", "basis", "note")
+TEXT_FIELDS = ("location", "issue_type", "finding", "why", "basis", "note", "category")
 DIMENSIONS = ("image", "data", "ref", "methodology")
 
 
@@ -127,7 +127,7 @@ def _normalize(entry: dict, run_dir: Path) -> list[str]:
     return warnings
 
 
-def _validate_entry(entry: dict, known: dict, allow_new: bool) -> list[str]:
+def _validate_entry(entry: dict, known: dict, allow_new: bool, require_category: bool = False) -> list[str]:
     errors = []
     item_id = str(entry.get("id") or "").strip()
     if not item_id:
@@ -140,6 +140,13 @@ def _validate_entry(entry: dict, known: dict, allow_new: bool) -> list[str]:
     for field in TEXT_FIELDS:
         if field in entry and not isinstance(entry[field], str):
             errors.append(f"{item_id}: {field} 必须是字符串")
+    if status == "issue" and require_category:
+        from review_v3.categories import CATEGORIES, severity
+        code = str(entry.get("category") or "").strip().upper()
+        if code not in CATEGORIES:
+            errors.append(f"{item_id}: issue 必须给出 category（{'/'.join(CATEGORIES)} 之一），定级由类别决定")
+        else:
+            entry["category"], entry["severity"] = code, severity(code)
     if status == "issue":
         if entry.get("severity") not in SEVERITIES:
             errors.append(f"{item_id}: issue 必须给出 severity=substantive 或 minor")
@@ -184,10 +191,16 @@ def update(path: Path | str, entries: list[dict], actor: str,
             if warnings is not None:
                 warnings.extend(notes)
             known = items.get(str(entry.get("id") or "").strip()) or {}
+            # A re-check (calibration, challenge) may restate only what it
+            # changes; the rest of the issue comes from the recorded finding.
+            if entry.get("status") == "issue" and isinstance(known.get("first"), dict):
+                for field in ("location", "issue_type", "finding", "why", "basis"):
+                    if len(str(entry.get(field) or "").strip()) < 4 and known["first"].get(field):
+                        entry[field] = known["first"][field]
             if entry.get("status") == "issue" and len(str(entry.get("location") or "").strip()) < 4 and known.get("title"):
                 # Checklist titles start with the location ("Fig. 3（第4页）：…").
                 entry["location"] = str(known["title"]).split("：")[0][:120]
-            entry_errors = _validate_entry(entry, items, allow_new)
+            entry_errors = _validate_entry(entry, items, allow_new, bool(data.get("require_category")))
             if entry_errors:
                 errors.extend(entry_errors)
                 continue
@@ -205,6 +218,7 @@ def update(path: Path | str, entries: list[dict], actor: str,
                     current[key] = value
             if current.get("status") != "issue":
                 current.pop("severity", None)
+                current.pop("category", None)
             current["by"] = actor
             current["updated_at"] = time.time()
             if history:

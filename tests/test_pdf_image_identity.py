@@ -29,3 +29,21 @@ def test_standalone_gif_images_are_included(tmp_path: Path):
     assert images[0].filepath == str(gif_path)
     assert images[0].width == 240
     assert images[0].height == 220
+
+
+def test_stale_output_images_are_not_reread_as_standalone(tmp_path: Path):
+    # 10.1038/s41467-026-77281-x: an interrupted run left 29 supplementary-PDF
+    # extractions in output/images; the retry read them back as page-0
+    # standalone images and dropped the real supplementary extraction as dups.
+    paper_dir = tmp_path / "paper"
+    paper_dir.mkdir()
+    images_dir = tmp_path / "output" / "images"
+    images_dir.mkdir(parents=True)
+    Image.new("RGB", (240, 220), color=(200, 20, 20)).save(images_dir / "supp_page_003_img_000.png")
+    docx_image = images_dir / "si_docx_image1.png"
+    Image.new("RGB", (240, 220), color=(20, 200, 20)).save(docx_image)
+
+    images = extract_standalone_images(str(paper_dir), str(tmp_path / "output"), max_images=10,
+                                       extra_image_files=[str(docx_image)])
+
+    assert [img.filepath for img in images] == [str(docx_image)]

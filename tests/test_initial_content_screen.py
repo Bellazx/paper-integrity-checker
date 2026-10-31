@@ -136,6 +136,7 @@ def test_correct_mean_and_rounding_do_not_become_high_risk(tmp_path):
     ("difference", ["0.432", "0.539"], "0.107", -.107),
     ("sum", ["50", "60", "38"], "149", 148),
     ("ratio_percent", ["106", "170"], "46.5", 62.3529412),
+    ("ratio", ["1.33", "0.33"], "3", 4.03030303),
 ])
 def test_generic_calculations(operation, values, reported, expected):
     entries = [{"value": v, "page": 1, "quote": f"Measurement number {i} is {v}"}
@@ -507,3 +508,109 @@ def test_report_writer_failure_keeps_verified_content_evidence(tmp_path, monkeyp
     _, html = report._generate_analysis_html(findings, "")
     assert "程序复算为30" in html and not findings.get("_explainability_downgraded")
     assert assessment(issues)["level"] == "高风险"
+
+
+def test_spelled_out_multiple_is_grounded_and_compared_as_a_ratio():
+    # Nat. Commun. 10.1038/s41467-026-77281-x Fig. 4c caption: the batch failed
+    # because "three times" was not accepted as evidence for the value 3.
+    caption = ("the neutral squirmer swims three times faster than the pusher; "
+               "linear fits U = mP give m = 1.33, 1.16 and 0.33")
+    pages = [{'page': 1, 'text': caption, 'tables': []}]
+    item = lambda v: {'value': v, 'page': 1, 'quote': caption}
+    calc = {'operation': 'ratio', 'operands': [item('1.33'), item('0.33')], 'reported': item('3')}
+    result = screen.recalculate(calc, pages)
+    assert result['mismatch'] and result['calculated'] == pytest.approx(4.0303, abs=1e-4)
+    assert result['ambiguous_multiple']  # 4.03 = "three times larger" read as +3
+    pages[0]['text'] = caption = caption.replace('three', 'four')
+    calc['operands'] = [item('1.33'), item('0.33')]
+    calc['reported'] = item('4')
+    assert not screen.recalculate(calc, pages)['mismatch']
+
+
+@pytest.mark.parametrize('text,value,grounded', [
+    ('a threefold increase', '3', True),
+    ('twice as fast', '2', True),
+    ('in twenty-one samples', '21', True),
+    ('in twenty-one samples', '20', False),
+    ('in twenty-one samples', '1', False),
+    ('one of the particles moved', '1', False),
+    ('the other three-dimensional particles', '3', True),
+])
+def test_spelled_numbers(text, value, grounded):
+    pages = [{'page': 1, 'text': text, 'tables': []}]
+    item = {'value': value, 'page': 1, 'quote': text}
+    if grounded:
+        assert screen._number(item, pages)[0] == float(value)
+    else:
+        with pytest.raises(screen.ContentScreenIncomplete, match='未出现'):
+            screen._number(item, pages)
+
+
+def multiple_paper(tmp_path, phrase):
+    claim = "The neutral squirmer reaches velocity values " + phrase + " than the pusher."
+    fits = "Fits U = mP give m = 1.33 for the neutral squirmer and m = 0.33 for the pusher."
+    caption = claim + "\n" + fits
+    path = tmp_path / "multiple.pdf"
+    with fitz.open() as doc:
+        doc.new_page().insert_textbox(fitz.Rect(40, 40, 540, 750), caption)
+        doc.save(path)
+    item = lambda v, quote=fits: {"page": 1, "quote": quote, "value": v}
+    reported = {"three times larger": "3", "two times larger": "2"}[phrase]
+    found = {"id": "c1", "kind": "arithmetic", "location": "PDF第1页图注",
+             "description": "斜率之比约为4.03，并非正文所称3倍。", "scope": "同一功率下两种模式的速度比",
+             "evidence": [{"page": 1, "quote": claim}, {"page": 1, "quote": fits}],
+             "calculation": {"operation": "ratio", "operands": [item("1.33"), item("0.33")],
+                             "reported": item(reported, claim)}}
+    return path, found
+
+
+def test_ambiguous_multiple_is_a_low_severity_clarification(tmp_path):
+    # 10.1038/s41467-026-77281-x: "three times larger" with slopes 1.33/0.33.
+    # Reviewer support must not turn the wording ambiguity into high risk.
+    path, found = multiple_paper(tmp_path, "three times larger")
+    request, _ = responder(candidates=[found], evidence=found["evidence"])
+    issues, _, _ = screen.screen_manuscript(path, request=request)
+    assert len(issues) == 1 and issues[0]["severity"] == "low"
+    assert "两种理解" in issues[0]["description"] and "并非" not in issues[0]["description"]
+    assert assessment(issues)["level"] != "高风险"
+
+
+def test_multiple_matching_neither_reading_stays_a_conflict(tmp_path):
+    path, found = multiple_paper(tmp_path, "two times larger")
+    request, _ = responder(candidates=[found], evidence=found["evidence"])
+    issues, _, _ = screen.screen_manuscript(path, request=request)
+    assert issues[0]["severity"] == "high"
+    assert not issues[0]["details"]["calculation"]["ambiguous_multiple"]
+    assert assessment(issues)["level"] == "高风险"
+
+
+def test_ambiguous_multiple_repeated_in_caption_and_text_is_one_issue(tmp_path):
+    # 77281-x repeats "three times" in the Fig. 4c caption (p5) and the main
+    # text (p6); both candidates must merge into one clarification.
+    fits = "Fits U = mP give m = 1.33 for the neutral squirmer and m = 0.33 for the pusher."
+    caption = "The neutral squirmer reaches velocity values three times larger than the pusher."
+    text = "At P = 4.7 mW the neutral squirmer reaches 6 um/s, three times faster than the pusher."
+    path = tmp_path / "repeated.pdf"
+    with fitz.open() as doc:
+        doc.new_page().insert_textbox(fitz.Rect(40, 40, 540, 750), caption + "\n" + fits)
+        doc.new_page().insert_textbox(fitz.Rect(40, 40, 540, 750), text)
+        doc.save(path)
+    def found(location, page, claim):
+        item = lambda v, quote, pg: {"page": pg, "quote": quote, "value": v}
+        return {"kind": "arithmetic", "location": location, "description": "并非3倍。",
+                "scope": "同一功率下两种模式的速度比",
+                "evidence": [{"page": page, "quote": claim}, {"page": 1, "quote": fits}],
+                "calculation": {"operation": "ratio", "operands": [item("1.33", fits, 1), item("0.33", fits, 1)],
+                                "reported": item("3", claim, page)}}
+    candidates = [found("PDF第1页图注", 1, caption), found("PDF第2页正文", 2, text)]
+    def request(prompt):
+        if "候选:\n" not in prompt:
+            return json.dumps({"complete": True, "candidates": candidates})
+        return json.dumps({"complete": True, "decisions": [
+            {"id": i, "verdict": "support", "reason": "核对了拟合斜率与倍数表述。",
+             "evidence": candidates[0]["evidence"]} for i in ("c1", "c2")]})
+    issues, _, audit = screen.screen_manuscript(path, request=request)
+    assert len(issues) == 1 and issues[0]["severity"] == "low"
+    assert issues[0]["location"] == "PDF第1页图注；PDF第2页正文"
+    assert {e["page"] for e in issues[0]["details"]["evidence"]} == {1, 2}
+    assert len(audit["candidates"][0]["evidence"]) == 2  # audit record left untouched

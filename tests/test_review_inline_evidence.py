@@ -100,6 +100,31 @@ def test_multiple_images_per_issue_and_unbound_evidence():
             bind_issue_evidence(text, [invalid])
 
 
+def test_chinese_issue_numbers_bind_evidence():
+    text = '一、第一项问题。二、第二项问题。三、第三项问题。'
+    prefix, issues = bind_issue_evidence(text, [
+        {'dimension': 'data', 'issue_index': 1},
+        {'dimension': 'data', 'issue_index': 2},
+        {'dimension': 'data', 'issue_index': 3},
+    ])
+    assert prefix == ''
+    assert [item[0] for item in issues] == [1, 2, 3]
+
+
+def test_issue_evidence_accepts_string_and_ordered_indices():
+    text = '(1) First finding\n(2) Second finding'
+    _, issues = bind_issue_evidence(text, [
+        {'dimension': 'data', 'issue_index': '1'},
+        {'dimension': 'data', 'issue_index': '2'},
+    ])
+    assert [item[0] for item in issues] == [1, 2]
+    _, issues = bind_issue_evidence(text, [
+        {'dimension': 'data'},
+        {'dimension': 'data'},
+    ])
+    assert [item[0] for item in issues] == [1, 2]
+
+
 def test_explicit_evidence_not_truncated_to_four_images(tmp_path):
     renderer = renderer_module()
     review = sample(tmp_path)
@@ -107,3 +132,27 @@ def test_explicit_evidence_not_truncated_to_four_images(tmp_path):
     collected = renderer._review_evidence_images(review, {}, tmp_path / 'images')
     assert [im['issue_index'] for im in collected] == list(range(1, 7))
     assert all(im['max_height'] == 200 for im in collected)
+
+
+def test_english_binds_renderer_generated_evidence_without_index():
+    from modules import english_report_generator as english
+
+    text = '(1) First finding\n(2) Second finding'
+    _, issues = english._bind_generated_evidence(
+        text,
+        [{'dimension': 'data', 'path': 'page.png'}],
+        bind_issue_evidence,
+    )
+    assert issues[0][0] == 1
+    assert issues[0][2][0]['issue_index'] == 1
+
+
+def test_english_does_not_repair_explicit_invalid_evidence_index():
+    from modules import english_report_generator as english
+
+    with pytest.raises(ValueError, match='issue_index'):
+        english._bind_generated_evidence(
+            '(1) First finding',
+            [{'dimension': 'data', 'issue_index': 9}],
+            bind_issue_evidence,
+        )
