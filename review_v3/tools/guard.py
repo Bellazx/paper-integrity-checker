@@ -93,10 +93,15 @@ def check(tool: str, payload: dict) -> str | None:
             return None
         return f"只能读取本论文材料与资料包目录：{target} 不在允许范围内"
     if tool == "Bash":
-        if _writes_input(str(payload.get("command") or "")):
+        raw = str(payload.get("command") or "")
+        actor = os.environ.get("PV3_ACTOR", "")
+        if actor.startswith(("calibrator", "evidence")) and re.search(r"\bcurl\b|\bwget\b|pv3\s+(?:crossref|refcheck)", raw):
+            return "本阶段只根据已有记录分类或截图，不要查询外部数据库。"
+        if _writes_input(raw):
             return ("不要在论文原始材料目录中写入或修改文件（原始材料必须保持原样）。"
                     "截图请用 pv3 render/view 生成，脚本与中间文件请写到 /tmp 或资料包目录。")
-        command = _strip_allowed(str(payload.get("command") or ""))
+        # Heredoc bodies are data (ledger JSON, scripts), not shell words.
+        command = _strip_allowed(re.sub(r"<<-?\s*'?\"?(\w+)'?\"?\n.*?\n\1\b", "<<heredoc", raw, flags=re.S))
         for pattern in FORBIDDEN:
             if pattern.search(command):
                 return ("该命令访问了历史复核结果、其他论文输出、memory 或系统代码，不允许。"

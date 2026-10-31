@@ -19,7 +19,7 @@ import time
 import uuid
 from pathlib import Path
 
-from review_v3 import checklist, config, dossier as dossier_mod, ledger, memory, prompts, session
+from review_v3 import categories, checklist, config, dossier as dossier_mod, ledger, memory, prompts, session
 
 log = logging.getLogger(__name__)
 
@@ -375,9 +375,27 @@ class Review:
         spec.wrapup_prompt = lambda state: prompts.calibrator_continue(open_ids(state), wrapup=True)
         outcome = await session.run(spec)
         decided = ledger.load(path).get("items") or {}
-        left = [i for i, r in decided.items() if r.get("status") not in ("issue", "cleared")]
+        left = [i for i, r in decided.items() if not _categorized(r)]
         if left:
-            log.warning("DOI=%s calibration left %d issue(s) uncategorized: %s", self.doi, len(left), left[:8])
+            # One short follow-up for what the first session did not reach.
+            rest_path = self.ledger_path("cal", "rest")
+            rest = [r for r in issues if r["id"] in left]
+            ledger.create(rest_path, {"shard": "calibrate_rest", "role": "calibrator", "allow_new": False,
+                                      "require_category": True},
+                          [{"id": r["id"], "title": r.get("title") or r["id"], "dimension": r.get("dimension"),
+                            "first": _compact(r)} for r in rest])
+            rest_spec = self._spec("cal_rest", prompts.calibrator(self.dossier, rest), rest_path, 2, "calibrator", "evidence")
+            rest_spec.continue_prompt = lambda state: prompts.calibrator_continue(
+                [item["id"] for item in ledger.open_items(ledger.load(rest_path))])
+            rest_spec.wrapup_prompt = lambda state: prompts.calibrator_continue(
+                [item["id"] for item in ledger.open_items(ledger.load(rest_path))], wrapup=True)
+            await session.run(rest_spec)
+            for item_id, record in (ledger.load(rest_path).get("items") or {}).items():
+                if _categorized(record):
+                    decided[item_id] = record
+            left = [i for i, r in decided.items() if not _categorized(r)]
+            if left:
+                log.warning("DOI=%s calibration left %d issue(s) uncategorized: %s", self.doi, len(left), left[:8])
         out = dict(finals)
         for item_id, record in decided.items():
             if record.get("status") in ("issue", "cleared") and item_id in out:
@@ -389,7 +407,9 @@ class Review:
                 else:
                     # The category reason justifies the severity; the reader-facing
                     # description of the issue stays as the investigation wrote it.
-                    updated = {**before, "status": "issue", "severity": record.get("severity"),
+                    # Severity follows from the category, whatever the file says.
+                    updated = {**before, "status": "issue",
+                               "severity": categories.severity(record.get("category")) or record.get("severity"),
                                "category": record.get("category"), "category_reason": record.get("why")}
                 if (before.get("severity"), before.get("status")) != (updated.get("severity"), updated.get("status")):
                     updated["calibrated_from"] = {"status": before.get("status"), "severity": before.get("severity")}
@@ -649,6 +669,11 @@ def _start_regrade(run_dir: Path, final_path: Path, calibration: bool = True) ->
             ledger_file.rename(ledger_file.with_name(f"cal_all.{stamp}.json"))
         session.reset("cal_all", run_dir)
     log.info("regrading %s under rules %s (calibration %s)", run_dir, rules_version(), "redone" if calibration else "kept")
+
+
+def _categorized(record: dict) -> bool:
+    return record.get("status") == "cleared" or (
+        record.get("status") == "issue" and categories.severity(record.get("category")) is not None)
 
 
 ANCHOR_RE = re.compile(r"(?:Fig(?:ure)?\.?|Table|表|图|条目|文献|Ref\.?)\s*(S?\d+)", re.I)

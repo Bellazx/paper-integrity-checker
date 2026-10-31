@@ -658,3 +658,14 @@ def test_report_only_change_rewrites_without_recalibrating(tmp_path, fake_cli, m
 def test_report_wording_check_flags_process_terms():
     assert engine._wording_gaps({"reason": "该问题按实质问题处理，属 S2 类"})
     assert not engine._wording_gaps({"reason": "Table 3 两个模型的系数逐位相同，需作者说明。最终判定：建议高风险"})
+
+
+def test_guard_reads_heredoc_bodies_as_data_and_keeps_calibration_offline(monkeypatch):
+    from review_v3.tools import guard
+    ledger_write = "cd /tmp && pv3 ledger update <<'EOF'\n[{\"id\": \"x\", \"finding\": \"Fig.1 / Fig.2 find / ls /\"}]\nEOF"
+    assert guard.check("Bash", {"command": ledger_write}) is None
+    monkeypatch.setenv("PV3_ACTOR", "calibrator")
+    assert guard.check("Bash", {"command": "timeout 60 curl -s https://api.crossref.org/works/10.1/x"})
+    assert guard.check("Bash", {"command": "pv3 crossref --doi 10.1/x"})
+    monkeypatch.setenv("PV3_ACTOR", "investigator:ref")
+    assert guard.check("Bash", {"command": "pv3 crossref --doi 10.1/x"}) is None
