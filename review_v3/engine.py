@@ -664,6 +664,10 @@ async def _review(doi: str, report_json: str, input_dir: str, output_dir: str, r
         return failed
 
     cached = _read_json(final_path)
+    if config.REGRADE and not isinstance(cached, dict) and (run_dir / "finals.json").is_file():
+        # A regrade interrupted after setting the old report aside.
+        state["regrading"] = True
+        _write_json(state_path, state)
     if isinstance(cached, dict) and cached.get("trigger") != "review_error":
         if config.REGRADE and state.get("rules_version") != rules_version():
             _start_regrade(run_dir, final_path)
