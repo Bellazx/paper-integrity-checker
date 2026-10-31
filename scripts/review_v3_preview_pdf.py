@@ -59,7 +59,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("paths", nargs="+")
     parser.add_argument("--out", required=True)
+    parser.add_argument("--candidates", help="candidate list giving each DOI's initial report (for older runs)")
     args = parser.parse_args()
+    reports = {}
+    if args.candidates:
+        reports = {c["doi"]: c.get("report") for c in json.loads(Path(args.candidates).read_text(encoding="utf-8"))}
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     module = renderer_module()
@@ -67,6 +71,8 @@ def main() -> None:
     for raw in args.paths:
         final = _final(Path(raw))
         info = json.loads(final.read_text(encoding="utf-8"))
+        if not info.get("_report_json") and reports.get(info.get("doi")):
+            info["_report_json"] = reports[info["doi"]]
         try:
             print(f"{info.get('doi')} {info.get('result')} -> {render(module, info, out_dir)}  (from {final.name})")
         except Exception as exc:
