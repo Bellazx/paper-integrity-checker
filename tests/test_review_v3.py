@@ -769,3 +769,24 @@ def test_final_review_upholding_keeps_high_risk(tmp_path, fake_cli, monkeypatch)
     assert result["result"] == "高风险"
     models = {c["actor"].split(":")[0]: c["model"] for c in calls()}
     assert models["judge"] == config.JUDGE_MODEL and models["investigator"] == config.MODEL
+
+
+def test_paper_deadline_still_publishes_a_report(tmp_path, fake_cli, monkeypatch):
+    configure, _ = fake_cli
+    # The investigator records one issue and then hangs past the paper deadline.
+    configure(investigator={"issue": {"high::data::0": "substantive"}}, delay=0)
+    paper = _make_paper(tmp_path)
+    monkeypatch.setattr(config, "PAPER_TIMEOUT_SECONDS", 4)
+    original = engine._review_phases
+
+    async def slow(review, *args, **kwargs):
+        await review.prepare(args[2])
+        ledger.update(review.ledger_path("inv", review.shards[0]["id"]),
+                      [{"id": review.shards[0]["items"][0]["id"], "status": "cleared",
+                        "basis": "打开源数据 Sheet1 逐值核对，属共享横轴列，正常"}], "investigator")
+        await asyncio.sleep(30)
+        return await original(review, *args, **kwargs)
+    monkeypatch.setattr(engine, "_review_phases", slow)
+    result = _run(paper, tmp_path, monkeypatch)
+    assert result["trigger"] != "review_error" and result["_report_source"] == "deadline"
+    assert result["result"] in ("高风险", "低风险") and "最终判定" in result["reason"]

@@ -711,7 +711,7 @@ def _wording_gaps(result: dict) -> list[str]:
             "有风险的写“有风险”，其余写“未发现风险”或“需作者更正”。"] if found else []
 
 
-HIGH_GAP = re.compile(r"未对HIGH发现给出结论: (\w+)/(\S+) \(共(\d+)项\)")
+HIGH_GAP = re.compile(r"未对HIGH发现给出结论: (\w+)/(\S*) \(共(\d+)项\)")
 CLASS_GAPS = {"末位数字异常": ("trailing_digit", "末位数字"), "跨行伪重复": ("passage_offset", "跨行伪重复"),
               "小数精度不一致": ("decimal", "小数精度")}
 TEST_LABELS = {
@@ -778,8 +778,9 @@ def _coverage_patch(result: dict, gaps: list[str], finals: dict, evidence: dict)
         if match:
             dim, test = match.group(1), match.group(2)
             ids = [f"high::{h.get('dim')}::{i}" for i, h in enumerate(high)
-                   if (h.get("dim"), h.get("test") or h.get("match_type") or h.get("issue_type")) == (dim, test)]
-            label = TEST_LABELS.get(test, "数值规律")
+                   if (h.get("dim"), h.get("test") or h.get("match_type") or h.get("issue_type") or "") == (dim, test)]
+            label = TEST_LABELS.get(test) or {"image_splicing": "图像拼接", "reference": "参考文献",
+                                              "image": "图像相似"}.get(dim, "数值规律")
         elif cls:
             dim, label = "data", cls[1]
             ids = [record_id for record_id in members if cls[0] in record_id]
@@ -890,6 +891,71 @@ def _plain(text: str) -> str:
     return CATEGORY_CODE.sub("", text)
 
 
+INTERNAL_TITLE = re.compile(r"^初检HIGH发现[:：]\s*(\w+)/(\w+)[，,]?\s*位置\s*")
+REUSE_TITLE = re.compile(r"^跨表复用分组\s*\S+?（\d+项）[:：]\s*")
+DECIMAL_TITLE = re.compile(r"^小数精度不一致[:：]\s*列\s*([^，,]+)")
+TOOL_NOTES = re.compile(r"[（(][^（）()]*(?:pv3|forensic|脚本|预先生成)[^（）()]*[）)]")
+
+
+def _reader_label(text: str) -> str:
+    """An item title in reader-facing words: screening-test names become plain
+    Chinese labels, tool notes are dropped, the location is kept."""
+    text = TOOL_NOTES.sub("", str(text or "")).strip()
+    match = INTERNAL_TITLE.match(text)
+    if match:
+        where = _short_place(text[match.end():])
+        label = TEST_LABELS.get(match.group(2), "自动筛查提示")
+        return f"{label}（{where}）" if where else label
+    if REUSE_TITLE.match(text):
+        return f"跨表复用（{_short_place(REUSE_TITLE.sub('', text))}）"
+    match = DECIMAL_TITLE.match(text)
+    if match:
+        return f"小数精度不一致（{match.group(1).strip()}）"
+    if text.startswith(("Fig.", "Table", "图", "表")):
+        return text.split("：", 1)[0]
+    cut = re.split(r"[，,：:]", text, maxsplit=1)[0]
+    return cut[:40]
+
+
+def _short_place(text: str) -> str:
+    """A location as 'workbook / sheet', without the detector's column detail."""
+    text = str(text or "").replace("::", " / ").strip(" '\"")
+    text = re.split(r"'\s*(?:vs|<>|:)|\s+vs\s+", text)[0]  # drop the detector's pair/column detail
+    parts = [p.strip(" '\"") for p in text.split("/") if p.strip(" '\"")]
+    name = parts[0].rsplit(".", 1)[0] if parts else ""
+    return " / ".join([name] + parts[1:2])[:60] if parts else ""
+
+
+def _reader_labels(records: list[dict], limit: int = 8) -> list[str]:
+    labels = []
+    for record in records:
+        label = _reader_label(record.get("条目") or record.get("cite") or "")
+        if label and label not in labels:
+            labels.append(label)
+    return labels[:limit] + ([f"等共 {len(labels)} 项"] if len(labels) > limit else [])
+
+
+def _checked_summary(cleared: list[dict]) -> str:
+    """Checked items grouped by kind with their location words (the words the
+    publication gate looks for), one sentence per kind."""
+    groups: dict[str, list[str]] = {}
+    for record in cleared:
+        title = _reader_label(record.get("条目") or "")
+        kind, _, where = title.partition("（")
+        where = where.rstrip("）") or str(record.get("cite") or "").split("；")[0]
+        bucket = groups.setdefault(kind[:30] or "其他核查", [])
+        where = where.replace("末位数字/SD 规律/小数尾串继承扫描结果复核", "").strip()
+        if kind.startswith("末位数字/SD"):
+            kind = "末位数字、标准差规律与小数尾数扫描"
+        if where and where not in bucket:
+            bucket.append(where[:60])
+    if not groups:
+        return ""
+    sentences = [f"{kind}（{'、'.join(places[:5])}{'等' if len(places) > 5 else ''}）" if places else kind
+                 for kind, places in groups.items()]
+    return "已核对以下项目，均属正常：" + "；".join(sentences) + "。"
+
+
 def _template_report(doi: str, facts: dict, verdicts: dict, finals: dict, evidence: dict) -> dict:
     """Report assembled in code from the verified facts: the last resort when
     the writer cannot produce a report that passes the publication gate."""
@@ -903,18 +969,18 @@ def _template_report(doi: str, facts: dict, verdicts: dict, finals: dict, eviden
             parts.append(f"（{issue['编号']}）问题位置：{_plain(issue.get('location'))}\n问题类型：{_plain(issue.get('issue_type'))}\n"
                          f"发现：{_plain(issue.get('finding'))}\n为什么重要：{_plain(issue.get('why'))}\n核查依据：{_plain(issue.get('basis'))}")
             reasons.append(f"{_plain(issue.get('location'))[:60]}：{_plain(issue.get('issue_type'))[:60]}。")
-        checked = [str(c.get("cite") or c.get("条目") or "")[:80] for c in fact.get("cleared") or []]
+        checked = _checked_summary(fact.get("cleared") or [])
         if checked:
-            parts.append("已核对：" + "；".join(checked) + "，均属正常。")
+            parts.append(checked)
         if fact.get("需作者更正事项"):
             marks = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
             lines = [f"{marks[i] if i < len(marks) else '·'} 位置：{_plain(c.get('位置'))[:80]}；问题：{_plain(c.get('问题'))[:60]}，"
                      f"{_plain(c.get('要点'))[:160]}；请作者核对更正。" for i, c in enumerate(fact["需作者更正事项"])]
             parts.append("另需作者更正：\n" + "\n".join(lines))
-        missing = [str(c.get("条目") or "")[:60] for c in fact.get("not_applicable") or []]
+        missing = _reader_labels(fact.get("not_applicable") or [])
         if missing:
             parts.append("以下项目因缺少相应材料不适用：" + "；".join(missing) + "。")
-        unfinished = [str(c.get("条目") or "")[:60] for c in fact.get("未能完成的核查（如实说明为核查范围限制）") or []]
+        unfinished = _reader_labels(fact.get("未能完成的核查（如实说明为核查范围限制）") or [])
         if unfinished:
             parts.append("以下项目未能完成核对，不作为问题依据：" + "；".join(unfinished) + "。")
         if dim == "data":
@@ -1248,6 +1314,69 @@ async def _review_phases(review: "Review", doi: str, evidence: dict, evidence_pa
     return result
 
 
+def _recorded_findings(review: "Review", run_dir: Path) -> dict:
+    """Everything the review has concluded so far, read from its ledgers:
+    two-reviewer merge, arbitration, completion, then grading and final
+    review where they ran. Items still in dispute or open are unresolved."""
+    finals, disputes = review.merge()
+    for path in sorted((run_dir / "ledgers").glob("arb*_*.json")) + sorted((run_dir / "ledgers").glob("fin*_*.json")):
+        if path.name.count(".") > 1:  # set-aside copies from earlier regrades
+            continue
+        for item_id, record in (ledger.load(path).get("items") or {}).items():
+            if record.get("status") in ("issue", "cleared", "not_applicable"):
+                finals[item_id] = {**finals.get(item_id, {}), **{k: record.get(k) for k in ("id", "title", "members")
+                                                                  if record.get(k) is not None},
+                                   "dimension": record.get("dimension") or finals.get(item_id, {}).get("dimension"),
+                                   **_compact(record)}
+    for item in disputes:
+        finals.setdefault(item["id"], {**{k: item.get(k) for k in ("id", "title", "kind", "members", "shard")},
+                                       "dimension": item["dimension"], "status": "unresolved", "note": "核对未完成"})
+    for name in ("cal_all", "cal_rest", "jdg_all"):
+        for item_id, record in (ledger.load(run_dir / "ledgers" / f"{name}.json").get("items") or {}).items():
+            if item_id not in finals or not _categorized(record):
+                continue
+            if record.get("status") == "cleared":
+                finals[item_id] = {**finals[item_id], "status": "cleared", "basis": record.get("basis") or finals[item_id].get("basis")}
+                finals[item_id].pop("severity", None)
+            else:
+                updated = {**finals[item_id], "status": "issue", "severity": categories.severity(record.get("category")),
+                           "category": record.get("category"), "category_reason": record.get("why")}
+                if _admits_minor(updated):
+                    updated["severity"] = "minor"
+                finals[item_id] = updated
+    return finals
+
+
+def _deadline_report(doi: str, report_json: str, input_dir: str, run_dir: Path) -> dict:
+    """Report published when the paper deadline passes: built in code, without
+    model calls, from the conclusions already recorded. Unfinished checks are
+    stated as such and do not count as evidence either way."""
+    from api.services.review_validation import validate
+    state = _read_json(run_dir / "state.json", {}) or {}
+    evidence = _read_json(Path(state.get("evidence_path") or ""), {}) or {}
+    review = Review(doi, report_json, input_dir, run_dir, None, None)
+    review.evidence = evidence
+    review.dossier = _read_json(run_dir / "dossier" / "index.json", {}) or {}
+    review.shards = _read_json(run_dir / "shards.json", []) or []
+    finals = _recorded_findings(review, run_dir)
+    verdicts = review.verdicts(finals)
+    facts, bound = review.facts(finals)
+    result = _template_report(doi, facts, verdicts, finals, evidence)
+    result["evidence_images"] = _bind_evidence(result, bound)
+    checked, gaps = validate(result, evidence)
+    if gaps:
+        result, _ = _coverage_patch(result, gaps, finals, evidence)
+        checked, gaps = validate(result, evidence)
+    unfinished = sum(1 for r in finals.values() if r.get("status") in ("open", "unresolved"))
+    _write_json(run_dir / "finals.json", {"verdicts": verdicts, "finals": finals, "deadline_report": True})
+    checked.update(_engine="v3", _report_source="deadline", _unfinished_items=unfinished, _coverage_gaps=gaps,
+                   _review_workdir=str(run_dir), _report_json=report_json, _input_dir=input_dir)
+    _write_json(run_dir / "final.json", checked)
+    log.warning("DOI=%s paper deadline reached: report built from recorded findings (%d unfinished item(s), gaps %s)",
+                doi, unfinished, gaps[:3])
+    return checked
+
+
 async def run_review(doi: str, report_json_path: str, input_dir: str, output_dir: str, resume: bool = False) -> dict:
     """Drop-in replacement for api.services.review.run_review_single."""
     from api.services.review_lock import exclusive_review
@@ -1269,8 +1398,13 @@ async def run_review(doi: str, report_json_path: str, input_dir: str, output_dir
                 result = await asyncio.wait_for(
                     _review(doi, report_json_path, input_dir, output_dir, run_dir, deadline), timeout)
             except TimeoutError:
-                result = _fallback(doi, f"Whole-paper deadline exceeded ({timeout}s); checkpoints retained")
-                result["_retry_exhausted"] = True
+                # Never end without a report: publish what has been verified.
+                try:
+                    result = await asyncio.to_thread(_deadline_report, doi, report_json_path, input_dir, run_dir)
+                except Exception as exc:  # pragma: no cover - last line of defence
+                    log.exception("DOI=%s deadline report failed", doi)
+                    result = _fallback(doi, f"Whole-paper deadline exceeded ({timeout}s); report assembly failed: {exc}")
+                    result["_retry_exhausted"] = True
     finally:
         paper_deadline.reset(token)
         log.info("DOI=%s v3 review wall_seconds=%.1f run=%s", doi, time.monotonic() - started, run_dir)
