@@ -12,11 +12,16 @@ from pathlib import Path
 
 
 def rows_from_log(path: Path) -> list[dict]:
-    rows = {}
+    """Latest verdict per paper; wall time is the longest run of that paper
+    (a regrade or resume is short, the full review is the real cost)."""
+    rows, walls = {}, {}
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if '"expected"' in line and line.lstrip().startswith("{"):
             row = json.loads(line[line.index("{"):])
             rows[row["doi"]] = row  # the latest attempt wins
+            walls[row["doi"]] = max(walls.get(row["doi"], 0), row.get("wall_seconds") or 0)
+    for doi, row in rows.items():
+        row["wall_seconds"] = walls[doi]
     return list(rows.values())
 
 

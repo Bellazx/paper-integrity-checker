@@ -23,11 +23,17 @@ from scripts.review_v3_eval import rows_from_log  # noqa: E402
 
 
 def delivered_pdf(url: str) -> Path | None:
+    """The report PDF named in the URL, preferring its own namespace directory."""
     name = Path(url or "").name
     if not name:
         return None
-    for path in (ROOT / "data" / "output").rglob(name):
-        return path
+    namespace = url.split("/review_reports/", 1)[-1].split("/")[0] if "/review_reports/" in url else ""
+    roots = [ROOT / "data" / "output" / namespace] if namespace else []
+    roots.append(ROOT / "data" / "output")
+    for root in roots:
+        if root.is_dir():
+            for path in root.rglob(name):
+                return path
     return None
 
 
@@ -43,9 +49,17 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("log")
     parser.add_argument("--db-rows", default="/tmp/scholar_1021.json")
+    parser.add_argument("--reports-csv", nargs="*", default=[],
+                        help="comparison.csv files; use their m31_review_report_url as the reference report")
     parser.add_argument("--out")
     args = parser.parse_args()
-    urls = {row[1]: row[8] for row in json.loads(Path(args.db_rows).read_text())}
+    urls = {}
+    if Path(args.db_rows).is_file():
+        urls = {row[1]: row[8] for row in json.loads(Path(args.db_rows).read_text())}
+    import csv
+    for path in args.reports_csv:
+        for record in csv.DictReader(open(path, encoding="utf-8-sig")):
+            urls[record["doi"].strip()] = record.get("m31_review_report_url") or urls.get(record["doi"].strip())
     out = []
     for row in rows_from_log(Path(args.log)):
         if not row["error"] and row["got"] == row["expected"]:
