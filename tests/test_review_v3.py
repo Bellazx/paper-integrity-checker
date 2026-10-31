@@ -732,3 +732,10 @@ def test_substantive_label_contradicting_its_own_impact_statement_is_minor():
     # Data authenticity and genuine carrier conflicts keep their label.
     assert not engine._admits_minor({**base, "category": "S1", "why": "两模型结果块逐位相同；论文结论方向不变"})
     assert not engine._admits_minor({**base, "category": "S2", "why": "MI 结果块复用，不是规范问题；结论方向不变"})
+
+
+def test_correction_points_are_not_read_as_risk_issues():
+    from modules.review_report_layout import _ISSUE_START
+    text = ("本节结论：有风险。\n（1）问题位置：Table 3\n问题类型：x\n发现：y\n为什么重要：z\n核查依据：w\n"
+            "另需作者更正：\n① 位置：第2页 Fig. 1；问题：图注写 Fig. 3；请改为 Fig. 2。\n② 位置：文献 [4]；问题：作者缺失。")
+    assert [m.group(1) for m in _ISSUE_START.finditer(text)] == ["1"]

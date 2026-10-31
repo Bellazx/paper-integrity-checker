@@ -44,7 +44,8 @@ def write_report(prompt):
             parts.append(f"（{issue['编号']}）问题位置：{issue['location']}\n问题类型：{issue['issue_type']}\n"
                          f"发现：{issue['finding']}\n为什么重要：{issue['why']}\n核查依据：{issue['basis']}")
         if facts[dim]["需作者更正事项"]:
-            parts.append("另需作者更正：" + "；".join(f"{c['位置']}{c['问题']}" for c in facts[dim]["需作者更正事项"]))
+            parts.append("另需作者更正：\n" + "\n".join(f"{'①②③④⑤'[i % 5]} 位置：{c['位置']}；问题：{c['问题']}；请核对。"
+                                                       for i, c in enumerate(facts[dim]["需作者更正事项"])))
         cleared = [f"{c['条目']}（{c['cite']}）属假阳性，可解释：{c['依据']}" for c in facts[dim]["cleared"]]
         cleared += [f"{c['条目']}：{c['依据']}" for c in facts[dim]["not_applicable"]]
         if cleared:

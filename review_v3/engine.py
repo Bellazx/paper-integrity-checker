@@ -851,8 +851,10 @@ def _template_report(doi: str, facts: dict, verdicts: dict, finals: dict, eviden
         if checked:
             parts.append("已核对：" + "；".join(checked) + "，均属正常。")
         if fact.get("需作者更正事项"):
-            parts.append("另需作者更正：" + "；".join(f"{_plain(c.get('位置'))[:60]}，{_plain(c.get('问题'))[:40]}"
-                                              for c in fact["需作者更正事项"]) + "。")
+            marks = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
+            lines = [f"{marks[i] if i < len(marks) else '·'} 位置：{_plain(c.get('位置'))[:80]}；问题：{_plain(c.get('问题'))[:60]}，"
+                     f"{_plain(c.get('要点'))[:160]}；请作者核对更正。" for i, c in enumerate(fact["需作者更正事项"])]
+            parts.append("另需作者更正：\n" + "\n".join(lines))
         missing = [str(c.get("条目") or "")[:60] for c in fact.get("not_applicable") or []]
         if missing:
             parts.append("以下项目因缺少相应材料不适用：" + "；".join(missing) + "。")
