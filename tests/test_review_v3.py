@@ -703,3 +703,14 @@ def test_existing_ledger_gains_items_found_later(tmp_path):
     again = ledger.create(path, {"shard": "x"}, [{"id": "a", "title": "A"}, {"id": "b", "title": "B"}])
     items = ledger.load(path)["items"]
     assert again["added"] == 1 and items["a"]["status"] == "cleared" and items["b"]["status"] == "open"
+
+
+def test_report_is_assembled_from_facts_when_the_writer_keeps_failing(tmp_path, fake_cli, monkeypatch):
+    configure, _ = fake_cli
+    configure(investigator={"issue": {"high::data::0": "substantive"}},
+              challenger={"issue": {"high::data::0": "substantive"}},
+              calibrator={"issue": {"high::data::0": "substantive"}}, writer="broken")
+    result = _run(_make_paper(tmp_path), tmp_path, monkeypatch)
+    assert result["trigger"] != "review_error" and result["result"] == "高风险"
+    assert result["_report_source"] == "template"
+    assert "（1）问题位置：" in result["data_review"] and "最终判定：建议高风险" in result["reason"]

@@ -78,6 +78,10 @@ def main():
         import time
         time.sleep(float(scenario["delay"]))
     if role == "writer":
+        if scenario.get("writer") == "broken":
+            print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "num_turns": 1,
+                              "result": "我先调用工具看一下数据。"}))
+            return
         write_report(prompt)
         return
     behaviour = scenario.get(actor, scenario.get(role, "clear_all"))

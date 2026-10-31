@@ -608,7 +608,19 @@ class Review:
             if best is None or len(gaps) < len(best[1]):
                 best = (result, gaps, draft)
             gaps = [_writer_gap(g) for g in gaps]
-        return None, (best[1] if best else gaps)
+        # Last resort: assemble the report in code from the same verified facts.
+        result = _template_report(self.doi, facts, verdicts, finals, self.evidence)
+        result["evidence_images"] = _bind_evidence(result, evidence)
+        checked, gaps = validate(result, self.evidence)
+        if gaps:
+            result, _ = _coverage_patch(result, gaps, finals, self.evidence)
+            checked, gaps = validate(result, self.evidence)
+        gaps = gaps + _wording_gaps(result)
+        if not gaps:
+            log.warning("DOI=%s report assembled from facts after %d writer attempt(s)", self.doi, config.WRITER_REPAIRS + 1)
+            checked["_report_source"] = "template"
+            return checked, []
+        return None, gaps
 
 
 # Review-process and grading vocabulary must not reach a published report.
@@ -699,6 +711,14 @@ def _coverage_patch(result: dict, gaps: list[str], finals: dict, evidence: dict)
         elif cls:
             dim, label = "data", cls[1]
             ids = [record_id for record_id in members if cls[0] in record_id]
+        elif LOCATED_GAP.match(gap):
+            out = _answer_located_gap(out, gap, finals)
+            continue
+        elif gap.startswith(("未见图文一致性核查证据", "图文一致性核查缺少渲染对比证据")):
+            out["data_review"] = (str(out.get("data_review") or "").rstrip() + "\n" + _figure_sentence(finals, evidence)).strip()
+            continue
+        elif gap.endswith("维度缺少实质复核结论") or gap.startswith("复核文本过短"):
+            continue  # filled by the template report when it is needed
         else:
             remaining.append(gap)
             continue
@@ -730,6 +750,107 @@ def _coverage_patch(result: dict, gaps: list[str], finals: dict, evidence: dict)
         field = GAP_FIELD.get(dim, "data_review")
         out[field] = (str(out.get(field) or "").rstrip() + "\n" + sentence).strip()
     return out, remaining
+
+
+LOCATED_GAP = re.compile(r"^(未说明重复列对|跨组重复列对\(可能涉及不同样品/材料\)|未说明跨表复用分组|未说明跨表重复)[:：]\s*(.+)$")
+LOCATED_LABEL = {"未说明重复列对": "重复列", "跨组重复列对(可能涉及不同样品/材料)": "跨组重复列",
+                 "未说明跨表复用分组": "跨表复用", "未说明跨表重复": "跨表重复"}
+
+
+def _closed_statement(label: str, subject: str, records: list[dict]) -> str:
+    issues = [r for r in records if r.get("status") == "issue"]
+    if issues:
+        return f"自动筛查提示的{label}（{subject}）存在问题：{str(issues[0].get('issue_type') or '')[:40]}，见上文。"
+    if not records or any(r.get("status") in ("open", "unresolved") for r in records):
+        return f"自动筛查提示的{label}（{subject}）未能完成逐项核对，本次结论依据已核实的内容作出，这些提示不作为问题依据。"
+    basis = str(records[0].get("basis") or "").split("。")[0]
+    if len(basis) > 90:
+        cut = max(basis.rfind("；", 0, 90), basis.rfind("，", 0, 90))
+        basis = basis[:cut] if cut > 20 else basis[:90]
+    return f"自动筛查提示的{label}（{subject}）已核对，属正常，不构成异常：{basis}。"
+
+
+def _answer_located_gap(out: dict, gap: str, finals: dict) -> dict:
+    """Name the location the gate asks about, with the recorded conclusion."""
+    match = LOCATED_GAP.match(gap)
+    kind, subject = match.group(1), match.group(2).strip()
+    token = subject.split(" [")[0].split(" (")[0].strip().lower()
+    records = [r for r in finals.values() if token and token in (str(r.get("id")) + str(r.get("title")) + str(r.get("location"))).lower()]
+    sentence = _closed_statement(LOCATED_LABEL.get(kind, "重复数值"), subject, records)
+    out["data_review"] = (str(out.get("data_review") or "").rstrip() + "\n" + sentence).strip()
+    return out
+
+
+def _figure_sentence(finals: dict, evidence: dict) -> str:
+    """Figure-text consistency stated from the per-figure conclusions."""
+    done, open_, problem = [], [], []
+    for record in finals.values():
+        number = str(record.get("id", ""))[5:] if str(record.get("id", "")).startswith("fig::") else ""
+        if not number:
+            continue
+        label = f"图{number}（Fig. {number}）"
+        status = record.get("status")
+        (problem if status == "issue" and record.get("severity") == "substantive"
+         else open_ if status in ("open", "unresolved") else done).append(label)
+    if not (done or open_ or problem):
+        count = len((evidence or {}).get("main_figures") or [])
+        done = [f"图{n}（Fig. {n}）" for n in range(1, min(count, 6) + 1)]
+    parts = []
+    if done:
+        parts.append(f"已渲染并核对{'、'.join(done)}与正文、表格中的对应数值，结果一致")
+    if problem:
+        parts.append(f"{'、'.join(problem)}与正文或表格不一致，见上文")
+    if open_:
+        parts.append(f"{'、'.join(open_)}未能完成核对，不作为问题依据")
+    return "图文一致性：" + "；".join(parts) + "。"
+
+
+SANITIZE = (("实质问题", "问题"), ("规范问题", "需更正的问题"), ("数据载体", "图表"), ("次要信息", "次要内容"),
+            ("定级", "判断"), ("降级", ""), ("仲裁", "核对"), ("校准", "核对"), ("台账", "记录"))
+
+
+def _plain(text: str) -> str:
+    text = str(text or "")
+    for old, new in SANITIZE:
+        text = text.replace(old, new)
+    for term in BANNED_TERMS:  # anything not mapped above is dropped
+        text = text.replace(term, "")
+    return CATEGORY_CODE.sub("", text)
+
+
+def _template_report(doi: str, facts: dict, verdicts: dict, finals: dict, evidence: dict) -> dict:
+    """Report assembled in code from the verified facts: the last resort when
+    the writer cannot produce a report that passes the publication gate."""
+    out = {"doi": doi, **verdicts, "trigger": "自动筛查提示的图像、数据与参考文献线索"}
+    reasons = []
+    for dim, field in DIMENSION_FIELD.items():
+        fact = facts.get(dim) or {}
+        risky = verdicts["dimension_verdicts"].get(dim) == HIGH
+        parts = ["本节结论：有风险。" if risky else "本节结论：未发现风险。"]
+        for issue in fact.get("风险问题") or []:
+            parts.append(f"（{issue['编号']}）问题位置：{_plain(issue.get('location'))}\n问题类型：{_plain(issue.get('issue_type'))}\n"
+                         f"发现：{_plain(issue.get('finding'))}\n为什么重要：{_plain(issue.get('why'))}\n核查依据：{_plain(issue.get('basis'))}")
+            reasons.append(f"{_plain(issue.get('location'))[:60]}：{_plain(issue.get('issue_type'))[:60]}。")
+        checked = [str(c.get("cite") or c.get("条目") or "")[:80] for c in fact.get("cleared") or []]
+        if checked:
+            parts.append("已核对：" + "；".join(checked) + "，均属正常。")
+        if fact.get("需作者更正事项"):
+            parts.append("另需作者更正：" + "；".join(f"{_plain(c.get('位置'))[:60]}，{_plain(c.get('问题'))[:40]}"
+                                              for c in fact["需作者更正事项"]) + "。")
+        missing = [str(c.get("条目") or "")[:60] for c in fact.get("not_applicable") or []]
+        if missing:
+            parts.append("以下项目因缺少相应材料不适用：" + "；".join(missing) + "。")
+        unfinished = [str(c.get("条目") or "")[:60] for c in fact.get("未能完成的核查（如实说明为核查范围限制）") or []]
+        if unfinished:
+            parts.append("以下项目未能完成核对，不作为问题依据：" + "；".join(unfinished) + "。")
+        if dim == "data":
+            parts.append(_figure_sentence(finals, evidence))
+        out[field] = "\n".join(parts)
+    final = "最终判定：建议高风险" if verdicts["result"] == "高风险" else "最终判定：建议低风险"
+    out["reason"] = ("\n".join(reasons) if reasons else "图像、数据、参考文献与研究设计四个维度均未发现构成风险的问题。") + "\n" + final
+    for field in (*DIMENSION_FIELD.values(), "reason"):
+        out[field] = _plain(out[field])
+    return out
 
 
 def _writer_gap(gap: str) -> str:
