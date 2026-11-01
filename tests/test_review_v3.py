@@ -852,3 +852,29 @@ def test_duplicate_column_pairs_are_grouped_by_sheet():
     assert len(groups) == 3 and sum(len(g["members"]) for g in groups) == 300
     assert any(g["strong"] for g in groups) and all("重复列对" in g["title"] and "S1.xlsx" in g["title"] for g in groups)
     assert engine._reader_label(groups[0]["title"]).startswith("重复列（S1 / Fig")
+
+
+def test_completion_follow_up_is_capped_per_paper(tmp_path, fake_cli, monkeypatch):
+    configure, calls = fake_cli
+    configure(investigator="noop", challenger="noop", arbiter="noop")
+    monkeypatch.setattr(config, "COMPLETE_BATCH", 1)
+    monkeypatch.setattr(config, "COMPLETE_MAX_BATCHES", 1)  # two follow-up batches per round without the cap
+    paper = _make_paper(tmp_path)
+    evidence = paper["evidence_obj"]
+    for column in ("a", "b", "c", "d"):
+        evidence["high_findings"].append({"dim": "data", "test": "value_recycling", "location": f"data.xlsx / Sheet1 / {column}"})
+    evidence["coverage_manifest"]["must_address"] = [f"high::data::{i}" for i in range(5)]
+    Path(paper["evidence"]).write_text(json.dumps(evidence))
+    result = _run(paper, tmp_path, monkeypatch)
+    rounds = {}
+    for call in calls():
+        if call["actor"].startswith("investigator:fin"):
+            rounds.setdefault(call["actor"].split(":")[1].split("_")[0], set()).add(call["actor"])
+    assert rounds and all(len(names) == 1 for names in rounds.values())
+    assert result["trigger"] != "review_error"
+
+
+def test_long_fact_lists_are_summarised():
+    entries = [{"条目": f"重复列对 {i}"} for i in range(config.FACTS_LIST_LIMIT + 5)]
+    capped = engine._capped(entries, "均已核对，未发现问题")
+    assert len(capped) == config.FACTS_LIST_LIMIT + 1 and capped[-1]["条目"] == "另有 5 项，均已核对，未发现问题"

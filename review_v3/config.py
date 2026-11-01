@@ -54,6 +54,11 @@ ARBITRATE_SOFT_SECONDS = _int("REVIEW_V3_ARBITRATE_SOFT_SECONDS", 42 * 60)
 # batches in parallel, each with its own time box, at most this many rounds.
 COMPLETE_BATCH = _int("REVIEW_V3_COMPLETE_BATCH", 6)
 COMPLETE_ROUNDS = _int("REVIEW_V3_COMPLETE_ROUNDS", 2)
+# Follow-up sessions per round for one paper. Beyond this the remaining items
+# are reported as not checked: one paper must not take every session slot.
+COMPLETE_MAX_BATCHES = _int("REVIEW_V3_COMPLETE_MAX_BATCHES", 8)
+# Entries per list given to the writer; the rest are summarised in one line.
+FACTS_LIST_LIMIT = _int("REVIEW_V3_FACTS_LIST_LIMIT", 60)
 COMPLETE_SECONDS = _int("REVIEW_V3_COMPLETE_SECONDS", 15 * 60)
 MAX_CHUNKS_COMPLETE = _int("REVIEW_V3_MAX_CHUNKS_COMPLETE", 8)
 CALIBRATE_SOFT_SECONDS = _int("REVIEW_V3_CALIBRATE_SOFT_SECONDS", 46 * 60)

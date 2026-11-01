@@ -455,6 +455,12 @@ class Review:
                        if r.get("status") in ("unresolved", "open") and _required_finding(r["id"]) and r["id"] in by_id]
             if not pending:
                 break
+            limit = config.COMPLETE_BATCH * config.COMPLETE_MAX_BATCHES
+            if len(pending) > limit:
+                pending.sort(key=lambda r: not by_id[r["id"]][1].get("strong"))
+                log.warning("DOI=%s completion round %d: %d must-check item(s) open, following up %d", self.doi,
+                            round_no, len(pending), limit)
+                pending = pending[:limit]
             batches: dict[str, list[dict]] = {}
             for record in pending:
                 shard, _ = by_id[record["id"]]
@@ -632,6 +638,9 @@ class Review:
                     label = names.get(check) or ("重复列扫描" if check.startswith("duplicate_columns") else "数据清单读取")
                     unresolved.append({"条目": f"自动检查：{label}（{check.split(':', 1)[-1]}）",
                                        "说明": "数据文件过大，超出内存上限，该项自动检查未能执行"})
+            cleared = _capped(cleared, "均已核对，未发现问题")
+            missing = _capped(missing, "均不适用")
+            unresolved = _capped(unresolved, "均未能完成核查")
             out[dim] = {"风险问题": issues, "需作者更正事项": corrections, "cleared": cleared, "not_applicable": missing}
             if unresolved:
                 out[dim]["未能完成的核查（如实说明为核查范围限制）"] = unresolved
@@ -722,6 +731,15 @@ class Review:
             checked["_report_source"] = "template"
             return checked, []
         return None, gaps
+
+
+def _capped(entries: list[dict], outcome: str) -> list[dict]:
+    """A long list (e.g. thousands of column pairs) is cut to FACTS_LIST_LIMIT;
+    one line states how many more entries share the list's outcome."""
+    limit = config.FACTS_LIST_LIMIT
+    if len(entries) <= limit:
+        return entries
+    return entries[:limit] + [{"条目": f"另有 {len(entries) - limit} 项，{outcome}"}]
 
 
 # Review-process and grading vocabulary must not reach a published report.
