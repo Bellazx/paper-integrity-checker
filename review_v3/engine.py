@@ -738,6 +738,13 @@ TEST_LABELS = {
     "value_recycling": "重复值", "fixed_ratio_series": "固定比例序列", "full_duplicate": "图像重复",
     "partial_region": "图像局部相似", "splicing": "图像拼接", "low_match_score": "参考文献匹配度低",
     "linear_dependency": "列间线性相关", "coefficient_of_variation": "变异系数异常", "sd_regularity": "标准差规律",
+    # Each label contains a keyword the publication gate looks for (modules/review_coverage.py).
+    "verified_manuscript_content_conflict": "正文内容不一致", "arithmetic_sequence": "等差数列",
+    "geometric_sequence": "等比数列", "benfords_law": "首位数字分布（本福特）",
+    "rectangular_matrix_reuse": "矩阵逐格复用", "same_sheet_channel_duplicate": "不同通道数值重复",
+    "same_sheet_exact_series_reuse": "数列复用", "semantic_transform_conflict": "归一化换算冲突",
+    "near_modified_matrix_reuse": "近似修改的矩阵", "digit_edit_matrix_reuse": "数字修改的矩阵",
+    "figure_n_mismatch": "样本量不一致",
 }
 GAP_FIELD = {"data": "data_review", "image": "image_review", "image_splicing": "image_review",
              "reference": "ref_review", "ref": "ref_review", "manuscript": "methodology_review",

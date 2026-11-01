@@ -802,3 +802,26 @@ def test_judge_also_reviews_issues_the_calibrator_downgraded(tmp_path, fake_cli,
     result = _run(_make_paper(tmp_path), tmp_path, monkeypatch)
     assert any(c["actor"] == "judge" for c in calls())
     assert result["result"] == "高风险"
+
+
+def test_large_prompts_go_through_stdin(tmp_path, fake_cli):
+    configure, calls = fake_cli
+    configure()
+    spec = session.SessionSpec(name="big", workdir=tmp_path, prompt="核查" + "填" * 200_000, actor="writer",
+                               tools=False, max_chunks=1)
+    asyncio.run(session.run(spec))
+    # The CLI process started and received the prompt (an over-long argv
+    # would fail before the process exists).
+    assert any(c["actor"] == "writer" and c["prompt_chars"] > 200_000 for c in calls())
+
+
+def test_every_gated_screening_type_has_a_label_with_its_keyword():
+    import inspect
+    from modules import review_coverage
+    source = inspect.getsource(review_coverage)
+    block = source[source.index("_type_cues = {"):source.index("for (dim, test), items in groups.items():")]
+    cues = {}
+    exec(block.strip(), {}, cues)
+    for test, words in cues["_type_cues"].items():
+        label = engine.TEST_LABELS.get(test, "")
+        assert any(w.lower() in label.lower() for w in words), (test, label)

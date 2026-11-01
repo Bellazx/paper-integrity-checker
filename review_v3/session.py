@@ -192,7 +192,9 @@ async def _kill(proc) -> None:
 async def _invoke(spec: SessionSpec, message: str, session_id: str, resume: bool, turns: int,
                   wrapping: bool = False) -> dict:
     model = PROFILES[spec.profile]()[0]
-    command = [find_cli(), "-p", message, "--model", model, "--output-format", "json",
+    # The prompt goes through stdin: a single command-line argument is capped
+    # at 128 KB on Linux, and writer/judge prompts can exceed it.
+    command = [find_cli(), "-p", "--model", model, "--output-format", "json",
                "--max-turns", str(turns), "--disable-slash-commands",
                "--resume" if resume else "--session-id", session_id]
     command += ["--settings", settings_file(spec.profile)]
@@ -210,11 +212,11 @@ async def _invoke(spec: SessionSpec, message: str, session_id: str, resume: bool
         timeout = max(1.0, min(timeout, spec.deadline - now))
     started = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
-        *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        *command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         cwd=str(runtime_cwd()), env=session_env(spec.workdir, spec.ledger_path, spec.actor, spec.extra_env),
         start_new_session=True)
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(message.encode("utf-8")), timeout)
     except TimeoutError:
         # A long chunk is slow thinking, not a broken endpoint: keep the
         # session (completed turns are persisted) and continue or wrap up.

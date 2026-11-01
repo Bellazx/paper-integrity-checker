@@ -61,7 +61,7 @@ def write_report(prompt):
 
 
 def main():
-    prompt = arg("-p", "")
+    prompt = sys.stdin.read()  # sessions pass the prompt on stdin
     scenario = json.loads(Path(os.environ["FAKE_CLAUDE_SCENARIO"]).read_text())
     actor = os.environ.get("PV3_ACTOR", "writer")
     role = actor.split(":")[0]
@@ -69,7 +69,8 @@ def main():
     with open(os.environ["FAKE_CLAUDE_LOG"], "a") as log:
         log.write(json.dumps({"actor": actor, "resume": "--resume" in sys.argv, "session": session,
                               "turns": arg("--max-turns"), "model": arg("--model"),
-                              "settings": arg("--settings"), "tools": arg("--tools")}) + "\n")
+                              "settings": arg("--settings"), "tools": arg("--tools"),
+                              "prompt_chars": len(prompt)}) + "\n")
     marker = Path(os.environ["FAKE_CLAUDE_SCENARIO"] + ".failed_once")
     if scenario.get("transport_fail_first") and not marker.exists():
         marker.write_text("1")
