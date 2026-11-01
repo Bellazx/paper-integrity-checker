@@ -62,6 +62,8 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=24)
     parser.add_argument("--input-root", default="data/input/testset/0901-0907-Nature&NC")
     parser.add_argument("--wait-initial", action="store_true", help="wait for the initial batch to finish first")
+    parser.add_argument("--fresh", nargs="*", default=[],
+                        help="DOIs to review again from scratch (new run dir, current checklist)")
     args = parser.parse_args()
     input_root = (BASE / args.input_root).resolve()
     output_root = BASE / "data" / "output" / TABLE
@@ -81,15 +83,28 @@ def main() -> int:
         if path.is_file():
             done.update({str(r.get("doi")): r for r in json.loads(path.read_text(encoding="utf-8"))
                          if r.get("doi") and r.get("trigger") != "review_error"})
+    fresh = set(args.fresh)
+    for doi in fresh:
+        done.pop(doi, None)
     done_path.write_text(json.dumps(list(done.values()), ensure_ascii=False, indent=1), encoding="utf-8")
-    pending = [item for item in items if item["doi"] not in done]
+    pending = [item for item in items if item["doi"] not in done and item["doi"] not in fresh]
+    again = [item for item in items if item["doi"] in fresh]
     (output_root / "review_scope_v3.json").write_text(
         json.dumps({"high_risk": len(items), "pending": len(pending), "skipped": skipped}, ensure_ascii=False, indent=1),
         encoding="utf-8")
-    print(f"initial high-risk {len(items)}; already reviewed {len(done)}; pending {len(pending)}", flush=True)
+    print(f"initial high-risk {len(items)}; already reviewed {len(done)}; pending {len(pending)}; fresh {len(again)}",
+          flush=True)
 
-    reviewed = asyncio.run(run_reviews(pending, output_root, max(1, args.workers), result_path=progress_path,
-                                       resume=True)) if pending else []
+    async def review_all() -> list[dict]:
+        jobs = []
+        if pending:
+            jobs.append(run_reviews(pending, output_root, max(1, args.workers), result_path=progress_path, resume=True))
+        if again:
+            jobs.append(run_reviews(again, output_root, max(1, args.workers),
+                                    result_path=output_root / "review_progress_v3_fresh.json", resume=False))
+        return [r for batch_results in await asyncio.gather(*jobs) for r in batch_results]
+
+    reviewed = asyncio.run(review_all()) if pending or again else []
     merged = sorted(list(done.values()) + reviewed, key=lambda r: str(r.get("doi") or ""))
     progress_path.write_text(json.dumps(merged, ensure_ascii=False, indent=1), encoding="utf-8")
     results_path.write_text(json.dumps(merged, ensure_ascii=False, indent=1), encoding="utf-8")
