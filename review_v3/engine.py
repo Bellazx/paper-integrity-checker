@@ -621,6 +621,17 @@ class Review:
                     missing.append({"条目": record.get("title", record["id"])[:200], "依据": str(record.get("basis", ""))[:300]})
                 elif status == "unresolved":
                     unresolved.append({"条目": record.get("title", record["id"])[:200], "说明": str(record.get("note", ""))[:300]})
+            if dim == "data":
+                # Automatic checks the evidence builder had to skip (e.g. very
+                # large workbooks) are stated as not performed.
+                names = {"soft_explanation_rebuttals": "软解释反证核对", "cross_sheet_reuse": "跨表复用扫描",
+                         "decimal_precision_mismatch": "小数精度扫描", "trailing_digit_uniformity": "末位数字扫描",
+                         "passage_offset_pattern": "跨行偏移扫描"}
+                for item in self.evidence.get("evidence_limitations") or []:
+                    check = str(item.get("check") or "")
+                    label = names.get(check) or ("重复列扫描" if check.startswith("duplicate_columns") else "数据清单读取")
+                    unresolved.append({"条目": f"自动检查：{label}（{check.split(':', 1)[-1]}）",
+                                       "说明": "数据文件过大，超出内存上限，该项自动检查未能执行"})
             out[dim] = {"风险问题": issues, "需作者更正事项": corrections, "cleared": cleared, "not_applicable": missing}
             if unresolved:
                 out[dim]["未能完成的核查（如实说明为核查范围限制）"] = unresolved
