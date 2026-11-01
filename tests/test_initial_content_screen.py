@@ -631,3 +631,13 @@ def test_ambiguous_multiple_repeated_in_caption_and_text_is_one_issue(tmp_path):
 ])
 def test_only_comparative_multiples_are_ambiguous(text, value, expected):
     assert screen._comparative_multiple(text, value) is expected
+
+
+def test_numbers_are_read_through_pdf_ligatures_and_hyphenation():
+    from modules.initial_content_screen import _number, _comparative_multiple
+    text = ("resulting in a ﬁvefold reduction in laser threshold; a ﬁfteen-\nfold gain; "
+            "２.５ mg; ten­fold")
+    pages = [{"page": 1, "text": text, "tables": [], "sources": {"p1-b1": text}}]
+    for value in ("5", "15", "2.5", "10"):
+        assert _number({"value": value, "page": 1, "source_id": "p1-b1", "exact": False}, pages)[0] == float(value)
+    assert _comparative_multiple("a ﬁve times faster response", 5)

@@ -123,6 +123,15 @@ evidence只填page/source_id，不复制quote或大段原文；reason和descript
 """
 
 
+def _number_text(text):
+    """PDF text as read for numbers: compatibility forms unfolded (ligatures
+    such as "ﬁvefold", full-width and super/subscript digits), soft hyphens
+    and line-break hyphenation removed, Unicode minus as ASCII."""
+    text = unicodedata.normalize("NFKC", str(text)).replace("\xad", "")
+    text = re.sub(r"(?<=[A-Za-z])-\s*\n\s*(?=[a-z])", "", text)
+    return text.replace("−", "-").replace("\u2010", "-").replace("\u2011", "-")
+
+
 def _normal(text):
     text = unicodedata.normalize("NFKC", str(text)).replace("\xad", "")
     text = re.sub(r"(?<=\w)-\s*\n\s*(?=\w)", "", text)
@@ -343,6 +352,8 @@ def _comparative_multiple(text, value):
     Only this comparative form reads either as N-fold or as an increase of N.
     "N times as fast as" and "是…的N倍" are unambiguous N-fold statements.
     """
+    text = _number_text(text)
+
     def same(token):
         token = token.lower()
         number = _SPELLED.get(token, token)
@@ -368,7 +379,7 @@ def _number(item, pages):
     if not isinstance(literal, str) or not re.fullmatch(
             r"-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?", literal):
         raise ContentScreenIncomplete(f"计算值格式不正确: {literal!r}，只允许原文数字，不能用表达式或中间计算值")
-    number_text = item["quote"].replace("−", "-")
+    number_text = _number_text(item["quote"])
     number_text = re.sub(r"(?<!\d)\d{1,3}(?:,\d{3})+(?:\.\d+)?(?!\d)",
                          lambda m: m.group().replace(',', ''), number_text)
     tokens = re.findall(r"(?<![\d.])-?(?:\d+(?:\.\d+)?|\.\d+)(?![\d.])", number_text)
