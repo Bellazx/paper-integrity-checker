@@ -505,13 +505,14 @@ def test_regrade_redoes_calibration_and_writing_only(tmp_path, fake_cli, monkeyp
     first = _run(paper, tmp_path, monkeypatch)
     assert first["result"] == "高风险"
     before = len(calls())
-    configure(calibrator={"issue": {"high::data::0": "minor"}})
+    configure(calibrator={"issue": {"high::data::0": "minor"}}, judge={"issue": {"high::data::0": "minor"}})
     monkeypatch.setattr(config, "REGRADE", True)
     monkeypatch.setattr(engine, "rules_version", lambda: "changed")
     monkeypatch.setattr(engine, "calibration_version", lambda: "changed")
     second = _run(paper, tmp_path, monkeypatch, resume=True)
     roles = [c["actor"].split(":")[0] for c in calls()[before:]]
-    assert set(roles) == {"calibrator", "writer"}
+    # A downgraded issue is still reviewed by the judge, which here upholds the downgrade.
+    assert set(roles) == {"calibrator", "judge", "writer"}
     assert second["result"] == "低风险"
 
 
@@ -790,3 +791,14 @@ def test_paper_deadline_still_publishes_a_report(tmp_path, fake_cli, monkeypatch
     result = _run(paper, tmp_path, monkeypatch)
     assert result["trigger"] != "review_error" and result["_report_source"] == "deadline"
     assert result["result"] in ("高风险", "低风险") and "最终判定" in result["reason"]
+
+
+def test_judge_also_reviews_issues_the_calibrator_downgraded(tmp_path, fake_cli, monkeypatch):
+    configure, calls = fake_cli
+    configure(investigator={"issue": {"high::data::0": "substantive"}},
+              challenger={"issue": {"high::data::0": "substantive"}},
+              calibrator={"issue": {"high::data::0": "minor"}},
+              judge={"issue": {"high::data::0": "substantive"}})
+    result = _run(_make_paper(tmp_path), tmp_path, monkeypatch)
+    assert any(c["actor"] == "judge" for c in calls())
+    assert result["result"] == "高风险"

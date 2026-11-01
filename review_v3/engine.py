@@ -496,7 +496,12 @@ class Review:
         calibrated grade."""
         if not config.JUDGE_ENABLED:
             return finals
-        issues = [r for r in finals.values() if _is_issue(r, "substantive")]
+        # Every issue that any stage judged substantive, including ones the
+        # calibrator downgraded: a wrong downgrade must also reach the judge.
+        flagged = self._ever_substantive()
+        issues = [r for r in finals.values() if r.get("status") == "issue"
+                  and (_is_issue(r, "substantive") or r["id"] in flagged
+                       or (r.get("calibrated_from") or {}).get("severity") == "substantive")]
         if not issues:
             return finals
         path = self.ledger_path("jdg", "all")
@@ -535,6 +540,17 @@ class Review:
         log.info("DOI=%s final review %s: %d substantive issue(s) checked, %d not upheld %s",
                  self.doi, outcome.status, len(issues), len(changed), changed[:6])
         return out
+
+    def _ever_substantive(self) -> set[str]:
+        """Item ids that an investigator, challenger or arbiter recorded as substantive."""
+        flagged: set[str] = set()
+        for path in (self.run_dir / "ledgers").glob("*.json"):
+            if path.name.startswith(("cal_", "jdg_", "evd_")) or path.name.count(".") > 1:
+                continue
+            for item_id, record in (ledger.load(path).get("items") or {}).items():
+                if record.get("status") == "issue" and record.get("severity") == "substantive":
+                    flagged.add(item_id)
+        return flagged
 
     async def capture(self, finals: dict) -> dict:
         """Every risk issue in the report carries a local screenshot of the
@@ -1064,7 +1080,7 @@ def _digest(paths, seed: str = "") -> str:
     return digest.hexdigest()[:12]
 
 
-JUDGE_VERSION = "1"
+JUDGE_VERSION = "2"
 
 
 def calibration_version() -> str:

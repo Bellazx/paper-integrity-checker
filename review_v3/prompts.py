@@ -262,7 +262,7 @@ def judge(dossier: dict, items: list[dict], related: list[dict]) -> str:
             f" —— {str(item.get('issue_type', ''))[:80]}" for item in items]
     context = [f"- {str(r.get('location', ''))[:100]}：{str(r.get('issue_type', ''))[:60]}（{r.get('category') or '规范问题'}）"
                for r in related[:30]]
-    return f"""你是学术论文诚信复核的终审人员。下列问题已被前序核查定为实质问题，一旦成立，这篇论文会被判为“有风险”。
+    return f"""你是学术论文诚信复核的终审人员。下列问题在前序核查中至少被一个环节定为实质问题（括号内是定级后的当前类别，有的已被降为规范问题），一旦确认为实质问题，这篇论文会被判为“有风险”。
 你的任务是逐条核对论文原文，确认每条问题是否属实、属于哪一类。不要相信前序核查的转述，以原文为准。
 
 ## 论文
