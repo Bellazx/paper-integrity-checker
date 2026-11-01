@@ -1080,7 +1080,7 @@ def _digest(paths, seed: str = "") -> str:
     return digest.hexdigest()[:12]
 
 
-JUDGE_VERSION = "2"
+JUDGE_VERSION = "3"
 
 
 def calibration_version() -> str:
