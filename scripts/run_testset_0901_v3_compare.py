@@ -57,6 +57,42 @@ def initial_running(output_root: Path) -> bool:
     return not (output_root / "batch_summary.json").is_file()
 
 
+def _locked(output_root: Path, doi: str) -> bool:
+    """True while another process holds this paper's review lock."""
+    import fcntl
+    slug = doi.replace("/", "_")
+    for lock in (output_root / "review_v2" / "review_v3").glob(f"{slug}_*/review.lock"):
+        with lock.open("a+") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(handle, fcntl.LOCK_UN)
+    return False
+
+
+async def only_fresh(items: list[dict], output_root: Path, fresh_path: Path, workers: int) -> int:
+    """Rerun papers from scratch next to a running batch; a paper that batch
+    is still reviewing starts once it is released."""
+    results: dict[str, dict] = {}
+    if fresh_path.is_file():
+        results = {r["doi"]: r for r in json.loads(fresh_path.read_text(encoding="utf-8")) if r.get("doi")}
+    semaphore = asyncio.Semaphore(max(1, workers))
+
+    async def one(item: dict) -> None:
+        while _locked(output_root, item["doi"]):
+            await asyncio.sleep(60)
+        async with semaphore:
+            reviewed = await run_reviews([item], output_root, 1, result_path=output_root / f".fresh_{item['doi'].replace('/', '_')}.json",
+                                         resume=False)
+        results[item["doi"]] = reviewed[0]
+        fresh_path.write_text(json.dumps(list(results.values()), ensure_ascii=False, indent=1), encoding="utf-8")
+        print(f"fresh {item['doi']} -> {reviewed[0].get('result')} {reviewed[0].get('trigger') or ''}", flush=True)
+
+    await asyncio.gather(*(one(item) for item in items))
+    return 0 if all(r.get("trigger") != "review_error" for r in results.values()) else 2
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workers", type=int, default=24)
@@ -64,6 +100,9 @@ def main() -> int:
     parser.add_argument("--wait-initial", action="store_true", help="wait for the initial batch to finish first")
     parser.add_argument("--fresh", nargs="*", default=[],
                         help="DOIs to review again from scratch (new run dir, current checklist)")
+    parser.add_argument("--only-fresh", action="store_true",
+                        help="review only the --fresh DOIs, alongside a running batch: results go to the fresh "
+                             "progress file and are merged (overriding older results) by the next normal run")
     args = parser.parse_args()
     input_root = (BASE / args.input_root).resolve()
     output_root = BASE / "data" / "output" / TABLE
@@ -74,16 +113,21 @@ def main() -> int:
     items, skipped = initial_items(input_root, output_root)
     results_path = output_root / "review_results_v3.json"
     progress_path = output_root / "review_progress_v3.json"
+    fresh_path = output_root / "review_progress_v3_fresh.json"
     done_path = output_root / "review_done_v3.json"
     done = {}
     # The progress file holds papers finished by an interrupted run and is
     # rewritten as soon as this run starts; finished papers are kept in
     # done_path so a second interruption loses nothing.
-    for path in (done_path, progress_path, results_path):
+    # Results of a fresh rerun come last so they replace the older ones.
+    for path in (done_path, progress_path, results_path, fresh_path):
         if path.is_file():
             done.update({str(r.get("doi")): r for r in json.loads(path.read_text(encoding="utf-8"))
                          if r.get("doi") and r.get("trigger") != "review_error"})
     fresh = set(args.fresh)
+    if args.only_fresh:
+        return asyncio.run(only_fresh([item for item in items if item["doi"] in fresh], output_root, fresh_path,
+                                      args.workers))
     for doi in fresh:
         done.pop(doi, None)
     done_path.write_text(json.dumps(list(done.values()), ensure_ascii=False, indent=1), encoding="utf-8")
@@ -100,8 +144,7 @@ def main() -> int:
         if pending:
             jobs.append(run_reviews(pending, output_root, max(1, args.workers), result_path=progress_path, resume=True))
         if again:
-            jobs.append(run_reviews(again, output_root, max(1, args.workers),
-                                    result_path=output_root / "review_progress_v3_fresh.json", resume=False))
+            jobs.append(run_reviews(again, output_root, max(1, args.workers), result_path=fresh_path, resume=False))
         return [r for batch_results in await asyncio.gather(*jobs) for r in batch_results]
 
     reviewed = asyncio.run(review_all()) if pending or again else []
