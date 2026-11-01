@@ -71,19 +71,27 @@ def main() -> int:
 
     items, skipped = initial_items(input_root, output_root)
     results_path = output_root / "review_results_v3.json"
+    progress_path = output_root / "review_progress_v3.json"
+    done_path = output_root / "review_done_v3.json"
     done = {}
-    if results_path.is_file():
-        done = {str(r.get("doi")): r for r in json.loads(results_path.read_text(encoding="utf-8"))
-                if r.get("doi") and r.get("trigger") != "review_error"}
+    # The progress file holds papers finished by an interrupted run and is
+    # rewritten as soon as this run starts; finished papers are kept in
+    # done_path so a second interruption loses nothing.
+    for path in (done_path, progress_path, results_path):
+        if path.is_file():
+            done.update({str(r.get("doi")): r for r in json.loads(path.read_text(encoding="utf-8"))
+                         if r.get("doi") and r.get("trigger") != "review_error"})
+    done_path.write_text(json.dumps(list(done.values()), ensure_ascii=False, indent=1), encoding="utf-8")
     pending = [item for item in items if item["doi"] not in done]
     (output_root / "review_scope_v3.json").write_text(
         json.dumps({"high_risk": len(items), "pending": len(pending), "skipped": skipped}, ensure_ascii=False, indent=1),
         encoding="utf-8")
     print(f"initial high-risk {len(items)}; already reviewed {len(done)}; pending {len(pending)}", flush=True)
 
-    reviewed = asyncio.run(run_reviews(pending, output_root, max(1, args.workers), result_path=output_root / "review_progress_v3.json",
+    reviewed = asyncio.run(run_reviews(pending, output_root, max(1, args.workers), result_path=progress_path,
                                        resume=True)) if pending else []
     merged = sorted(list(done.values()) + reviewed, key=lambda r: str(r.get("doi") or ""))
+    progress_path.write_text(json.dumps(merged, ensure_ascii=False, indent=1), encoding="utf-8")
     results_path.write_text(json.dumps(merged, ensure_ascii=False, indent=1), encoding="utf-8")
     # Empty scholar: this table has no scholar column, updates match by DOI.
     rc = render_and_update_reviews(merged, output_root, "", result_path=results_path)
