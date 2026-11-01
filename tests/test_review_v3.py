@@ -825,3 +825,15 @@ def test_every_gated_screening_type_has_a_label_with_its_keyword():
     for test, words in cues["_type_cues"].items():
         label = engine.TEST_LABELS.get(test, "")
         assert any(w.lower() in label.lower() for w in words), (test, label)
+
+
+def test_duplicate_column_pairs_are_grouped_by_sheet():
+    pairs = [{"file": "S1.xlsx", "sheet": f"Fig{i % 3}", "col_a_header": f"a{i}", "col_b_header": f"b{i}",
+              "cross_group": i == 7} for i in range(300)]
+    evidence = {"deterministic_findings": {"duplicate_column_pairs": pairs},
+                "coverage_manifest": {"must_address": [f"dupcol::S1.xlsx::Fig{i % 3}::{i}" for i in range(300)]}}
+    shards = checklist.build_shards(evidence, {"main_figure_numbers": [], "captions": [], "data_files": ["S1.xlsx"]})
+    groups = [i for s in shards for i in s["items"] if i["id"].startswith("group::data::duplicate_column_pairs")]
+    assert len(groups) == 3 and sum(len(g["members"]) for g in groups) == 300
+    assert any(g["strong"] for g in groups) and all("重复列对" in g["title"] and "S1.xlsx" in g["title"] for g in groups)
+    assert engine._reader_label(groups[0]["title"]).startswith("重复列（S1 / Fig")

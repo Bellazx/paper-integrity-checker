@@ -90,8 +90,12 @@ def _manifest_item(item_id: str, evidence: dict) -> tuple[str, dict]:
             pair = {}
         title = (f"重复列对：{pair.get('file', parts[1])} / sheet {pair.get('sheet', parts[2] if len(parts) > 2 else '')} "
                  f"[{pair.get('group_a', '')} {pair.get('col_a_header', '')} ⇄ {pair.get('group_b', '')} {pair.get('col_b_header', '')}]")
+        # Pairs on one sheet are adjudicated as one class (the publication gate
+        # accepts a sheet-level conclusion); a workbook can carry 10^5 pairs.
         return "data", {"title": title, "kind": "dupcol", "strong": bool(pair.get("cross_group")),
-                        "hint": _short(pair), "file_key": str(pair.get("file") or "")}
+                        "hint": _short(pair), "file_key": str(pair.get("file") or ""),
+                        "group": ("data", "duplicate_column_pairs", str(pair.get("file") or parts[1]),
+                                  str(pair.get("sheet") or (parts[2] if len(parts) > 2 else "")))}
     if head == "reuse_group":
         group = _find(det.get("cross_sheet_reuse_groups"), lambda g: g.get("group_id") == parts[1]) or {}
         locations = "；".join((group.get("locations_sample") or [])[:3])
@@ -172,12 +176,18 @@ def build_shards(evidence: dict, dossier: dict) -> list[dict]:
             by_kind[kind].append(members[0])
             continue
         _, dim, test, file_name, sheet = key
+        # Strong members (e.g. pairs across sample groups) are the samples shown.
+        samples = sorted(members, key=lambda m: not m.get("strong"))[:4]
+        title = (f"重复列对 {len(members)} 组：{file_name} / sheet {sheet}（按类核查全部列对，"
+                 f"其中跨组 {sum(1 for m in members if m.get('strong'))} 组；代表样例需打开原值）"
+                 if test == "duplicate_column_pairs" else
+                 f"同类告警 {len(members)} 项：{dim}/{test}，{file_name} / {sheet}（按类核查，代表样例需打开原值）")
         by_kind[kind].append({
             "id": f"group::{dim}::{test}::{file_name}::{sheet}"[:200], "required": True, "kind": "group",
             "test": test, "strong": any(m.get("strong") for m in members), "file_key": file_name,
             "members": [m["id"] for m in members],
-            "title": f"同类告警 {len(members)} 项：{dim}/{test}，{file_name} / {sheet}（按类核查，代表样例需打开原值）",
-            "hint": " ｜ ".join(str(m.get("hint", ""))[:260] for m in members[:4])[:1100],
+            "title": title,
+            "hint": " ｜ ".join(str(m.get("hint", ""))[:260] for m in samples)[:1100],
         })
 
     image_alerts = dossier.get("image_alerts") or []

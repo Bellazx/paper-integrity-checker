@@ -917,6 +917,7 @@ def _plain(text: str) -> str:
 INTERNAL_TITLE = re.compile(r"^初检HIGH发现[:：]\s*(\w+)/(\w+)[，,]?\s*位置\s*")
 REUSE_TITLE = re.compile(r"^跨表复用分组\s*\S+?（\d+项）[:：]\s*")
 DECIMAL_TITLE = re.compile(r"^小数精度不一致[:：]\s*列\s*([^，,]+)")
+DUPCOL_GROUP_TITLE = re.compile(r"^重复列对\s*\d+\s*组[:：]\s*(.+?)\s*/\s*sheet\s*([^（(]+)")
 TOOL_NOTES = re.compile(r"[（(][^（）()]*(?:pv3|forensic|脚本|预先生成)[^（）()]*[）)]")
 
 
@@ -931,6 +932,9 @@ def _reader_label(text: str) -> str:
         return f"{label}（{where}）" if where else label
     if REUSE_TITLE.match(text):
         return f"跨表复用（{_short_place(REUSE_TITLE.sub('', text))}）"
+    match = DUPCOL_GROUP_TITLE.match(text)
+    if match:
+        return f"重复列（{_short_place(match.group(1))} / {match.group(2).strip()}）"
     match = DECIMAL_TITLE.match(text)
     if match:
         return f"小数精度不一致（{match.group(1).strip()}）"
