@@ -109,8 +109,12 @@ def _manifest_item(item_id: str, evidence: dict) -> tuple[str, dict]:
                         "hint": _short(compact, 900), "file_key": files}
     if head == "decmismatch":
         item = _find(det.get("decimal_precision_mismatch"), lambda d: d.get("header") == parts[1]) or {}
+        file_name = str((item.get("locations") or [""])[0]).split("::")[0]
+        # A workbook can carry thousands of such columns; they are checked as
+        # one class per file (the publication gate asks for the class).
         return "data", {"title": f"小数精度不一致：列 {parts[1]}，精度范围 {item.get('precision_spread')}",
-                        "kind": "decimal", "hint": _short(item), "file_key": ""}
+                        "kind": "decimal", "hint": _short(item), "file_key": file_name,
+                        "group": ("data", "decimal_precision_mismatch", file_name, "")}
     if head == "trailing_digit":
         return "data", {"title": f"末位数字异常：{' / '.join(parts[1:4])}", "kind": "trailing_digit",
                         "strong": "sev=high" in item_id, "hint": item_id, "file_key": parts[1]}
@@ -181,6 +185,8 @@ def build_shards(evidence: dict, dossier: dict) -> list[dict]:
         title = (f"重复列对 {len(members)} 组：{file_name} / sheet {sheet}（按类核查全部列对，"
                  f"其中跨组 {sum(1 for m in members if m.get('strong'))} 组；代表样例需打开原值）"
                  if test == "duplicate_column_pairs" else
+                 f"小数精度不一致 {len(members)} 列：{file_name}（按类核查全部列，代表样例需打开原值）"
+                 if test == "decimal_precision_mismatch" else
                  f"同类告警 {len(members)} 项：{dim}/{test}，{file_name} / {sheet}（按类核查，代表样例需打开原值）")
         by_kind[kind].append({
             "id": f"group::{dim}::{test}::{file_name}::{sheet}"[:200], "required": True, "kind": "group",

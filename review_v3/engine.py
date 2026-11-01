@@ -760,7 +760,7 @@ def _wording_gaps(result: dict) -> list[str]:
 
 HIGH_GAP = re.compile(r"未对HIGH发现给出结论: (\w+)/(\S*) \(共(\d+)项\)")
 CLASS_GAPS = {"末位数字异常": ("trailing_digit", "末位数字"), "跨行伪重复": ("passage_offset", "跨行伪重复"),
-              "小数精度不一致": ("decimal", "小数精度")}
+              "小数精度不一致": ("decmismatch", "小数精度")}
 TEST_LABELS = {
     "passage_offset_pattern": "跨行数值偏移", "trailing_digit_uniformity": "末位数字规律", "terminal_digit": "末位数字分布",
     "cross_group_duplicate": "不同组之间的重复数值", "cross_sheet_row_duplicate": "跨表整行重复",
@@ -957,6 +957,7 @@ def _plain(text: str) -> str:
 INTERNAL_TITLE = re.compile(r"^初检HIGH发现[:：]\s*(\w+)/(\w+)[，,]?\s*位置\s*")
 REUSE_TITLE = re.compile(r"^跨表复用分组\s*\S+?（\d+项）[:：]\s*")
 DECIMAL_TITLE = re.compile(r"^小数精度不一致[:：]\s*列\s*([^，,]+)")
+DECIMAL_GROUP_TITLE = re.compile(r"^小数精度不一致\s*\d+\s*列[:：]\s*([^（(]+)")
 DUPCOL_GROUP_TITLE = re.compile(r"^重复列对\s*\d+\s*组[:：]\s*(.+?)\s*/\s*sheet\s*([^（(]+)")
 TOOL_NOTES = re.compile(r"[（(][^（）()]*(?:pv3|forensic|脚本|预先生成)[^（）()]*[）)]")
 
@@ -975,6 +976,9 @@ def _reader_label(text: str) -> str:
     match = DUPCOL_GROUP_TITLE.match(text)
     if match:
         return f"重复列（{_short_place(match.group(1))} / {match.group(2).strip()}）"
+    match = DECIMAL_GROUP_TITLE.match(text)
+    if match:
+        return f"小数精度不一致（{_short_place(match.group(1))}）"
     match = DECIMAL_TITLE.match(text)
     if match:
         return f"小数精度不一致（{match.group(1).strip()}）"

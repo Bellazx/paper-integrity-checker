@@ -867,6 +867,22 @@ def test_duplicate_column_pairs_are_grouped_by_sheet():
     assert engine._reader_label(groups[0]["title"]).startswith("重复列（S1 / Fig")
 
 
+def test_decimal_mismatch_columns_are_grouped_by_file():
+    columns = [{"header": f"col_{i}", "precision_spread": [2, 15], "locations": ["S4.xlsx::Figure1", "S4.xlsx::Figure2"]}
+               for i in range(500)]
+    evidence = {"deterministic_findings": {"decimal_precision_mismatch": columns},
+                "coverage_manifest": {"must_address": [f"decmismatch::col_{i}" for i in range(500)]}}
+    shards = checklist.build_shards(evidence, {"main_figure_numbers": [], "captions": [], "data_files": ["S4.xlsx"]})
+    items = [i for s in shards for i in s["items"] if "decmismatch" in i["id"] or "decimal" in i["id"]]
+    assert len(items) == 1 and len(items[0]["members"]) == 500
+    assert engine._reader_label(items[0]["title"]) == "小数精度不一致（S4）"
+    finals = {items[0]["id"]: {"id": items[0]["id"], "status": "cleared", "members": items[0]["members"],
+                               "basis": "各列为仪器导出的原始精度与计算列混排，属正常。"}}
+    patched, rest = engine._coverage_patch({"data_review": "本节结论：未发现风险。"},
+                                           ["未说明小数精度不一致类别（共500项）"], finals, {})
+    assert rest == [] and "小数精度" in patched["data_review"] and "已核对" in patched["data_review"]
+
+
 def test_completion_follow_up_is_capped_per_paper(tmp_path, fake_cli, monkeypatch):
     configure, calls = fake_cli
     configure(investigator="noop", challenger="noop", arbiter="noop")
