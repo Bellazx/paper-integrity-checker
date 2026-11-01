@@ -149,11 +149,18 @@ def test_generic_calculations(operation, values, reported, expected):
     assert result["mismatch"] and result["calculated"] == pytest.approx(expected)
 
 
-@pytest.mark.parametrize("response", ['{}', 'invalid', '{"complete":false}', '{"complete":true}',
-                                      '{"complete":true,"candidates":[{}]}'])
+@pytest.mark.parametrize("response", ['{}', 'invalid', '{"complete":false}', '{"complete":true}'])
 def test_incomplete_output_is_not_a_low_risk_pass(tmp_path, response):
     with pytest.raises(screen.ContentScreenIncomplete):
         screen.screen_manuscript(paper(tmp_path), request=lambda _: response)
+
+
+def test_malformed_candidate_is_dropped_not_reported(tmp_path):
+    # A structurally invalid lead never becomes a finding and no longer fails
+    # the whole paper; it is recorded for audit.
+    issues, warnings, audit = screen.screen_manuscript(
+        paper(tmp_path), request=lambda _: '{"complete":true,"candidates":[{}]}')
+    assert issues == [] and len(audit["dropped_leads"]) >= 1 and "未计入" in warnings[-1]
 
 
 def test_unverified_scope_and_fabricated_quote_cannot_escalate(tmp_path):
@@ -164,8 +171,9 @@ def test_unverified_scope_and_fabricated_quote_cannot_escalate(tmp_path):
     fake = candidate()
     fake["evidence"][0]["quote"] = "This sentence does not appear in the manuscript."
     request, _ = responder(candidates=[fake])
-    with pytest.raises(screen.ContentScreenIncomplete, match="无法对照"):
-        screen.screen_manuscript(path, request=request)
+    # A fabricated quote is never reported; it is set aside and recorded.
+    issues, warnings, audit = screen.screen_manuscript(path, request=request)
+    assert issues == [] and "无法对照" in audit["dropped_leads"][0]["error"]
 
 
 def test_fabricated_numeric_operand_cannot_pass(tmp_path):
@@ -641,3 +649,28 @@ def test_numbers_are_read_through_pdf_ligatures_and_hyphenation():
     for value in ("5", "15", "2.5", "10"):
         assert _number({"value": value, "page": 1, "source_id": "p1-b1", "exact": False}, pages)[0] == float(value)
     assert _comparative_multiple("a ﬁve times faster response", 5)
+
+
+def test_word_form_values_and_partial_replies_do_not_fail_the_paper():
+    from modules.initial_content_screen import _literal, _validate_candidates, _validate_checks
+    assert [_literal(v) for v in ("three times", "3倍", "ﬁvefold", "五倍", "2.5-fold", "abc")] == \
+        ["3", "3", "5", "5", "2.5", "abc"]
+    text = "pusher 1.33 and puller 0.33; the pusher needs three times more power"
+    pages = [{"page": 1, "text": text, "tables": [], "sources": {"p1-b1": text}}]
+    good = {"id": "c1", "kind": "arithmetic", "severity": "high", "location": "p1", "description": "d", "scope": "s",
+            "evidence": [{"page": 1, "source_id": "p1-b1"}],
+            "calculation": {"operation": "ratio",
+                            "operands": [{"value": "1.33", "page": 1, "source_id": "p1-b1"},
+                                         {"value": "0.33", "page": 1, "source_id": "p1-b1"}],
+                            "reported": {"value": "three times", "page": 1, "source_id": "p1-b1"}}}
+    bad = {**good, "id": "c2", "evidence": [{"page": 1, "source_id": "p9-x"}]}
+    with pytest.raises(screen.ContentScreenIncomplete, match="c2"):
+        _validate_candidates({"candidates": [good, bad]}, pages)
+    kept = _validate_candidates({"candidates": [good, bad]}, pages, final=True)
+    assert [c["id"] for c, _ in kept] == ["c1"] and kept.dropped[0]["candidate"] == "c2"
+    reply = {"decisions": [{"id": "c1", "verdict": "support", "reason": "成立"},
+                           {"id": "c2", "verdict": "reject", "reason": "排除", "evidence": [{"page": 1, "source_id": "p1-b1"}]}]}
+    with pytest.raises(screen.ContentScreenIncomplete, match="c1: support 必须给 evidence"):
+        _validate_checks(reply, {"c1", "c2"}, pages)
+    checks = {c["id"]: c["verdict"] for c in _validate_checks(reply, {"c1", "c2"}, pages, final=True)}
+    assert checks == {"c1": "irrelevant", "c2": "reject"}

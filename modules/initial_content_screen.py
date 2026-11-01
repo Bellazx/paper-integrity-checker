@@ -11,6 +11,7 @@ direct visual or source-data review.
 from __future__ import annotations
 
 import hashlib
+import inspect
 from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -370,8 +371,31 @@ def _comparative_multiple(text, value):
     return any(same(m.group("n")) for m in _CHINESE_COMPARATIVE_MULTIPLE.finditer(text))
 
 
+_CHINESE_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+_MULTIPLE_SUFFIX = re.compile(r"\s*(?:倍|[-\s]?fold|\s*times?|\s*[x×])\s*$", re.IGNORECASE)
+
+
+def _literal(value):
+    """A reported value written in words ("three times", "3倍", "ﬁvefold",
+    "五倍") as its digits; anything else is returned unchanged. Grounding still
+    requires the number to appear in the cited source."""
+    if not isinstance(value, str):
+        return value
+    text = _MULTIPLE_SUFFIX.sub("", _number_text(value).strip()).strip()
+    if re.fullmatch(r"-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?", text):
+        return text
+    spelled = _spelled_numbers(text)
+    if len(spelled) == 1 and _SPELLED_PATTERN.fullmatch(text):
+        return spelled[0]
+    if text in _CHINESE_DIGITS:
+        return str(_CHINESE_DIGITS[text])
+    return value
+
+
 def _number(item, pages):
     _ground(item, pages)
+    if isinstance(item, dict) and "value" in item:
+        item["value"] = _literal(item["value"])
     literal = item.get("value")
     if isinstance(literal, str) and re.fullmatch(r'-?\d{1,3}(?:,\d{3})+(?:\.\d+)?', literal):
         literal = literal.replace(',', '')
@@ -488,16 +512,24 @@ def recalculate(calculation, pages):
 
 
 def _checked(request, prompt, validate, *, repair_request=None):
-    """One evidence/format repair, never bypassing the failing validator."""
+    """Validate a model reply; one repair with the exact item errors, then a
+    final pass that keeps the items that validate and sets the rest aside.
+
+    A single malformed item no longer fails the whole paper: on the final
+    pass the validator drops (discovery) or neutralises (counter-check) the
+    items it cannot ground, and records them. A reply that is not valid JSON
+    at all gets one more attempt before the call fails."""
     correction = ''
     attempts = []
-    for attempt in range(2):
+    final_ok = 'final' in inspect.signature(validate).parameters
+    for attempt in range(3):
         raw = (repair_request or request)(prompt + correction) if attempt else request(prompt)
         try:
-            return validate(_parse(raw))
+            parsed = _parse(raw)
+            return validate(parsed, final=attempt > 0) if final_ok else validate(parsed)
         except ContentScreenIncomplete as exc:
             attempts.append({'response': raw, 'error': str(exc)})
-            if attempt:
+            if attempt == 2 or (attempt == 1 and not final_ok):
                 raise ContentScreenIncomplete(str(exc), audit={
                     'failed_validation': {'prompt': prompt, 'attempts': attempts},
                 }) from exc
@@ -507,53 +539,104 @@ def _checked(request, prompt, validate, *, repair_request=None):
                           '重新返回完整JSON。上次返回：\n' + raw)
 
 
-def _validate_candidates(result, pages):
+class Validated(list):
+    """Validated items plus the ones set aside on the final pass."""
+
+    def __init__(self, items=(), dropped=()):
+        super().__init__(items)
+        self.dropped = list(dropped)
+
+
+def _check_candidate(candidate, pages):
+    if not isinstance(candidate, dict):
+        raise ContentScreenIncomplete('候选结构无效')
+    for key in ('location', 'description', 'scope'):
+        if not isinstance(candidate.get(key), str) or not candidate[key].strip():
+            raise ContentScreenIncomplete(f'候选缺少{key}')
+    severity = candidate.get('severity', 'high')
+    if severity not in {'high', 'low'}:
+        raise ContentScreenIncomplete('候选severity必须为high或low')
+    evidence = candidate.get('evidence')
+    if not isinstance(evidence, list) or not evidence:
+        raise ContentScreenIncomplete('候选缺少可对照证据')
+    # One source block can contain both facts. Legacy free-text quotes still
+    # require two entries; a valid locator is resolved from the PDF itself.
+    if len(evidence) < 2 and not evidence[0].get('source_id'):
+        raise ContentScreenIncomplete('候选缺少两处可对照证据')
+    for item in evidence:
+        _ground(item, pages)
+    if candidate.get('kind') == 'arithmetic':
+        return recalculate(candidate.get('calculation'), pages)
+    if candidate.get('kind') != 'contradiction' or candidate.get('calculation') is not None:
+        raise ContentScreenIncomplete('候选类型不正确')
+    return None
+
+
+def _validate_candidates(result, pages, final=False):
     found = result.get('candidates')
     if not isinstance(found, list):
         raise ContentScreenIncomplete('缺少候选列表')
-    checked = []
-    for candidate in found:
-        if not isinstance(candidate, dict):
-            raise ContentScreenIncomplete('候选结构无效')
-        for key in ('location', 'description', 'scope'):
-            if not isinstance(candidate.get(key), str) or not candidate[key].strip():
-                raise ContentScreenIncomplete(f'候选缺少{key}')
-        severity = candidate.get('severity', 'high')
-        if severity not in {'high', 'low'}:
-            raise ContentScreenIncomplete('候选severity必须为high或low')
-        evidence = candidate.get('evidence')
-        if not isinstance(evidence, list) or not evidence:
-            raise ContentScreenIncomplete('候选缺少可对照证据')
-        # One source block can contain both facts. Legacy free-text quotes still
-        # require two entries; a valid locator is resolved from the PDF itself.
-        if len(evidence) < 2 and not evidence[0].get('source_id'):
-            raise ContentScreenIncomplete('候选缺少两处可对照证据')
-        for item in evidence:
-            _ground(item, pages)
-        calculation = None
-        if candidate.get('kind') == 'arithmetic':
-            calculation = recalculate(candidate.get('calculation'), pages)
-        elif candidate.get('kind') != 'contradiction' or candidate.get('calculation') is not None:
-            raise ContentScreenIncomplete('候选类型不正确')
-        checked.append((candidate, calculation))
-    return checked
+    checked, errors = [], []
+    for index, candidate in enumerate(found, 1):
+        label = (candidate.get('id') if isinstance(candidate, dict) else None) or f'第{index}项'
+        try:
+            checked.append((candidate, _check_candidate(candidate, pages)))
+        except ContentScreenIncomplete as exc:
+            errors.append({'candidate': label, 'error': str(exc),
+                           'location': candidate.get('location') if isinstance(candidate, dict) else None})
+    if errors and not final:
+        raise ContentScreenIncomplete('以下候选未通过校验：' + '；'.join(f"{e['candidate']}: {e['error']}" for e in errors))
+    # Final pass: a lead that still cannot be grounded is not a finding.
+    return Validated(checked, errors)
 
 
-def _validate_checks(result, ids, pages):
-    checks = result.get('decisions')
-    if (not isinstance(checks, list) or any(not isinstance(c, dict) for c in checks)
-            or len(checks) != len(ids) or {c.get('id') for c in checks} != ids):
-        raise ContentScreenIncomplete('复核未逐项返回决定，所需编号为：' + ','.join(sorted(ids)))
-    for check in checks:
+def _neutral(check, reason):
+    """A counter-check decision that carries no verifiable information."""
+    return {**check, 'verdict': 'irrelevant', 'evidence': [],
+            'reason': f"{check.get('reason') or ''}（{reason}，不计入核查结论）".strip()}
+
+
+def _validate_checks(result, ids, pages, final=False):
+    raw = result.get('decisions')
+    raw = [c for c in raw if isinstance(c, dict)] if isinstance(raw, list) else []
+    by_id = {}
+    for check in raw:
+        if check.get('id') in ids and check.get('id') not in by_id:
+            by_id[check['id']] = check
+    errors, checks, dropped = [], [], []
+    for item_id in sorted(ids):
+        check = by_id.get(item_id)
+        if check is None:
+            errors.append(f'{item_id}: 未返回决定')
+            check = _neutral({'id': item_id, 'reason': ''}, '未返回决定')
+            dropped.append({'id': item_id, 'error': '未返回决定'})
+            checks.append(check)
+            continue
         verdict = check.get('verdict')
+        problem = None
         if verdict not in {'support', 'reject', 'uncertain', 'irrelevant'} or not check.get('reason'):
-            raise ContentScreenIncomplete('复核结论无效')
-        if verdict in {'support', 'reject', 'uncertain'}:
-            if not isinstance(check.get('evidence'), list) or not check['evidence']:
-                raise ContentScreenIncomplete('复核缺少原文依据')
-            for item in check['evidence']:
-                _ground(item, pages)
-    return checks
+            problem = 'verdict 必须是 support/reject/uncertain/irrelevant 之一，且要写 reason'
+        elif verdict != 'irrelevant':
+            evidence = check.get('evidence')
+            if not isinstance(evidence, list) or not evidence:
+                problem = (f'{verdict} 必须给 evidence 列表，例如 [{{"page": 12, "source_id": "p12-b3"}}]，'
+                           '只能用材料中已有的位置编号')
+            else:
+                try:
+                    for item in evidence:
+                        _ground(item, pages)
+                except ContentScreenIncomplete as exc:
+                    problem = str(exc)
+        if problem:
+            errors.append(f'{item_id}: {problem}')
+            dropped.append({'id': item_id, 'error': problem})
+            check = _neutral(check, '缺少可定位原文依据')
+        checks.append(check)
+    if errors and not final:
+        raise ContentScreenIncomplete('以下决定未通过校验：' + '；'.join(errors))
+    # Final pass: an ungrounded decision counts as no information; a candidate
+    # left without support or rejection goes to arbitration / review.
+    return Validated(checks, dropped)
 
 
 def _table_mean_candidates(pages):
@@ -622,14 +705,16 @@ def screen_manuscript(pdf_path, *, request=None):
         repair_request = request
     pages, warnings = read_pages(pdf_path)
     chunks = _chunks(pages)
-    candidates, decisions, calculations = [], {}, {}
+    candidates, decisions, calculations, dropped_leads = [], {}, {}, []
     for candidate, calculation in _validate_candidates({'candidates': _table_mean_candidates(pages)}, pages):
         candidate['id'] = f'c{len(candidates)+1}'
         candidates.append(candidate)
         calculations[candidate['id']] = calculation
     for chunk_index, chunk in enumerate(chunks):
         found = _checked(request, DISCOVER + "\n论文材料:\n" + json.dumps(_material(chunk), ensure_ascii=False),
-                         lambda result: _validate_candidates(result, pages), repair_request=repair_request)
+                         lambda result, final=False: _validate_candidates(result, pages, final),
+                         repair_request=repair_request)
+        dropped_leads.extend(getattr(found, 'dropped', []))
         for candidate, calculation in found:
             candidate = dict(candidate, id=f"c{len(candidates)+1}")
             if calculation is not None:
@@ -646,7 +731,8 @@ def screen_manuscript(pdf_path, *, request=None):
         def verify_chunk(chunk):
             return _checked(request, VERIFY + "\n候选:\n" + json.dumps(_locators_only(group), ensure_ascii=False)
                             + "\n论文材料:\n" + json.dumps(_material(chunk), ensure_ascii=False),
-                            lambda result: _validate_checks(result, ids, pages), repair_request=repair_request)
+                            lambda result, final=False: _validate_checks(result, ids, pages, final),
+                            repair_request=repair_request)
         # Read-only checks are independent; merge in page order for repeatable
         # decisions. Bound concurrency instead of spawning one request per page.
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -665,7 +751,7 @@ def screen_manuscript(pdf_path, *, request=None):
             resolved = _checked(repair_request, ARBITRATE + '\n候选:\n' + json.dumps(_locators_only(candidate), ensure_ascii=False)
                                 + '\n分块核查及原文证据:\n' + json.dumps(_locators_only(checks), ensure_ascii=False)
                                 + '\n所引证据页的原文材料:\n' + json.dumps(material, ensure_ascii=False),
-                                lambda result: _validate_checks(result, {candidate['id']}, pages))[0]
+                                lambda result, final=False: _validate_checks(result, {candidate['id']}, pages, final))[0]
             decisions[candidate['id']].append(dict(resolved, stage='arbitration'))
             verdicts = {resolved['verdict']}
             if resolved['verdict'] == 'support' and isinstance(resolved.get('description'), str) and resolved['description'].strip():
@@ -729,13 +815,15 @@ def screen_manuscript(pdf_path, *, request=None):
         seen[key] = issues[-1] if calculation and calculation.get('ambiguous_multiple') else None
     if unresolved:
         warnings.append(f"另有{len(unresolved)}项内容候选待复审核清；未将这些候选计为已确认风险")
+    if dropped_leads:
+        warnings.append(f"{len(dropped_leads)}项内容候选两次均未能给出可定位的原文依据，未计入")
     audit = {"status": "needs_review" if unresolved else "complete", "pages_checked": [p["page"] for p in pages],
              "chunks": len(chunks), "candidate_count": len(candidates), "confirmed_count": len(issues),
              "visual_ocr_pages": [p["page"] for p in pages if any(str(k).endswith("-ocr") for k in p.get("sources", {}))],
              "source_sha256": hashlib.sha256(Path(pdf_path).read_bytes()).hexdigest(),
              "coverage": "extracted manuscript text/tables plus bounded OCR on image pages; OCR is noisy supplementary evidence and does not replace visual source-data review",
              "candidates": candidates, "decisions": decisions, "calculations": calculations,
-             "unresolved_candidates": unresolved}
+             "unresolved_candidates": unresolved, "dropped_leads": dropped_leads}
     if unresolved and not issues:
         raise ContentScreenIncomplete(f"内容候选尚未核清: {unresolved[0]['location']}", audit=audit)
     return issues, warnings, audit
