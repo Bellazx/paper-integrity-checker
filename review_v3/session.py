@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import signal
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -211,12 +212,20 @@ async def _invoke(spec: SessionSpec, message: str, session_id: str, resume: bool
     if spec.deadline is not None:
         timeout = max(1.0, min(timeout, spec.deadline - now))
     started = time.monotonic()
-    proc = await asyncio.create_subprocess_exec(
-        *command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        cwd=str(runtime_cwd()), env=session_env(spec.workdir, spec.ledger_path, spec.actor, spec.extra_env),
-        start_new_session=True)
+    # The prompt is in a file before the CLI starts: the CLI waits only 3 s
+    # for stdin, and a pipe written from a busy event loop can miss that.
+    prompt_file = tempfile.TemporaryFile()
+    prompt_file.write(message.encode("utf-8"))
+    prompt_file.seek(0)
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(message.encode("utf-8")), timeout)
+        proc = await asyncio.create_subprocess_exec(
+            *command, stdin=prompt_file, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            cwd=str(runtime_cwd()), env=session_env(spec.workdir, spec.ledger_path, spec.actor, spec.extra_env),
+            start_new_session=True)
+    finally:
+        prompt_file.close()  # the child holds its own descriptor
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout)
     except TimeoutError:
         # A long chunk is slow thinking, not a broken endpoint: keep the
         # session (completed turns are persisted) and continue or wrap up.
