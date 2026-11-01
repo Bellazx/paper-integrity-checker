@@ -218,6 +218,19 @@ def test_session_retries_transport_failure_without_spending_chunk(tmp_path, fake
     assert state["chunks"] == 1 and len(calls()) == 2
 
 
+def test_session_id_left_by_an_interrupted_run_is_replaced_at_once(tmp_path, fake_cli, monkeypatch):
+    configure, calls = fake_cli
+    configure(investigator="clear_all", session_in_use_first=True)
+    monkeypatch.setattr(config, "RETRY_BACKOFF_SECONDS", 3600)  # a backoff would hang the test
+    monkeypatch.setattr(config, "TRANSPORT_RETRIES", 0)
+    path = tmp_path / "l.json"
+    ledger.create(path, {}, [{"id": "i", "title": "t"}])
+    outcome = asyncio.run(session.run(_spec(tmp_path, path)))
+    assert outcome.status == "done"
+    first, second = calls()[0]["session"], calls()[1]["session"]
+    assert len(calls()) == 2 and first != second
+
+
 def test_session_resume_does_not_refund_budget(tmp_path, fake_cli):
     configure, calls = fake_cli
     configure(investigator="noop")

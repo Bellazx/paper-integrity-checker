@@ -240,6 +240,10 @@ async def _invoke(spec: SessionSpec, message: str, session_id: str, resume: bool
     if not raw.get("subtype"):
         if re.search(r"no (?:conversation|session)|session.*not found|conversation.*not found", err, re.I):
             raw["_error"] = "session not found"
+        elif re.search(r"session id .* is already in use", err, re.I):
+            # A chunk interrupted by a restart of the parent process left this
+            # id registered; the restart prompt starts a fresh session.
+            raw["_error"] = "session id in use"
         else:
             raw["_error"] = "malformed CLI output"
             raw["_transport"] = bool(TRANSPORT_RE.search(err)) or proc.returncode != 0
@@ -307,6 +311,10 @@ async def run(spec: SessionSpec) -> SessionOutcome:
             while True:
                 raw = await _invoke(spec, message, state["session_id"], resume,
                                     config.WRAPUP_TURNS if wrapping else spec.chunk_turns, wrapping)
+                if raw.get("_error") == "session id in use" and not resume:
+                    state.setdefault("lost_sessions", []).append(state["session_id"])
+                    state["session_id"] = str(uuid.uuid4())
+                    continue
                 if raw.get("_error") == "session not found":
                     state.setdefault("lost_sessions", []).append(state["session_id"])
                     state["session_id"] = str(uuid.uuid4())

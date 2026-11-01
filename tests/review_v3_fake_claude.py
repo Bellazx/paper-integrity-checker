@@ -76,6 +76,10 @@ def main():
         marker.write_text("1")
         sys.stderr.write("API Error: 529 overloaded\n")
         sys.exit(1)
+    if scenario.get("session_in_use_first") and not marker.exists() and "--session-id" in sys.argv:
+        marker.write_text("1")
+        sys.stderr.write(f"Error: Session ID {session} is already in use.\n")
+        sys.exit(1)
     if scenario.get("delay"):
         import time
         time.sleep(float(scenario["delay"]))
