@@ -243,6 +243,7 @@ async def _invoke(spec: SessionSpec, message: str, session_id: str, resume: bool
         else:
             raw["_error"] = "malformed CLI output"
             raw["_transport"] = bool(TRANSPORT_RE.search(err)) or proc.returncode != 0
+            raw["_detail"] = f"rc={proc.returncode}, stdout {len(stdout)} B, stderr: {err[-300:].strip()}"
     elif raw.get("is_error") and raw.get("subtype") not in ("error_max_turns",):
         detail = json.dumps(raw.get("errors") or raw.get("result") or "", ensure_ascii=False)
         raw["_error"] = f"cli {raw.get('subtype')}"
@@ -315,7 +316,8 @@ async def run(spec: SessionSpec) -> SessionOutcome:
                 if raw.get("_transport") and attempt < config.TRANSPORT_RETRIES and (
                         spec.deadline is None or time.monotonic() < spec.deadline):
                     attempt += 1
-                    log.warning("%s transport failure (%s), retry %d", spec.name, raw.get("_error"), attempt)
+                    log.warning("%s transport failure (%s), retry %d; %s", spec.name, raw.get("_error"), attempt,
+                                raw.get("_detail", ""))
                     await asyncio.sleep(min(60, config.RETRY_BACKOFF_SECONDS * attempt))
                     # A session that never registered cannot be resumed.
                     if not resume:
