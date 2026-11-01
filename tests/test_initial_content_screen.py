@@ -163,11 +163,18 @@ def test_malformed_candidate_is_dropped_not_reported(tmp_path):
     assert issues == [] and len(audit["dropped_leads"]) >= 1 and "未计入" in warnings[-1]
 
 
-def test_unverified_scope_and_fabricated_quote_cannot_escalate(tmp_path):
+def test_unresolved_candidate_is_initial_high_risk_and_fabricated_quote_is_dropped(tmp_path):
+    # An unresolved conflict is recorded for the later review as initial high
+    # risk (10.1038/s41467-026-77224-6) instead of withholding the paper.
     path = paper(tmp_path)
     request, _ = responder("uncertain")
-    with pytest.raises(screen.ContentScreenIncomplete, match="尚未核清"):
-        screen.screen_manuscript(path, request=request)
+    issues, warnings, audit = screen.screen_manuscript(path, request=request)
+    assert len(issues) == 1 and issues[0]["severity"] == "high"
+    assert issues[0]["description"].startswith("初审未能核清，需复核：")
+    assert issues[0]["details"]["verification_status"] == "unresolved_needs_review"
+    assert audit["status"] == "needs_review" and audit["confirmed_count"] == 0
+    assert "未能核清" in warnings[-1]
+    assert assessment(issues)["level"] == "高风险"
     fake = candidate()
     fake["evidence"][0]["quote"] = "This sentence does not appear in the manuscript."
     request, _ = responder(candidates=[fake])
@@ -331,14 +338,11 @@ def test_uncertain_candidates_get_source_grounded_adjudication(tmp_path, verdict
         return json.dumps({'complete': True, 'decisions': [{
             'id': 'c1', 'verdict': verdict if adjudicating else 'uncertain',
             'reason': '核对平均值的范围与表格数据', 'evidence': candidate()['evidence']}]})
+    issues, _, audit = screen.screen_manuscript(paper(tmp_path, correction=True), request=request)
+    assert len(issues) == (0 if verdict == 'reject' else 1)
     if verdict == 'uncertain':
-        with pytest.raises(screen.ContentScreenIncomplete) as error:
-            screen.screen_manuscript(paper(tmp_path, correction=True), request=request)
-        audit = error.value.audit
         assert audit['unresolved_candidates'] and audit['confirmed_count'] == 0
-    else:
-        issues, _, audit = screen.screen_manuscript(paper(tmp_path, correction=True), request=request)
-        assert len(issues) == (1 if verdict == 'support' else 0)
+        assert issues[0]['details']['verification_status'] == 'unresolved_needs_review'
     assert len(calls) == 3
     assert 'Set C accuracy is 60.00' in calls[-1]
     assert 'exclude Set C' in calls[-1]  # Adjacent context, not just cited fragments.
@@ -641,6 +645,17 @@ def test_only_comparative_multiples_are_ambiguous(text, value, expected):
     assert screen._comparative_multiple(text, value) is expected
 
 
+def test_unresolved_erratum_and_wording_ambiguity_stay_low(tmp_path):
+    erratum = dict(candidate(), kind="contradiction", calculation=None, severity="low")
+    request, _ = responder("uncertain", candidates=[erratum])
+    issues, _, _ = screen.screen_manuscript(paper(tmp_path), request=request)
+    assert issues[0]["severity"] == "low" and assessment(issues)["level"] != "高风险"
+    path, found = multiple_paper(tmp_path, "three times larger")
+    request, _ = responder("uncertain", candidates=[found], evidence=found["evidence"])
+    issues, _, _ = screen.screen_manuscript(path, request=request)
+    assert issues[0]["severity"] == "low" and assessment(issues)["level"] != "高风险"
+
+
 def test_numbers_are_read_through_pdf_ligatures_and_hyphenation():
     from modules.initial_content_screen import _number, _comparative_multiple
     text = ("resulting in a ﬁvefold reduction in laser threshold; a ﬁfteen-\nfold gain; "
@@ -674,3 +689,42 @@ def test_word_form_values_and_partial_replies_do_not_fail_the_paper():
         _validate_checks(reply, {"c1", "c2"}, pages)
     checks = {c["id"]: c["verdict"] for c in _validate_checks(reply, {"c1", "c2"}, pages, final=True)}
     assert checks == {"c1": "irrelevant", "c2": "reject"}
+
+
+def test_unusable_reply_on_part_of_the_paper_does_not_fail_it(tmp_path):
+    # One chunk only ever gets replies that are not JSON: it is retried in
+    # smaller pieces, then disclosed as unchecked; the rest is screened and
+    # the paper gets a result instead of an error.
+    path = paper(tmp_path)
+    good, _ = responder("support")
+    pages, _ = screen.read_pages(path)
+    broken = {"page": 2, "text": "", "tables": [], "sources": {"p2-b1": "BROKEN-CHUNK marker text"}}
+    original = screen._chunks
+    try:
+        screen._chunks = lambda _pages, limit=None: [[broken], pages]
+        issues, warnings, audit = screen.screen_manuscript(
+            path, request=lambda prompt, **kw: "not json" if "BROKEN-CHUNK" in prompt else good(prompt))
+    finally:
+        screen._chunks = original
+    assert [u["stage"] for u in audit["unchecked"]][:1] == ["discovery"] and audit["unchecked"][0]["pages"] == [2]
+    assert issues and "未能完成" in " ".join(warnings)
+
+
+def test_unusable_reply_is_recovered_by_splitting(tmp_path):
+    path = paper(tmp_path)
+    good, _ = responder("support")
+    state = {"calls": 0}
+
+    def flaky(prompt, **kw):
+        state["calls"] += 1
+        return "not json" if state["calls"] <= 3 else good(prompt)
+    issues, _, audit = screen.screen_manuscript(path, request=flaky)
+    assert issues and not audit["unchecked"]
+
+
+def test_oversized_page_is_split_by_source_blocks_not_rejected():
+    page = {"page": 3, "text": "", "tables": [], "sources": {f"p3-b{i}": "x" * 900 for i in range(10)}}
+    chunks = screen._chunks([page], limit=3000)
+    assert len(chunks) > 1
+    assert {k for chunk in chunks for p in chunk for k in p["sources"]} == set(page["sources"])
+    assert all(p["page"] == 3 for chunk in chunks for p in chunk)
