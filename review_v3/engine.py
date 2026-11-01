@@ -603,24 +603,24 @@ class Review:
                     continue
                 status = record.get("status")
                 if status == "issue" and record.get("severity") != "substantive":
-                    corrections.append({"位置": str(record.get("location", ""))[:160],
-                                        "问题": str(record.get("issue_type", ""))[:80],
-                                        "要点": str(record.get("finding", ""))[:300]})
+                    corrections.append({"位置": _plain(record.get("location", ""))[:160],
+                                        "问题": _plain(record.get("issue_type", ""))[:80],
+                                        "要点": _plain(record.get("finding", ""))[:300]})
                 elif status == "issue":
                     number = len(issues) + 1
                     issues.append({"编号": number,
-                                   **{k: record.get(k, "") for k in ("location", "issue_type", "finding", "why", "basis")}})
+                                   **{k: _plain(record.get(k, "")) for k in ("location", "issue_type", "finding", "why", "basis")}})
                     for ev in record.get("evidence") or []:
                         if isinstance(ev, dict):
                             evidence[dim].append({**ev, "dimension": dim, "issue_index": number,
                                                   "caption": ev.get("caption") or record.get("issue_type", "")})
                 elif status == "cleared":
                     cleared.append({"条目": record.get("title", record["id"])[:220], "cite": self._cite(record),
-                                    "依据": str(record.get("basis", ""))[:400]})
+                                    "依据": _plain(record.get("basis", ""))[:400]})
                 elif status == "not_applicable":
-                    missing.append({"条目": record.get("title", record["id"])[:200], "依据": str(record.get("basis", ""))[:300]})
+                    missing.append({"条目": record.get("title", record["id"])[:200], "依据": _plain(record.get("basis", ""))[:300]})
                 elif status == "unresolved":
-                    unresolved.append({"条目": record.get("title", record["id"])[:200], "说明": str(record.get("note", ""))[:300]})
+                    unresolved.append({"条目": record.get("title", record["id"])[:200], "说明": _plain(record.get("note", ""))[:300]})
             if dim == "data":
                 # Automatic checks the evidence builder had to skip (e.g. very
                 # large workbooks) are stated as not performed.
@@ -692,6 +692,8 @@ class Review:
             result["evidence_images"] = _bind_evidence(result, evidence)
             result = _disclose_unverified(result, finals)
             result = _clean_internal_references(result)
+            for field in REVIEW_FIELDS + ("trigger",):
+                result[field] = _plain(result.get(field))
             checked, gaps = validate(result, self.evidence)
             if gaps:
                 patched, rest = _coverage_patch(result, gaps, finals, self.evidence)
@@ -830,6 +832,10 @@ def _coverage_patch(result: dict, gaps: list[str], finals: dict, evidence: dict)
             remaining.append(gap)
             continue
         records = [members[i] for i in ids if i in members]
+        if not records and match:
+            # The evidence builder drops a screening hit that repeats a
+            # source-data audit finding; that item carries the conclusion.
+            records = list({id(r): r for key, r in members.items() if f"::{test}::" in key}.values())
         if not records:
             remaining.append(gap)
             continue
@@ -847,9 +853,9 @@ def _coverage_patch(result: dict, gaps: list[str], finals: dict, evidence: dict)
             sentence = (f"自动筛查提示的{label}（{where}，共{len(ids)}项）补查后仍未能完成逐项核对，"
                         "本次结论依据已核实的内容作出，这些提示不作为问题依据。")
         elif issues:
-            sentence = f"自动筛查提示的{label}（{where}）存在问题：{str(issues[0].get('issue_type') or '')[:40]}，见上文。"
+            sentence = f"自动筛查提示的{label}（{where}）存在问题：{_plain(issues[0].get('issue_type'))[:40]}，见上文。"
         else:
-            basis = str(records[0].get("basis") or "").split("。")[0]
+            basis = _plain(records[0].get("basis")).split("。")[0]
             if len(basis) > 90:
                 cut = max(basis.rfind("；", 0, 90), basis.rfind("，", 0, 90))
                 basis = basis[:cut] if cut > 20 else basis[:90]
@@ -867,10 +873,10 @@ LOCATED_LABEL = {"未说明重复列对": "重复列", "跨组重复列对(可�
 def _closed_statement(label: str, subject: str, records: list[dict]) -> str:
     issues = [r for r in records if r.get("status") == "issue"]
     if issues:
-        return f"自动筛查提示的{label}（{subject}）存在问题：{str(issues[0].get('issue_type') or '')[:40]}，见上文。"
+        return f"自动筛查提示的{label}（{subject}）存在问题：{_plain(issues[0].get('issue_type'))[:40]}，见上文。"
     if not records or any(r.get("status") in ("open", "unresolved") for r in records):
         return f"自动筛查提示的{label}（{subject}）未能完成逐项核对，本次结论依据已核实的内容作出，这些提示不作为问题依据。"
-    basis = str(records[0].get("basis") or "").split("。")[0]
+    basis = _plain(records[0].get("basis")).split("。")[0]
     if len(basis) > 90:
         cut = max(basis.rfind("；", 0, 90), basis.rfind("，", 0, 90))
         basis = basis[:cut] if cut > 20 else basis[:90]
@@ -916,8 +922,13 @@ SANITIZE = (("实质问题", "问题"), ("规范问题", "需更正的问题"), 
             ("定级", "判断"), ("降级", ""), ("仲裁", "核对"), ("校准", "核对"), ("台账", "记录"))
 
 
+# A bracketed grading note such as "（规范问题）" or "（按次要问题定级）" says
+# nothing about the paper and is dropped whole.
+GRADING_NOTE = re.compile(r"[（(][^（）()]*(?:实质问题|规范问题|定级|降级|升级为|改判|次要问题|严重程度)[^（）()]*[）)]")
+
+
 def _plain(text: str) -> str:
-    text = str(text or "")
+    text = GRADING_NOTE.sub("", str(text or ""))
     for old, new in SANITIZE:
         text = text.replace(old, new)
     for term in BANNED_TERMS:  # anything not mapped above is dropped

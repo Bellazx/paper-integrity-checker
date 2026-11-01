@@ -697,6 +697,21 @@ def test_coverage_gap_is_answered_from_verified_conclusions_only():
     assert rest == [] and "末位数字分布（Sheet2，共1项）补查后仍未能完成逐项核对" in patched["data_review"]
 
 
+def test_screening_hit_merged_into_source_audit_item_is_answered_in_plain_words():
+    # The evidence builder drops a screening hit that repeats a source-data
+    # audit finding; the audit item's conclusion answers the gate.
+    evidence = {"high_findings": [{"dim": "data", "test": "same_sheet_channel_duplicate",
+                                   "location": "s.zip / panel_i_df / 测量通道 / E vs F"}]}
+    finals = {"source_data_audit::same_sheet_channel_duplicate::1": {
+        "id": "source_data_audit::same_sheet_channel_duplicate::1", "status": "issue",
+        "issue_type": "两通道误差列逐值相同（规范问题）"}}
+    gaps = ["未对HIGH发现给出结论: data/same_sheet_channel_duplicate (共1项)"]
+    patched, rest = engine._coverage_patch({"data_review": "本节结论：未发现风险。"}, gaps, finals, evidence)
+    assert rest == [] and "不同通道数值重复（panel_i_df）存在问题：两通道误差列逐值相同，" in patched["data_review"]
+    assert not engine._wording_gaps(patched)
+    assert engine._plain("故按次要问题（规范问题）定级") == "故按次要问题判断"
+
+
 def test_existing_ledger_gains_items_found_later(tmp_path):
     path = tmp_path / "l.json"
     ledger.create(path, {"shard": "x"}, [{"id": "a", "title": "A"}])
