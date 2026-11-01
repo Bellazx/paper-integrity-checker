@@ -854,7 +854,7 @@ def _coverage_patch(result: dict, gaps: list[str], finals: dict, evidence: dict)
             # The evidence builder drops a screening hit that repeats a
             # source-data audit finding; that item carries the conclusion.
             records = list({id(r): r for key, r in members.items() if f"::{test}::" in key}.values())
-        if not records:
+        if not records and not match:
             remaining.append(gap)
             continue
         locations = []
@@ -867,7 +867,8 @@ def _coverage_patch(result: dict, gaps: list[str], finals: dict, evidence: dict)
         where = "、".join(locations[:4]) or "相关位置"
         issues = [r for r in records if r.get("status") == "issue"]
         unverified = [r for r in records if r.get("status") in ("open", "unresolved")]
-        if unverified and not issues:
+        # No recorded conclusion at all means the hits were not checked.
+        if (unverified or not records) and not issues:
             sentence = (f"自动筛查提示的{label}（{where}，共{len(ids)}项）补查后仍未能完成逐项核对，"
                         "本次结论依据已核实的内容作出，这些提示不作为问题依据。")
         elif issues:

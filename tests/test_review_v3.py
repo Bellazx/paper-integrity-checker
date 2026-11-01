@@ -725,6 +725,13 @@ def test_screening_hit_merged_into_source_audit_item_is_answered_in_plain_words(
     assert engine._plain("故按次要问题（规范问题）定级") == "故按次要问题判断"
 
 
+def test_screening_class_without_any_record_is_disclosed_as_not_checked():
+    evidence = {"high_findings": [{"dim": "data", "test": "verified_manuscript_content_conflict", "location": "PDF第7页"}]}
+    gaps = ["未对HIGH发现给出结论: data/verified_manuscript_content_conflict (共1项)"]
+    patched, rest = engine._coverage_patch({"data_review": "本节结论：未发现风险。"}, gaps, {}, evidence)
+    assert rest == [] and "正文内容不一致（PDF第7页，共1项）补查后仍未能完成逐项核对" in patched["data_review"]
+
+
 def test_existing_ledger_gains_items_found_later(tmp_path):
     path = tmp_path / "l.json"
     ledger.create(path, {"shard": "x"}, [{"id": "a", "title": "A"}])
