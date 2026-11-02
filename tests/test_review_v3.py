@@ -917,3 +917,25 @@ def test_long_fact_lists_are_summarised():
     entries = [{"条目": f"重复列对 {i}"} for i in range(config.FACTS_LIST_LIMIT + 5)]
     capped = engine._capped(entries, "均已核对，未发现问题")
     assert len(capped) == config.FACTS_LIST_LIMIT + 1 and capped[-1]["条目"] == "另有 5 项，均已核对，未发现问题"
+
+
+def test_issue_without_screenshot_gets_the_cited_figure_cropped(tmp_path):
+    import fitz
+    from review_v3 import autocrop
+    pdf = fitz.open()
+    contents = pdf.new_page()
+    for i in range(1, 6):
+        contents.insert_text((50, 60 + 30 * i), f"Supplementary Figure {i}. A long title that describes this figure in some detail.")
+    page = pdf.new_page()
+    page.draw_rect(fitz.Rect(60, 60, 540, 420), color=(0, 0, 1))
+    page.insert_textbox(fitz.Rect(50, 440, 560, 520), "Fig. 2 | Measured dissolution curves for both catalysts under "
+                        "the potential program, with the baseline segment shown in panel h.", fontsize=9)
+    path = tmp_path / "main.pdf"
+    pdf.save(str(path))
+    dossier = {"docs": [{"id": "main", "path": str(path), "pages": 2}]}
+    shots = autocrop.crop_for({"location": "正文第2页 Fig. 2h", "finding": "x"}, dossier, tmp_path)
+    assert len(shots) == 1 and ledger.is_crop(shots[0]["path"]) and Path(shots[0]["path"]).is_file()
+    assert shots[0]["caption"] == "正文第2页 Fig. 2（原文截图）"
+    # A contents page lists captions but shows no figure.
+    assert autocrop.crop_for({"location": "Supplementary Fig. 3", "finding": "x"},
+                             {"docs": [{"id": "s1", "path": str(path), "pages": 2}]}, tmp_path) == []

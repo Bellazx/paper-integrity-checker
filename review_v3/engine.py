@@ -19,7 +19,7 @@ import time
 import uuid
 from pathlib import Path
 
-from review_v3 import categories, checklist, config, dossier as dossier_mod, ledger, memory, prompts, session
+from review_v3 import autocrop, categories, checklist, config, dossier as dossier_mod, ledger, memory, prompts, session
 
 log = logging.getLogger(__name__)
 
@@ -605,23 +605,46 @@ class Review:
                             for ev in r.get("evidence") or [])]
         if not need:
             return finals
-        path = self.ledger_path("evd", "all")
-        created = ledger.create(path, {"shard": "evidence", "role": "evidence", "allow_new": False, "require_crop": True},
-                                [{"id": r["id"], "title": r.get("title") or r["id"], "dimension": r.get("dimension"),
-                                  "first": _compact(r)} for r in need])
-        if created.get("added"):
-            session.reset("evd_all", self.run_dir)
-        spec = self._spec("evd_all", prompts.evidence(self.dossier, need), path,
-                          config.MAX_CHUNKS_EVIDENCE, "evidence", "evidence")
-        outcome = await session.run(spec)
+        # One short session per issue, a few at a time: a single session for
+        # every issue ran out of turns or time on most papers.
+        gate = asyncio.Semaphore(config.CAPTURE_PARALLEL)
+
+        async def one(number: int, record: dict) -> dict:
+            name = f"evd_{number}"
+            path = self.ledger_path("evd", str(number))
+            created = ledger.create(path, {"shard": name, "role": "evidence", "allow_new": False, "require_crop": True},
+                                    [{"id": record["id"], "title": record.get("title") or record["id"],
+                                      "dimension": record.get("dimension"), "first": _compact(record)}])
+            if created.get("added"):
+                session.reset(name, self.run_dir)
+            spec = self._spec(name, prompts.evidence(self.dossier, [record]), path,
+                              config.MAX_CHUNKS_EVIDENCE, "evidence", "evidence")
+            async with gate:
+                await session.run(spec)
+            return ledger.load(path).get("items") or {}
+
+        results = await asyncio.gather(*(one(n, r) for n, r in enumerate(need, start=1)))
         out = dict(finals)
-        for item_id, record in (ledger.load(path).get("items") or {}).items():
-            crops = [ev for ev in record.get("evidence") or [] if isinstance(ev, dict) and ledger.is_crop(ev.get("path", ""))]
-            if record.get("status") == "issue" and crops and item_id in out:
-                out[item_id] = {**out[item_id], "evidence": crops}
-        missing = [r["id"] for r in need if not any(ledger.is_crop(ev.get("path", "")) for ev in out[r["id"]].get("evidence") or []
-                                                     if isinstance(ev, dict))]
-        log.info("DOI=%s evidence capture %s; still without screenshot: %s", self.doi, outcome.status, missing)
+        for items in results:
+            for item_id, record in items.items():
+                crops = [ev for ev in record.get("evidence") or [] if isinstance(ev, dict) and ledger.is_crop(ev.get("path", ""))]
+                if record.get("status") == "issue" and crops and item_id in out:
+                    out[item_id] = {**out[item_id], "evidence": crops}
+        missing = []
+        for r in need:
+            if any(isinstance(ev, dict) and ledger.is_crop(ev.get("path", "")) for ev in out[r["id"]].get("evidence") or []):
+                continue
+            # Fallback made in code: the cited figure or table with its caption.
+            try:
+                shots = autocrop.crop_for(out[r["id"]], self.dossier, self.run_dir)
+            except Exception as exc:  # a broken PDF must not stop the report
+                log.warning("DOI=%s automatic screenshot failed for %s: %s", self.doi, r["id"], exc)
+                shots = []
+            if shots:
+                out[r["id"]] = {**out[r["id"]], "evidence": shots}
+            else:
+                missing.append(r["id"])
+        log.info("DOI=%s evidence capture done; still without screenshot: %s", self.doi, missing)
         return out
 
     # -- verdict and writing
