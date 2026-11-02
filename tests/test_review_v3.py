@@ -939,3 +939,19 @@ def test_issue_without_screenshot_gets_the_cited_figure_cropped(tmp_path):
     # A contents page lists captions but shows no figure.
     assert autocrop.crop_for({"location": "Supplementary Fig. 3", "finding": "x"},
                              {"docs": [{"id": "s1", "path": str(path), "pages": 2}]}, tmp_path) == []
+
+
+def test_source_data_issue_gets_its_workbook_cells_as_evidence(tmp_path):
+    import openpyxl
+    from review_v3 import autocrop
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Fig5h"
+    for i in range(40):
+        ws.append([i, i * 0.1, i * 0.2])
+    wb.save(tmp_path / "source.xlsx")
+    cells = autocrop.cells_for({"location": "随文源数据 source.xlsx 工作表 Fig5h 第 20–27 行 B 列", "finding": ""},
+                               str(tmp_path))
+    assert cells == [{"file": "source.xlsx", "sheet": "Fig5h", "range": "B19:B30",
+                      "caption": "随文源数据 Fig5h 表 B19:B30（单元格原值）"}]
+    assert ledger.is_excel(cells[0]) and ledger.is_evidence(cells[0])

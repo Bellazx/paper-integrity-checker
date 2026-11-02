@@ -71,11 +71,22 @@ def _figure_rect(page, caption):
 
 
 def _previous_page_figure(page):
+    """The figure a caption at the top of the next page belongs to: the images
+    and vector drawings above this page's first paragraph."""
     import fitz
-    paragraphs = [b[3] for b in page.get_text("blocks") if len(" ".join(str(b[4]).split())) > 180]
-    top = max(paragraphs, default=page.rect.y0 + 36)
-    bottom = page.rect.y1 - 36
-    return fitz.Rect(page.rect.x0 + 20, top + 2, page.rect.x1 - 20, bottom) if bottom - top >= 150 else None
+    paragraphs = sorted(b[1] for b in page.get_text("blocks") if len(" ".join(str(b[4]).split())) > 180)
+    limit = paragraphs[0] - 2 if paragraphs else page.rect.y1 - 36
+    parts = ([fitz.Rect(i["bbox"]) for i in page.get_image_info()] + [fitz.Rect(d["rect"]) for d in page.get_drawings()]
+             + [fitz.Rect(b[:4]) for b in page.get_text("blocks") if len(" ".join(str(b[4]).split())) <= 60])
+    parts = [r for r in parts if r.y1 <= limit + 2 and r.y0 >= page.rect.y0 + 20 and not r.is_empty]
+    if not parts:
+        return None
+    box = parts[0]
+    for r in parts[1:]:
+        box |= r
+    if box.height < 150:
+        return None
+    return fitz.Rect(page.rect.x0 + 20, max(page.rect.y0, box.y0 - 6), page.rect.x1 - 20, min(limit, box.y1 + 6))
 
 
 def _table_rect(page, caption):
@@ -146,3 +157,68 @@ def crop_for(record: dict, dossier: dict, run_dir: Path) -> list[dict]:
                                       "caption": f"第{page_no}页 相关段落（原文截图）"})
                         return shots
     return shots
+
+
+ROWS = re.compile(r"(?:第\s*|rows?\s*|R)(\d{1,6})\s*(?:[–\-~至到]|\.\.)\s*(?:第\s*)?(\d{1,6})\s*行?", re.I)
+ROW = re.compile(r"第\s*(\d{1,6})\s*行|\brow\s*(\d{1,6})\b", re.I)
+COLS = re.compile(r"\b([A-Z]{1,2})\s*[–\-~:]\s*([A-Z]{1,2})\s*列|\b([A-Z]{1,2})\s*列")
+SHOWN_ROWS = 12
+SHOWN_COLS = 8
+
+
+def _column_index(letters: str) -> int:
+    value = 0
+    for char in letters.upper():
+        value = value * 26 + ord(char) - 64
+    return value
+
+
+def _column_letters(index: int) -> str:
+    out = ""
+    while index:
+        index, rest = divmod(index - 1, 26)
+        out = chr(65 + rest) + out
+    return out
+
+
+def cells_for(record: dict, input_dir: str) -> list[dict]:
+    """The cited cells of a submitted workbook, rendered from the file at report
+    time: the workbook and sheet the location names, the rows and columns it
+    cites (the first rows and columns when it cites none)."""
+    from openpyxl import load_workbook
+    text = f"{record.get('location') or ''} {record.get('finding') or ''}"
+    books = sorted(Path(input_dir).rglob("*.xls[xm]")) if input_dir and Path(input_dir).is_dir() else []
+    named = [b for b in books if b.name in text or b.stem in text]
+    for book in named or books:
+        try:
+            workbook = load_workbook(book, read_only=True, data_only=True)
+        except Exception:
+            continue
+        try:
+            sheets = sorted((n for n in workbook.sheetnames if n and n in text), key=len, reverse=True)
+            if not sheets:
+                continue
+            sheet = workbook[sheets[0]]
+            width = sheet.max_column or SHOWN_COLS
+            rows = ROWS.search(text)
+            if rows:
+                first = int(rows.group(1))
+            else:
+                single = ROW.search(text)
+                first = int(next(g for g in single.groups() if g)) if single else 1
+            first = max(1, first - 1)  # keep the row above (often the header)
+            cols = COLS.search(text)
+            if cols and cols.group(1):
+                left, right = _column_index(cols.group(1)), _column_index(cols.group(2))
+            elif cols:
+                left = right = _column_index(cols.group(3))
+            else:
+                left, right = 1, min(width, SHOWN_COLS)
+            left, right = sorted((left, right))
+            right = min(right, left + SHOWN_COLS - 1)
+            cell_range = f"{_column_letters(left)}{first}:{_column_letters(right)}{first + SHOWN_ROWS - 1}"
+            return [{"file": book.name, "sheet": sheets[0], "range": cell_range,
+                     "caption": f"随文源数据 {sheets[0]} 表 {cell_range}（单元格原值）"}]
+        finally:
+            workbook.close()
+    return []

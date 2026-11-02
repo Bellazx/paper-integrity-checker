@@ -601,8 +601,8 @@ class Review:
         """Every risk issue in the report carries a local screenshot of the
         cited values; issues that lack one get a short capture session."""
         need = [r for r in finals.values() if _is_issue(r, "substantive")
-                and not any(isinstance(ev, dict) and ledger.is_crop(ev.get("path", "")) and Path(ev["path"]).is_file()
-                            for ev in r.get("evidence") or [])]
+                and not any(ledger.is_excel(ev) or (ledger.is_crop(ev.get("path", "")) and Path(ev["path"]).is_file())
+                            for ev in r.get("evidence") or [] if isinstance(ev, dict))]
         if not need:
             return finals
         # One short session per issue, a few at a time: a single session for
@@ -627,16 +627,18 @@ class Review:
         out = dict(finals)
         for items in results:
             for item_id, record in items.items():
-                crops = [ev for ev in record.get("evidence") or [] if isinstance(ev, dict) and ledger.is_crop(ev.get("path", ""))]
+                crops = [ev for ev in record.get("evidence") or [] if ledger.is_evidence(ev)]
                 if record.get("status") == "issue" and crops and item_id in out:
                     out[item_id] = {**out[item_id], "evidence": crops}
         missing = []
         for r in need:
-            if any(isinstance(ev, dict) and ledger.is_crop(ev.get("path", "")) for ev in out[r["id"]].get("evidence") or []):
+            if any(ledger.is_evidence(ev) for ev in out[r["id"]].get("evidence") or []):
                 continue
-            # Fallback made in code: the cited figure or table with its caption.
+            # Fallback made in code: the cited figure or table with its caption,
+            # or the cited cells of the source-data workbook.
             try:
-                shots = autocrop.crop_for(out[r["id"]], self.dossier, self.run_dir)
+                shots = (autocrop.crop_for(out[r["id"]], self.dossier, self.run_dir)
+                         or autocrop.cells_for(out[r["id"]], self.input_dir))
             except Exception as exc:  # a broken PDF must not stop the report
                 log.warning("DOI=%s automatic screenshot failed for %s: %s", self.doi, r["id"], exc)
                 shots = []
@@ -1240,7 +1242,7 @@ def _bind_evidence(result: dict, evidence: dict) -> list[dict]:
     whose issue number exists in that dimension's text (the layout binds by
     number; a dangling number would block publication)."""
     from modules.review_report_layout import split_review_issues
-    images = []
+    images, cells = [], []
     for dim, field in DIMENSION_FIELD.items():
         text = ISSUE_HEAD.sub(lambda m: "\n\n" + m.group(1), result.get(field) or "")
         result[field] = text
@@ -1252,7 +1254,10 @@ def _bind_evidence(result: dict, evidence: dict) -> list[dict]:
         if len(kept) < len(evidence.get(dim, [])):
             log.warning("writer numbering left %d %s screenshots unbound; dropped",
                         len(evidence.get(dim, [])) - len(kept), dim)
-        images.extend(kept)
+        images.extend(ev for ev in kept if not ledger.is_excel(ev))
+        # Workbook cell ranges are rendered from the submitted file at render time.
+        cells.extend(ev for ev in kept if ledger.is_excel(ev) and dim == "data")
+    result["excel_evidence_regions"] = cells
     return images
 
 

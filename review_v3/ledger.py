@@ -114,7 +114,7 @@ def _normalize(entry: dict, run_dir: Path) -> list[str]:
         if not isinstance(ev, dict):
             dropped.append(str(ev)[:80])
             continue
-        if ev.get("pdf_path"):
+        if ev.get("pdf_path") or is_excel(ev):
             kept.append(ev)
             continue
         raw = next((ev[k] for k in EVIDENCE_PATH_KEYS if isinstance(ev.get(k), str) and ev[k].strip()), "")
@@ -143,6 +143,19 @@ def is_crop(path: str) -> bool:
     return bool(CROP_NAME.search(Path(str(path)).name))
 
 
+EXCEL_RANGE = re.compile(r"^\$?[A-Za-z]{1,3}\$?\d+:\$?[A-Za-z]{1,3}\$?\d+$")
+
+
+def is_excel(ev: dict) -> bool:
+    """A cell range of a submitted workbook; the report renders it from the file."""
+    return (isinstance(ev, dict) and str(ev.get("file") or "").lower().endswith((".xlsx", ".xlsm"))
+            and bool(ev.get("sheet")) and bool(EXCEL_RANGE.match(str(ev.get("range") or "").strip())))
+
+
+def is_evidence(ev) -> bool:
+    return isinstance(ev, dict) and (is_crop(ev.get("path", "")) or is_excel(ev))
+
+
 def _validate_entry(entry: dict, known: dict, allow_new: bool, require_category: bool = False,
                     require_crop: bool = False) -> list[str]:
     errors = []
@@ -165,10 +178,10 @@ def _validate_entry(entry: dict, known: dict, allow_new: bool, require_category:
         else:
             entry["category"], entry["severity"] = code, severity(code)
     if status == "issue" and require_crop:
-        crops = [ev for ev in entry.get("evidence") or [] if isinstance(ev, dict) and is_crop(ev.get("path", ""))]
+        crops = [ev for ev in entry.get("evidence") or [] if is_evidence(ev)]
         if not crops:
             errors.append(f"{item_id}: 需要至少一张局部截图（pv3 render <doc> <页> --clip x0,y0,x1,y1 生成，"
-                          "整页截图不算），在 evidence 中给出 path 与 caption")
+                          "整页截图不算），或源数据单元格区域 {\"file\", \"sheet\", \"range\": \"A1:F12\", \"caption\"}")
     if status == "issue":
         if entry.get("severity") not in SEVERITIES:
             errors.append(f"{item_id}: issue 必须给出 severity=substantive 或 minor")
