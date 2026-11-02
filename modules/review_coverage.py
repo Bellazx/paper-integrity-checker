@@ -26,9 +26,11 @@ _FIG_RENDER_VERBS = ("渲染", "fitz", "对比", "核对", "曲线形状", "峰�
 
 
 def _review_text(result):
+    # ``_coverage_notes`` holds a review's conclusions on screening hits that
+    # the published PDF does not print (review_v3 audit notes).
     parts = [result.get(k, "") or "" for k in
-             ("image_review", "data_review", "ref_review", "methodology_review", "reason")]
-    return "\n".join(parts)
+             ("image_review", "data_review", "ref_review", "methodology_review", "reason", "_coverage_notes")]
+    return "\n".join(str(part) for part in parts)
 
 
 def _fig_tokens(fig_name):

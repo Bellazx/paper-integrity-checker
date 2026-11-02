@@ -709,9 +709,11 @@ class Review:
 
     async def write(self, finals: dict, verdicts: dict) -> tuple[dict | None, list[str]]:
         from api.services.review import _clean_internal_references, _extract_json_from_text, _normalize_review_result
-        from api.services.review_validation import validate
         facts, evidence = self.facts(finals)
         _write_json(self.run_dir / "facts.json", facts)
+        # The writer sees only the risk issues; everything else goes to the
+        # audit notes, built in code.
+        reader_facts = {dim: {"风险问题": (facts.get(dim) or {}).get("风险问题") or []} for dim in facts}
         draft, gaps, best = None, [], None
         # Writing is cheap and must reflect the current facts: never replay a
         # cached draft from an earlier call.
@@ -721,7 +723,7 @@ class Review:
         for attempt in range(config.WRITER_REPAIRS + 1):
             name = f"writer_{attempt}"
             spec = session.SessionSpec(name=name, workdir=self.run_dir, actor="writer", tools=False,
-                                       prompt=prompts.writer(self.doi, self.dossier, facts, verdicts, gaps or None,
+                                       prompt=prompts.writer(self.doi, self.dossier, reader_facts, verdicts, gaps or None,
                                                              draft if gaps else None),
                                        max_chunks=1, chunk_turns=config.WRITER_TURNS, deadline=self.deadline)
             outcome = await session.run(spec)
@@ -738,17 +740,12 @@ class Review:
                 if not isinstance(result.get(field), str):
                     result[field] = "" if result.get(field) is None else json.dumps(result[field], ensure_ascii=False)
             result["evidence_images"] = _bind_evidence(result, evidence)
-            result = _disclose_unverified(result, finals)
             result = _clean_internal_references(result)
             for field in REVIEW_FIELDS + ("trigger",):
                 result[field] = _plain(result.get(field))
-            checked, gaps = validate(result, self.evidence)
-            if gaps:
-                patched, rest = _coverage_patch(result, gaps, finals, self.evidence)
-                if len(rest) < len(gaps):
-                    result = patched
-                    checked, gaps = validate(result, self.evidence)
-            gaps = gaps + _wording_gaps(result)
+            result = _section_heads(result, verdicts)
+            checked, gaps = _validate_with_audit(result, self.doi, facts, verdicts, finals, self.evidence)
+            gaps = gaps + _wording_gaps(result) + _reader_gaps(result)
             _write_json(self.run_dir / f"writer_{attempt}.json", {"result": result, "gaps": gaps})
             if not gaps:
                 return checked, []
@@ -760,11 +757,8 @@ class Review:
         # Last resort: assemble the report in code from the same verified facts.
         result = _template_report(self.doi, facts, verdicts, finals, self.evidence)
         result["evidence_images"] = _bind_evidence(result, evidence)
-        checked, gaps = validate(result, self.evidence)
-        if gaps:
-            result, _ = _coverage_patch(result, gaps, finals, self.evidence)
-            checked, gaps = validate(result, self.evidence)
-        gaps = gaps + _wording_gaps(result)
+        checked, gaps = _validate_with_audit(result, self.doi, facts, verdicts, finals, self.evidence)
+        gaps = gaps + _wording_gaps(result) + _reader_gaps(result)
         if not gaps:
             log.warning("DOI=%s report assembled from facts after %d writer attempt(s)", self.doi, config.WRITER_REPAIRS + 1)
             checked["_report_source"] = "template"
@@ -779,6 +773,52 @@ def _capped(entries: list[dict], outcome: str) -> list[dict]:
     if len(entries) <= limit:
         return entries
     return entries[:limit] + [{"条目": f"另有 {len(entries) - limit} 项，{outcome}"}]
+
+
+def _section_heads(result: dict, verdicts: dict) -> dict:
+    """Each section opens with the renderer's own conclusion line, so the PDF
+    shows one conclusion per section; a low-risk section says nothing more."""
+    out = dict(result)
+    for dim, field in DIMENSION_FIELD.items():
+        verdict = verdicts["dimension_verdicts"].get(dim)
+        head = SECTION_HEAD.get(verdict, SECTION_HEAD[LOW])
+        text = re.sub(r"^\s*(?:本模块复核结论|本节结论)[：:][^。\n]*[。]?\s*", "", str(out.get(field) or ""))
+        out[field] = head if verdict != HIGH else (head + "\n" + text.strip()).strip()
+    if verdicts["result"] != "高风险":
+        out["reason"] = "最终判定：建议低风险"
+    return out
+
+
+def _audit_notes(audit: dict) -> str:
+    return "\n".join(str(audit.get(field) or "") for field in REVIEW_FIELDS).strip()
+
+
+def _validate_with_audit(result: dict, doi: str, facts: dict, verdicts: dict, finals: dict,
+                         evidence: dict) -> tuple[dict, list[str]]:
+    """Validate a reader report together with its audit notes. Coverage of
+    screening hits is answered in the notes, never in the reader text."""
+    from api.services.review_validation import validate
+    audit = _disclose_unverified(_audit_report(doi, facts, verdicts, finals, evidence), finals)
+    result = {**result, "_engine": "v3", "_coverage_notes": _audit_notes(audit)}
+    checked, gaps = validate(result, evidence)
+    if gaps:
+        audit, _ = _coverage_patch(audit, gaps, finals, evidence)
+        result["_coverage_notes"] = _audit_notes(audit)
+        checked, gaps = validate(result, evidence)
+    return checked, gaps
+
+
+# Words that describe how the review was done rather than the paper. They
+# belong in the audit notes only.
+READER_BANNED = ("自动筛查", "已核对", "属正常", "不构成异常", "核查依据", "复核人员", "提示项", "补查",
+                 "未能完成", "逐项核对", "核查范围", "问题类型", "为什么重要", "另需作者更正")
+
+
+def _reader_gaps(result: dict) -> list[str]:
+    text = "\n".join(str(result.get(f) or "") for f in REVIEW_FIELDS + ("trigger",))
+    found = [term for term in READER_BANNED if term in text]
+    return [f"报告中出现了描述核查过程的用语：{'、'.join(found)}。只写有风险的问题：问题位置、问题、影响，"
+            "不写核查过程，也不写已排除或未发现问题的项目。"] if found else []
 
 
 # Review-process and grading vocabulary must not reach a published report.
@@ -1067,9 +1107,42 @@ def _checked_summary(cleared: list[dict]) -> str:
     return "已核对以下项目，均属正常：" + "；".join(sentences) + "。"
 
 
+SECTION_HEAD = {HIGH: "本模块复核结论：建议高风险。", LOW: "本模块复核结论：建议低风险。"}
+
+
+def _short(text: str, limit: int) -> str:
+    """The first sentences of a recorded finding, up to about `limit` characters."""
+    text = _plain(text).strip()
+    if len(text) <= limit:
+        return text
+    cut = max(text.rfind("。", 0, limit), text.rfind("；", 0, limit))
+    return text[:cut + 1] if cut > limit // 3 else text[:limit].rstrip("，、；") + "。"
+
+
 def _template_report(doi: str, facts: dict, verdicts: dict, finals: dict, evidence: dict) -> dict:
-    """Report assembled in code from the verified facts: the last resort when
-    the writer cannot produce a report that passes the publication gate."""
+    """Reader report assembled in code from the verified risk issues: the
+    fallback when the writer's draft cannot be published. Only risk issues
+    appear; each is location, problem and impact."""
+    out = {"doi": doi, **verdicts, "trigger": "图像、数据与参考文献线索"}
+    reasons = []
+    for dim, field in DIMENSION_FIELD.items():
+        verdict = verdicts["dimension_verdicts"].get(dim)
+        parts = [SECTION_HEAD.get(verdict, SECTION_HEAD[LOW])]
+        for issue in (facts.get(dim) or {}).get("风险问题") or []:
+            location = _short(issue.get("location"), 120)
+            parts.append(f"（{issue['编号']}）问题位置：{location}\n问题：{_short(issue.get('finding'), 220)}\n"
+                         f"影响：{_short(issue.get('why'), 140)}")
+            reasons.append(f"{location[:60]}：{_short(issue.get('issue_type'), 60)}")
+        out[field] = "\n".join(parts)
+    final = "最终判定：建议高风险" if verdicts["result"] == "高风险" else "最终判定：建议低风险"
+    out["reason"] = ("\n".join(reasons) + "\n" + final) if reasons else final
+    return out
+
+
+def _audit_report(doi: str, facts: dict, verdicts: dict, finals: dict, evidence: dict) -> dict:
+    """Every recorded conclusion in prose, including cleared screening hits and
+    corrections: kept as the review's audit notes (`_coverage_notes`), which the
+    publication gate reads and the PDF does not print."""
     out = {"doi": doi, **verdicts, "trigger": "自动筛查提示的图像、数据与参考文献线索"}
     reasons = []
     for dim, field in DIMENSION_FIELD.items():
@@ -1477,10 +1550,7 @@ def _deadline_report(doi: str, report_json: str, input_dir: str, run_dir: Path) 
     facts, bound = review.facts(finals)
     result = _template_report(doi, facts, verdicts, finals, evidence)
     result["evidence_images"] = _bind_evidence(result, bound)
-    checked, gaps = validate(result, evidence)
-    if gaps:
-        result, _ = _coverage_patch(result, gaps, finals, evidence)
-        checked, gaps = validate(result, evidence)
+    checked, gaps = _validate_with_audit(result, doi, facts, verdicts, finals, evidence)
     unfinished = sum(1 for r in finals.values() if r.get("status") in ("open", "unresolved"))
     _write_json(run_dir / "finals.json", {"verdicts": verdicts, "finals": finals, "deadline_report": True})
     checked.update(_engine="v3", _report_source="deadline", _unfinished_items=unfinished, _coverage_gaps=gaps,

@@ -340,7 +340,7 @@ result：{verdicts['result']}
 verdict：{verdicts['verdict']}
 dimension_verdicts：{json.dumps(verdicts['dimension_verdicts'], ensure_ascii=False)}
 
-## 已核实的事实（按维度；“风险问题”按给定编号逐条写，“需作者更正事项”合并为一段，cleared/not_applicable 一句带过但须提及 cite 中的位置词）
+## 已核实的风险问题（按维度；每条按给定编号单独写一段；没有风险问题的维度写空字符串）
 ```json
 {json.dumps(facts, ensure_ascii=False, indent=1)}
 ```

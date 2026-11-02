@@ -291,7 +291,8 @@ def test_engine_minor_issue_does_not_raise_risk(tmp_path, fake_cli, monkeypatch)
     paper = _make_paper(tmp_path)
     result = _run(paper, tmp_path, monkeypatch)
     # Minor issues are listed once as corrections, not as numbered risk points.
-    assert result["result"] == "低风险" and "另需作者更正" in result["data_review"]
+    assert result["result"] == "低风险" and "另需作者更正" in result["_coverage_notes"]
+    assert result["data_review"] == "本模块复核结论：建议低风险。"  # the PDF lists risk issues only
     assert "问题位置" not in result["data_review"]
 
 
@@ -303,7 +304,7 @@ def test_engine_unfinished_checks_are_disclosed_not_blocking(tmp_path, fake_cli,
     # Still unverified after the completion pass: the verdict rests on what was
     # verified and the report says which screening hits were not checked.
     assert result["trigger"] != "review_error" and result["result"] == "低风险"
-    assert "未能完成" in result["data_review"] or "未完成" in result["data_review"]
+    assert "未能完成" in result["_coverage_notes"] and "未能完成" not in result["data_review"]
 
 
 def test_engine_resume_returns_validated_final_without_model_calls(tmp_path, fake_cli, monkeypatch):
@@ -401,7 +402,8 @@ def test_engine_calibration_can_downgrade_to_minor(tmp_path, fake_cli, monkeypat
               challenger={"issue": {"high::data::0": "substantive"}},
               calibrator={"issue": {"high::data::0": "minor"}})
     result = _run(_make_paper(tmp_path), tmp_path, monkeypatch)
-    assert result["result"] == "低风险" and "另需作者更正" in result["data_review"]
+    assert result["result"] == "低风险" and "另需作者更正" in result["_coverage_notes"]
+    assert result["data_review"] == "本模块复核结论：建议低风险。"  # the PDF lists risk issues only
     assert any(c["actor"] == "calibrator" for c in calls())
     finals = json.loads(Path(result["_review_workdir"], "finals.json").read_text())
     assert finals["finals"]["high::data::0"]["calibrated_from"]["severity"] == "substantive"
@@ -791,7 +793,8 @@ def test_final_review_by_judge_can_overturn_a_substantive_issue(tmp_path, fake_c
               calibrator={"issue": {"high::data::0": "substantive"}},
               judge={"issue": {"high::data::0": "minor"}})
     result = _run(_make_paper(tmp_path), tmp_path, monkeypatch)
-    assert result["result"] == "低风险" and "另需作者更正" in result["data_review"]
+    assert result["result"] == "低风险" and "另需作者更正" in result["_coverage_notes"]
+    assert result["data_review"] == "本模块复核结论：建议低风险。"  # the PDF lists risk issues only
     judge_calls = [c for c in calls() if c["actor"] == "judge"]
     assert judge_calls and judge_calls[0]["model"] == config.JUDGE_MODEL
 

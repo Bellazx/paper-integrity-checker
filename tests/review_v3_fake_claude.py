@@ -41,18 +41,9 @@ def write_report(prompt):
                        ("methodology", "methodology_review")):
         parts = []
         for issue in facts[dim]["风险问题"]:
-            parts.append(f"（{issue['编号']}）问题位置：{issue['location']}\n问题类型：{issue['issue_type']}\n"
-                         f"发现：{issue['finding']}\n为什么重要：{issue['why']}\n核查依据：{issue['basis']}")
-        if facts[dim]["需作者更正事项"]:
-            parts.append("另需作者更正：\n" + "\n".join(f"{'①②③④⑤'[i % 5]} 位置：{c['位置']}；问题：{c['问题']}；请核对。"
-                                                       for i, c in enumerate(facts[dim]["需作者更正事项"])))
-        cleared = [f"{c['条目']}（{c['cite']}）属假阳性，可解释：{c['依据']}" for c in facts[dim]["cleared"]]
-        cleared += [f"{c['条目']}：{c['依据']}" for c in facts[dim]["not_applicable"]]
-        if cleared:
-            parts.append("已核对：" + "；".join(cleared))
-        if dim == "data":
-            parts.append("图文一致性：渲染 Fig. 1 并与源数据比对，数值一致。")
-        fields[field] = "\n\n".join(parts) or "核查了该维度全部内容，未发现问题，属正常。"
+            parts.append(f"（{issue['编号']}）问题位置：{issue['location']}\n问题：{issue['finding']}\n"
+                         f"影响：{issue['why']}")
+        fields[field] = "\n\n".join(parts)
     final = "最终判定：" + verdict
     reason = "数据维度：见上。\n\n图像维度：见上。\n\n" + final
     print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "num_turns": 1,
