@@ -110,6 +110,12 @@ class Review:
         self.hints: dict[str, str] = {}
         self.read_dirs: list[str] = []
         self.background: list[asyncio.Future] = []
+        # Set before the shard pipelines run: the arbitration round of this
+        # call (None in a regrade) and conclusions from earlier calls.
+        self.arbitration_round: int | None = None
+        self.prior_decided: dict[str, dict] = {}
+        self.shard_finals: dict[str, dict] = {}
+        self._complete_gate: asyncio.Semaphore | None = None
         origin = started if started is not None else time.monotonic()
         # Phase time boxes; the whole-paper deadline stays the hard limit.
         self.soft = {"investigate": origin + config.INVESTIGATE_SOFT_SECONDS,
@@ -290,18 +296,41 @@ class Review:
         return outcome
 
     async def shard_pipeline(self, shard: dict) -> dict:
+        """One shard from investigation to its last conclusion. Disputes and
+        unfinished must-check items of a shard are settled as soon as that
+        shard's cross-check ends, without waiting for slower shards."""
         started = time.monotonic()
         inv = await self.investigate(shard)
         mid = time.monotonic()
         chk = await self.challenge(shard)
-        return {"shard": shard["id"], "investigate": inv.status, "challenge": chk.status if chk else "skipped",
-                "investigate_seconds": round(mid - started, 1), "challenge_seconds": round(time.monotonic() - mid, 1)}
+        out = {"shard": shard["id"], "investigate": inv.status, "challenge": chk.status if chk else "skipped",
+               "investigate_seconds": round(mid - started, 1), "challenge_seconds": round(time.monotonic() - mid, 1)}
+        if self.arbitration_round is None:  # regrade: the investigation stays as it was
+            return out
+        settled = time.monotonic()
+        finals, disputes = self.merge([shard])
+        finals.update({k: v for k, v in self.prior_decided.items() if k in finals or any(d["id"] == k for d in disputes)})
+        disputes = [d for d in disputes if d["id"] not in self.prior_decided]
+        if disputes:
+            decided = await self.arbitrate(disputes, self.arbitration_round, scope=shard["id"])
+            for item in disputes:
+                record = decided.get(item["id"], {"status": "unresolved", "note": "仲裁未完成"})
+                finals[item["id"]] = {**{k: item.get(k) for k in ("id", "title", "kind", "members", "shard")},
+                                      "dimension": record.get("dimension") or item["dimension"], **_compact(record)}
+                first = item.get("first") or {}
+                if first and (first.get("status") == "issue") != (record.get("status") == "issue"):
+                    memory.record_lesson(self.doi, item.get("shard", ""), item, first, record)
+        out["arbitrate_seconds"] = round(time.monotonic() - settled, 1)
+        completed = time.monotonic()
+        self.shard_finals[shard["id"]] = await self.complete(finals, scope=shard["id"])
+        out["complete_seconds"] = round(time.monotonic() - completed, 1)
+        return out
 
     # -- merge
-    def merge(self) -> tuple[dict, list[dict]]:
-        """Return (final records by id, disputes)."""
+    def merge(self, shards: list[dict] | None = None) -> tuple[dict, list[dict]]:
+        """Return (final records by id, disputes) for the given shards (all by default)."""
         finals, disputes = {}, []
-        for shard in self.shards:
+        for shard in self.shards if shards is None else shards:
             first = ledger.load(self.ledger_path("inv", shard["id"])).get("items") or {}
             second = ledger.load(self.ledger_path("chk", shard["id"])).get("items") or {}
             for item_id, a in first.items():
@@ -351,18 +380,19 @@ class Review:
             return "first"
         return "dispute"
 
-    async def arbitrate(self, disputes: list[dict], round_no: int) -> dict:
+    async def arbitrate(self, disputes: list[dict], round_no: int, scope: str = "") -> dict:
         by_dim: dict[str, list[dict]] = {}
         for item in disputes:
             by_dim.setdefault(item["dimension"] if item["dimension"] in DIMENSIONS else "data", []).append(item)
 
         async def one(dimension: str, items: list[dict]) -> dict:
-            path = self.ledger_path(f"arb{round_no}", dimension)
-            ledger.create(path, {"shard": f"arb{round_no}_{dimension}", "role": "arbiter", "dimension": dimension,
+            name = f"{scope}-{dimension}" if scope else dimension
+            path = self.ledger_path(f"arb{round_no}", name)
+            ledger.create(path, {"shard": f"arb{round_no}_{name}", "role": "arbiter", "dimension": dimension,
                                  "allow_new": False},
                           [{"id": i["id"], "title": i.get("title"), "dimension": dimension, "members": i.get("members"),
                             "first": i.get("first"), "second": i.get("second")} for i in items])
-            outcome = await session.run(self._spec(f"arb{round_no}_{dimension}", prompts.arbiter(dimension, self.dossier, items),
+            outcome = await session.run(self._spec(f"arb{round_no}_{name}", prompts.arbiter(dimension, self.dossier, items),
                                                    path, config.MAX_CHUNKS_ARBITRATE, f"arbiter:{dimension}",
                                                    "arbitrate"))
             self._close_leftovers(path, outcome, "arbiter")
@@ -444,7 +474,7 @@ class Review:
         log.info("DOI=%s calibration %s", self.doi, outcome.status)
         return out
 
-    async def complete(self, finals: dict) -> dict:
+    async def complete(self, finals: dict, scope: str = "") -> dict:
         """Must-check findings still without a conclusion get a follow-up:
         small batches in parallel, each with its own time box. A paper is
         never published low-risk with such items open, so finishing them is
@@ -469,11 +499,12 @@ class Review:
             for kind, records in batches.items():
                 for start in range(0, len(records), config.COMPLETE_BATCH):
                     jobs.append((kind, records[start:start + config.COMPLETE_BATCH]))
-            self.soft["complete"] = time.monotonic() + config.COMPLETE_SECONDS
+            soft = time.monotonic() + config.COMPLETE_SECONDS
 
             async def one(number: int, kind: str, records: list[dict]) -> dict:
-                name = f"fin{round_no}_{number}"
-                path = self.ledger_path(f"fin{round_no}", str(number))
+                tag = f"{scope}-{number}" if scope else str(number)
+                name = f"fin{round_no}_{tag}"
+                path = self.ledger_path(f"fin{round_no}", tag)
                 items = [{**self._ledger_item(by_id[r["id"]][1], by_id[r["id"]][0]), "first": _compact(r)}
                          for r in records]
                 ledger.create(path, {"shard": name, "role": "investigator", "dimension": by_id[records[0]["id"]][0]["dimension"],
@@ -482,7 +513,15 @@ class Review:
                          "items": [by_id[r["id"]][1] for r in records]}
                 prompt = prompts.investigator(shard, self.dossier, self.hints.get(by_id[records[0]["id"]][0]["id"], ""))
                 prompt += prompts.completion_note()
-                await session.run(self._spec(name, prompt, path, config.MAX_CHUNKS_COMPLETE, f"investigator:{name}", "complete"))
+                spec = self._spec(name, prompt, path, config.MAX_CHUNKS_COMPLETE, f"investigator:{name}", "complete")
+                # Shards complete concurrently: each follow-up has its own time box.
+                spec.soft_deadline = soft
+                # Shards complete concurrently; one paper still runs at most
+                # COMPLETE_MAX_BATCHES follow-up sessions at a time.
+                if self._complete_gate is None:
+                    self._complete_gate = asyncio.Semaphore(config.COMPLETE_MAX_BATCHES)
+                async with self._complete_gate:
+                    await session.run(spec)
                 return ledger.load(path).get("items") or {}
 
             results = await asyncio.gather(*(one(n, kind, records) for n, (kind, records) in enumerate(jobs, start=1)))
@@ -775,7 +814,7 @@ TEST_LABELS = {
     "rectangular_matrix_reuse": "矩阵逐格复用", "same_sheet_channel_duplicate": "不同通道数值重复",
     "same_sheet_exact_series_reuse": "数列复用", "semantic_transform_conflict": "归一化换算冲突",
     "near_modified_matrix_reuse": "近似修改的矩阵", "digit_edit_matrix_reuse": "数字修改的矩阵",
-    "figure_n_mismatch": "样本量不一致",
+    "figure_n_mismatch": "样本量不一致", "feature_matrix_duplicate_columns": "特征矩阵重复列",
 }
 GAP_FIELD = {"data": "data_review", "image": "image_review", "image_splicing": "image_review",
              "reference": "ref_review", "ref": "ref_review", "manuscript": "methodology_review",
@@ -1316,38 +1355,41 @@ async def _review_phases(review: "Review", doi: str, evidence: dict, evidence_pa
                          state_path: Path, final_path: Path, started: float) -> dict:
     run_dir = review.run_dir
     await review.prepare(evidence_path)
-    pipeline = await asyncio.gather(*(review.shard_pipeline(shard) for shard in review.shards))
-    review.timeline["shards"] = time.monotonic() - started
-
-    finals, disputes = review.merge()
-    round_no = int(state.get("arbitration_rounds", 0)) + 1
-    # Earlier calls' arbitration results still count on resume.
     # A regrade keeps the investigation as it was: the last arbitration
     # outcome stands (including "unresolved") and no new round is started.
     regrading = bool(state.get("regrading"))
+    round_no = int(state.get("arbitration_rounds", 0)) + 1
+    # Conclusions reached by arbitration in earlier calls still count on resume.
     for previous in range(1, round_no):
-        for dim in DIMENSIONS:
-            for item_id, record in (ledger.load(review.ledger_path(f"arb{previous}", dim)).get("items") or {}).items():
+        for path in sorted((run_dir / "ledgers").glob(f"arb{previous}_*.json")):
+            if path.name.count(".") > 1:  # set-aside copies from earlier regrades
+                continue
+            for item_id, record in (ledger.load(path).get("items") or {}).items():
                 if record.get("status") not in ("open", "unresolved") or (regrading and record.get("status") == "unresolved"):
-                    finals[item_id] = {**{k: record.get(k) for k in ("id", "title", "members")},
-                                       "dimension": record.get("dimension") or dim, **_compact(record)}
-    disputes = [d for d in disputes if d["id"] not in finals]
-    if disputes and not regrading:
+                    review.prior_decided[item_id] = {**{k: record.get(k) for k in ("id", "title", "members")},
+                                                     "dimension": record.get("dimension") or "data", **_compact(record)}
+    if not regrading:
         state["arbitration_rounds"] = round_no
         _write_json(state_path, state)
-        decided = await review.arbitrate(disputes, round_no)
+        review.arbitration_round = round_no
+    pipeline = await asyncio.gather(*(review.shard_pipeline(shard) for shard in review.shards))
+    review.timeline["shards"] = time.monotonic() - started
+
+    if regrading:
+        finals, disputes = review.merge()
+        finals.update(review.prior_decided)
+        disputes = [d for d in disputes if d["id"] not in finals]
         for item in disputes:
-            record = decided.get(item["id"], {"status": "unresolved", "note": "仲裁未完成"})
             finals[item["id"]] = {**{k: item.get(k) for k in ("id", "title", "kind", "members", "shard")},
-                                  "dimension": record.get("dimension") or item["dimension"], **_compact(record)}
-            first = item.get("first") or {}
-            if first and (first.get("status") == "issue") != (record.get("status") == "issue"):
-                memory.record_lesson(doi, item.get("shard", ""), item, first, record)
-    for item in disputes if regrading else []:
-        finals[item["id"]] = {**{k: item.get(k) for k in ("id", "title", "kind", "members", "shard")},
-                              "dimension": item["dimension"], "status": "unresolved", "note": "仲裁未完成"}
-    review.timeline["arbitration"] = time.monotonic() - started - review.timeline["shards"]
-    finals = await review.complete(finals)
+                                  "dimension": item["dimension"], "status": "unresolved", "note": "仲裁未完成"}
+        finals = await review.complete(finals)
+    else:
+        # Each shard settled its own disputes and follow-ups in its pipeline.
+        finals, disputes = {}, []
+        for shard in review.shards:
+            finals.update(review.shard_finals.get(shard["id"]) or {})
+        _, disputes = review.merge()
+    review.timeline["arbitration"] = 0.0
 
     finals = await review.calibrate(finals)
     finals = await review.judge(finals)

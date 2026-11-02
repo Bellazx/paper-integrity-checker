@@ -690,10 +690,10 @@ def test_guard_reads_heredoc_bodies_as_data_and_keeps_calibration_offline(monkey
 def test_unfinished_must_check_items_are_completed_instead_of_erroring(tmp_path, fake_cli, monkeypatch):
     configure, calls = fake_cli
     # Every regular stage stalls; only the follow-up batch reaches a conclusion.
-    configure(investigator="noop", challenger="noop", arbiter="noop", **{"investigator:fin1_1": "clear_all"})
+    configure(investigator="noop", challenger="noop", arbiter="noop", **{"investigator:fin1_data-1": "clear_all"})
     result = _run(_make_paper(tmp_path), tmp_path, monkeypatch)
     assert result["trigger"] != "review_error" and result["result"] == "低风险"
-    assert any(c["actor"] == "investigator:fin1_1" for c in calls())
+    assert any(c["actor"] == "investigator:fin1_data-1" for c in calls())
 
 
 def test_coverage_gap_is_answered_from_verified_conclusions_only():

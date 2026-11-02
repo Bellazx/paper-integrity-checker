@@ -47,9 +47,9 @@ CHUNK_TIMEOUT_SECONDS = _int("REVIEW_V3_CHUNK_TIMEOUT_SECONDS", 900)
 
 # Phase time boxes, measured from the start of the review (seconds). When a
 # phase's box closes, each running session gets one short wrap-up chunk.
-INVESTIGATE_SOFT_SECONDS = _int("REVIEW_V3_INVESTIGATE_SOFT_SECONDS", 20 * 60)
-CHALLENGE_SOFT_SECONDS = _int("REVIEW_V3_CHALLENGE_SOFT_SECONDS", 32 * 60)
-ARBITRATE_SOFT_SECONDS = _int("REVIEW_V3_ARBITRATE_SOFT_SECONDS", 42 * 60)
+INVESTIGATE_SOFT_SECONDS = _int("REVIEW_V3_INVESTIGATE_SOFT_SECONDS", 14 * 60)
+CHALLENGE_SOFT_SECONDS = _int("REVIEW_V3_CHALLENGE_SOFT_SECONDS", 22 * 60)
+ARBITRATE_SOFT_SECONDS = _int("REVIEW_V3_ARBITRATE_SOFT_SECONDS", 30 * 60)
 # Follow-up for must-check findings still open after arbitration: small
 # batches in parallel, each with its own time box, at most this many rounds.
 COMPLETE_BATCH = _int("REVIEW_V3_COMPLETE_BATCH", 6)
@@ -59,13 +59,13 @@ COMPLETE_ROUNDS = _int("REVIEW_V3_COMPLETE_ROUNDS", 2)
 COMPLETE_MAX_BATCHES = _int("REVIEW_V3_COMPLETE_MAX_BATCHES", 8)
 # Entries per list given to the writer; the rest are summarised in one line.
 FACTS_LIST_LIMIT = _int("REVIEW_V3_FACTS_LIST_LIMIT", 60)
-COMPLETE_SECONDS = _int("REVIEW_V3_COMPLETE_SECONDS", 15 * 60)
+COMPLETE_SECONDS = _int("REVIEW_V3_COMPLETE_SECONDS", 10 * 60)
 MAX_CHUNKS_COMPLETE = _int("REVIEW_V3_MAX_CHUNKS_COMPLETE", 8)
-CALIBRATE_SOFT_SECONDS = _int("REVIEW_V3_CALIBRATE_SOFT_SECONDS", 46 * 60)
-EVIDENCE_SOFT_SECONDS = _int("REVIEW_V3_EVIDENCE_SOFT_SECONDS", 50 * 60)
+CALIBRATE_SOFT_SECONDS = _int("REVIEW_V3_CALIBRATE_SOFT_SECONDS", 34 * 60)
+EVIDENCE_SOFT_SECONDS = _int("REVIEW_V3_EVIDENCE_SOFT_SECONDS", 38 * 60)
 # A late phase still gets this much time from its own start when earlier
 # phases ran over (the whole-paper deadline remains the hard limit).
-PHASE_FLOOR_SECONDS = {"arbitrate": _int("REVIEW_V3_ARBITRATE_FLOOR_SECONDS", 8 * 60),
+PHASE_FLOOR_SECONDS = {"arbitrate": _int("REVIEW_V3_ARBITRATE_FLOOR_SECONDS", 6 * 60),
                        "calibrate": _int("REVIEW_V3_CALIBRATE_FLOOR_SECONDS", 5 * 60),
                        "evidence": _int("REVIEW_V3_EVIDENCE_FLOOR_SECONDS", 4 * 60)}
 
@@ -79,7 +79,7 @@ WRAPUP_SECONDS = _int("REVIEW_V3_WRAPUP_SECONDS", 300)
 # Sharding.
 DATA_SHARD_SIZE = _int("REVIEW_V3_DATA_SHARD_SIZE", 12)
 FIGURE_SHARD_SIZE = _int("REVIEW_V3_FIGURE_SHARD_SIZE", 2)
-MAX_SHARDS_PER_DIMENSION = _int("REVIEW_V3_MAX_SHARDS_PER_DIMENSION", 5)
+MAX_SHARDS_PER_DIMENSION = _int("REVIEW_V3_MAX_SHARDS_PER_DIMENSION", 8)
 
 # Concurrency of model sessions within one process (all papers together).
 MAX_SESSIONS = _int("REVIEW_V3_MAX_SESSIONS", 48)
