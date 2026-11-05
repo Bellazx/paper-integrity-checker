@@ -58,9 +58,79 @@ def _patch_coverage_entrypoint(module) -> None:
     module._coverage_check = coverage_check
 
 
+def _attach_generated_evidence_indices(info: dict, items: list[dict]) -> list[dict]:
+    """Bind renderer-generated screenshots to the review issue they illustrate.
+
+    Reviewer-supplied evidence must already carry an explicit ``issue_index``
+    and is checked before publication.  Page screenshots created by the
+    renderer are internal fallback evidence, so assign them from the matching
+    numbered passage before the shared layout code places them in the report.
+    """
+    from modules.review_report_layout import split_review_issues
+
+    fields = {
+        "image": "image_review",
+        "data": "data_review",
+        "ref": "ref_review",
+        "methodology": "methodology_review",
+    }
+    issue_map = {}
+    for dimension, field in fields.items():
+        text = str(info.get(field) or "")
+        try:
+            _, issues = split_review_issues(text)
+        except ValueError:
+            issues = []
+        issue_map[dimension] = issues or [(1, text)]
+
+    occurrence = {dimension: 0 for dimension in fields}
+    for item in items:
+        if not isinstance(item, dict) or item.get("issue_index") is not None:
+            continue
+        dimension = item.get("dimension")
+        issues = issue_map.get(dimension)
+        if not issues:
+            continue
+
+        page_match = re.search(r"第\s*(\d+)\s*页|\bpage\s*(\d+)\b",
+                               str(item.get("caption") or ""), re.IGNORECASE)
+        page = next((group for group in page_match.groups() if group), None) if page_match else None
+        selected = None
+        if page:
+            page_tokens = (f"第{page}页", f"第 {page} 页", f"page {page}")
+            for index, body in issues:
+                body_lower = body.lower()
+                if any(token.lower() in body_lower for token in page_tokens):
+                    selected = index
+                    break
+        if selected is None:
+            index = min(occurrence[dimension], len(issues) - 1)
+            selected = issues[index][0]
+        item["issue_index"] = selected
+        occurrence[dimension] += 1
+    return items
+
+
+def _patch_generated_evidence_collector(module) -> None:
+    """Ensure fallback evidence satisfies the shared issue binding contract."""
+    if getattr(module, "_generated_evidence_indices_patched", False):
+        return
+    original = getattr(module, "_review_evidence_images", None)
+    if original is None:
+        return
+
+    def collect(info, findings, scratch_dir):
+        items = original(info, findings, scratch_dir)
+        return _attach_generated_evidence_indices(info, items)
+
+    module._review_evidence_images = collect
+    module._generated_evidence_indices_patched = True
+
+
 def main() -> int:
     module = renderer_module()
     _patch_coverage_entrypoint(module)
+    _patch_generated_evidence_collector(module)
     _patch_database_writer(module)
     # Publish papers independently. A review_error or invalid screenshot map
     # must remain visible, but cannot prevent unrelated valid papers from being
@@ -106,9 +176,19 @@ def _patch_database_writer(module):
         conn = module.pymssql.connect(**config)
         try:
             cursor = conn.cursor()
+            # Some isolated test-set tables intentionally omit the scholar
+            # column.  Do not append a predicate for a column that is not
+            # present: matching those tables by DOI is the correct key and
+            # avoids rolling back the complete publication batch.
+            cursor.execute(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS "
+                "WHERE TABLE_NAME=%s AND COLUMN_NAME='scholar'",
+                (table_name,),
+            )
+            has_scholar = cursor.fetchone() is not None
             for item in updates:
                 params = {**item, 'scholar': scholar, 'review_time': datetime.now()}
-                where = 'doi=%(doi)s' + (' AND scholar=%(scholar)s' if scholar else '')
+                where = 'doi=%(doi)s' + (' AND scholar=%(scholar)s' if scholar and has_scholar else '')
                 cursor.execute(f'''UPDATE {table_name} SET review_result=%(review_result)s,
                     review_report_url=%(review_report_url)s,review_time=%(review_time)s,status=2
                     WHERE {where}''', params)

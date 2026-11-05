@@ -112,7 +112,7 @@ def test_lost_session_rehydrates_task_without_refunding_research(tmp_path, monke
         state={'phase':2,'session_id':'lost','last_error':'CLI resume session not found'}))
     assert out['result']=='低风险' and len(commands)==1
     assert '--session-id' in commands[0] and '--resume' not in commands[0]
-    assert commands[0][commands[0].index('--max-turns')+1]=='6'
+    assert commands[0][commands[0].index('--max-turns')+1]=='12'
     assert commands[0][commands[0].index('--tools')+1]==''
     assert 'original task with evidence' in commands[0][commands[0].index('-p')+1]
 

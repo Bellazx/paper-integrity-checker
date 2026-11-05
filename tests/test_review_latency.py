@@ -86,7 +86,7 @@ def test_old_single_turn_finalize_gets_one_output_only_correction(tmp_path, monk
         state=state, persist=lambda s: checkpoints.append(dict(s))))
     assert out['trigger'] == 'review_error'
     assert len(calls) == 1
-    assert calls[0][calls[0].index('--max-turns') + 1] == '6'
+    assert calls[0][calls[0].index('--max-turns') + 1] == '12'  # REVIEW_CLI_FINAL_MAX_TURNS default
     assert calls[0][calls[0].index('--tools') + 1] == ''
     instruction = calls[0][calls[0].index('-p') + 1]
     assert paths['result'] not in instruction

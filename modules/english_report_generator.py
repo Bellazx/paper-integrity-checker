@@ -90,6 +90,24 @@ def _normalize_english_fields(payload: dict, fields: tuple[str, ...]) -> dict:
     return normalized
 
 
+def _bind_generated_evidence(text: str, items: list[dict], bind):
+    """Assign numbers to renderer-created screenshots before binding them."""
+    if not items:
+        return bind(text, items)
+    from modules.review_report_layout import split_review_issues
+
+    _, issues = split_review_issues(text)
+    if not issues:
+        return bind(text, items)
+    numbered = []
+    for item in items:
+        if item.get('issue_index') is None:
+            position = min(len(numbered), len(issues) - 1)
+            item = {**item, 'issue_index': issues[position][0]}
+        numbered.append(item)
+    return bind(text, numbered)
+
+
 def _ensure_english_fields(payload: dict, fields: tuple[str, ...]) -> dict:
     """Normalize English fields and run one focused repair for residual CJK."""
     normalized = dict(payload)
@@ -497,7 +515,11 @@ def generate_english_review_pdf(review: dict, output_dir: str | Path, slug: str)
     sections = {}
     for dimension, _, field in dimensions:
         text = public_text(str(review.get(field) or '在本次材料及核验范围内未发现风险。'))
-        prefix, issues = bind_issue_evidence(text, [im for im in images if im.get('dimension') == dimension])
+        prefix, issues = _bind_generated_evidence(
+            text,
+            [im for im in images if im.get('dimension') == dimension],
+            bind_issue_evidence,
+        )
         sections[dimension] = (prefix, issues)
         if prefix.strip():
             source[f'{dimension}_prefix'] = prefix

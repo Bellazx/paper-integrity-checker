@@ -425,7 +425,8 @@ def test_runtime_chunk_budget_preserves_all_pages(monkeypatch):
     assert [p["page"] for chunk in chunks for p in chunk] == [1, 2, 3, 4]
 
 
-@pytest.mark.parametrize("timeout_override,expected_timeout", [(None, 300), ("360", 360)])
+# The report-writing timeout (LLM_TIMEOUT=300) is not inherited.
+@pytest.mark.parametrize("timeout_override,expected_timeout", [(None, 180), ("360", 360)])
 def test_runtime_output_budget_and_timeout_reach_model(monkeypatch, timeout_override, expected_timeout):
     import utils.llm_client
 
@@ -728,3 +729,19 @@ def test_oversized_page_is_split_by_source_blocks_not_rejected():
     assert len(chunks) > 1
     assert {k for chunk in chunks for p in chunk for k in p["sources"]} == set(page["sources"])
     assert all(p["page"] == 3 for chunk in chunks for p in chunk)
+
+
+def test_long_pdf_is_screened_up_to_the_page_limit_with_a_warning(tmp_path, monkeypatch):
+    # 10.1201/9781003368939-1: a 363-page book was uploaded for one chapter.
+    monkeypatch.setenv("INITIAL_CONTENT_MAX_PAGES", "3")
+    monkeypatch.setenv("INITIAL_VISUAL_OCR", "0")
+    path = tmp_path / "book.pdf"
+    with fitz.open() as doc:
+        for n in range(1, 6):
+            doc.new_page().insert_textbox(fitz.Rect(40, 40, 540, 750), f"Chapter page {n}. " + "Measured value is 12.30. " * 8)
+        doc.save(path)
+    pages, warnings = screen.read_pages(path)
+    assert [p["page"] for p in pages] == [1, 2, 3]
+    assert any("共5页" in w and "前3页" in w for w in warnings)
+    monkeypatch.setenv("INITIAL_CONTENT_MAX_PAGES", "0")
+    assert len(screen.read_pages(path)[0]) == 5  # 0 disables the limit

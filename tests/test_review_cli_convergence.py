@@ -41,7 +41,7 @@ def test_max_turns_recovery_can_finish_without_restart(tmp_path, monkeypatch):
     ])
     out = asyncio.run(review_cli.run(e, 'x', 'review', 'original evidence prompt', 80))
     assert out['result'] == '低风险'
-    assert [c[c.index('--max-turns') + 1] for c in commands] == ['80', '12']
+    assert [c[c.index('--max-turns') + 1] for c in commands] == ['80', '80']
     assert commands[0][commands[0].index('--model') + 1] == 'primary'
     assert commands[0][commands[0].index('--settings') + 1] == '/home/library/.claude/settings-mm.json'
     assert commands[1][commands[1].index('--model') + 1] == 'primary'
@@ -60,7 +60,7 @@ def test_max_turns_gets_bounded_targeted_recovery_before_finalizer(tmp_path, mon
     ])
     out = asyncio.run(review_cli.run(e, 'x', 'review', 'original evidence prompt', 80))
     assert out['result'] == '低风险'
-    assert [c[c.index('--max-turns') + 1] for c in commands] == ['80', '12', '6']
+    assert [c[c.index('--max-turns') + 1] for c in commands] == ['80', '80', '12']
     # The middle call is a short, tool-enabled continuation; only the final
     # call is output-only. This prevents an exhausted first pass from being
     # turned into a conclusion without a chance to close substantive gaps.
@@ -80,7 +80,7 @@ def test_outer_retry_cannot_reset_durable_phase_budget(tmp_path, monkeypatch):
     # The second invocation resumes the exhausted checkpoint with focused
     # recovery and finalization; it must not restart the 80-turn research pass.
     assert len(commands) == 5
-    assert [c[c.index('--max-turns') + 1] for c in commands] == ['80', '12', '6', '12', '6']
+    assert [c[c.index('--max-turns') + 1] for c in commands] == ['80', '80', '12', '80', '12']
 
 
 def test_resume_successful_phase_does_not_rerun_tools(tmp_path, monkeypatch):
@@ -108,7 +108,7 @@ def test_validation_gap_after_finalization_gets_one_focused_repair(tmp_path, mon
         persist=lambda value: checkpoints.append(dict(value)),
     ))
     assert out['result'] == '高风险'
-    assert calls[0][calls[0].index('--max-turns') + 1] == '12'
+    assert calls[0][calls[0].index('--max-turns') + 1] == '36'
     assert checkpoints[0]['post_validation_recovery_attempted']
 
 
@@ -131,7 +131,7 @@ def test_interrupted_finalization_resumes_output_only_phase(tmp_path, monkeypatc
     ))
     assert out['result'] == '低风险'
     assert len(calls) == 1
-    assert calls[0][calls[0].index('--max-turns') + 1] == '6'
+    assert calls[0][calls[0].index('--max-turns') + 1] == '12'
     assert calls[0][calls[0].index('--tools') + 1] == ''
 
 
@@ -157,7 +157,7 @@ def test_completed_finalization_error_reopens_focused_recovery(tmp_path, monkeyp
     ))
     assert out['result'] == '高风险'
     assert len(calls) == 1
-    assert calls[0][calls[0].index('--max-turns') + 1] == '12'
+    assert calls[0][calls[0].index('--max-turns') + 1] == '36'
     assert calls[0][calls[0].index('--tools') + 1] == 'Bash,Read'
     assert checkpoints[0]['continuation_attempts'] == 1
 

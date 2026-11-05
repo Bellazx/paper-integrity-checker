@@ -141,9 +141,9 @@ async def run(engine, doi, label, prompt, max_turns, allowed_tools=('Bash', 'Rea
     # checkpoint. With the previous 24-turn allowance it could become a second
     # full investigation after the initial pass had already consumed most of
     # the paper deadline.
-    recovery_turn_cap = max(6, int(os.environ.get('REVIEW_CLI_RECOVERY_MAX_TURNS', '12')))
+    recovery_turn_cap = max(6, int(os.environ.get('REVIEW_CLI_RECOVERY_MAX_TURNS', str(max_turns))))
     focused_turns = min(recovery_turn_cap, max_turns)
-    final_turns = max(3, int(os.environ.get('REVIEW_CLI_FINAL_MAX_TURNS', '6')))
+    final_turns = max(3, int(os.environ.get('REVIEW_CLI_FINAL_MAX_TURNS', '12')))
     focused = (
         '接续本会话核查。先整理已验证事实和未解决项，仅对尚未解决项做必要核查；'
         '当前只提供Bash和Read工具，Write和Edit不可用；如需保存草稿，使用Bash执行。'
@@ -261,9 +261,18 @@ async def run(engine, doi, label, prompt, max_turns, allowed_tools=('Bash', 'Rea
             session = str(uuid.uuid4())
             resume_session = False
             instruction = prompt + '\n\n会话记录不可用。沿用保存证据，禁止重做全篇调查。\n' + instruction
-        command = [engine._find_claude_cli(), '-p', instruction,
+        # Very large handoff prompts can exceed the OS execve argument limit
+        # (typically around 2 MB), producing ``Argument list too long`` before
+        # Claude even starts.  Keep ordinary calls unchanged, but stream long
+        # prompts through stdin; Claude's print mode accepts stdin when the
+        # prompt positional argument is omitted.
+        prompt_via_stdin = len(instruction.encode('utf-8')) >= 256 * 1024
+        command = [engine._find_claude_cli(), '-p']
+        if not prompt_via_stdin:
+            command.append(instruction)
+        command.extend([
                    '--model', model, '--output-format', 'json', '--max-turns', str(turns),
-                   '--resume' if resume_session else '--session-id', session]
+                   '--resume' if resume_session else '--session-id', session])
         settings_file = getattr(engine, 'REVIEW_CLAUDE_SETTINGS_FILE', os.environ.get(
             'REVIEW_CLAUDE_SETTINGS_FILE', '/home/library/.claude/settings-mm.json'))
         if settings_file:
@@ -289,7 +298,8 @@ async def run(engine, doi, label, prompt, max_turns, allowed_tools=('Bash', 'Rea
                  label, doi, state['phase_name'], session, turns, model)
         started = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
-            *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            *command, stdin=asyncio.subprocess.PIPE if prompt_via_stdin else asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             cwd=str(engine.BASE_DIR), env=engine._claude_subprocess_env(), start_new_session=True)
         raw = {}
         stderr = b''
@@ -301,7 +311,10 @@ async def run(engine, doi, label, prompt, max_turns, allowed_tools=('Bash', 'Rea
                 # run_review_single deadline is the only review timeout.
                 timer = asyncio.timeout(timeout_seconds)
                 async with timer:
-                    stdout, stderr = await proc.communicate()
+                    if prompt_via_stdin:
+                        stdout, stderr = await proc.communicate(input=instruction.encode('utf-8'))
+                    else:
+                        stdout, stderr = await proc.communicate()
             except TimeoutError:
                 await engine._kill_and_reap_process(proc)
                 last_error = ('whole-paper deadline reached; checkpoint retained for recovery'

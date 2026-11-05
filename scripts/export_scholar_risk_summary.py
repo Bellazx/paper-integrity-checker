@@ -96,11 +96,14 @@ def export(results, scholar, college, report_dir, output, base_url):
     page=OxmlElement('w:fldSimple');page.set(qn('w:instr'),'PAGE');footer._p.append(page)
     doc.add_paragraph(f'{scholar}｜有风险论文分析','Title')
     doc.add_paragraph(college)
-    doc.add_paragraph(f'本总结列出{len(prepared)}篇有风险论文及其核查依据。分析内容与对应复核PDF一致。有风险表示存在需要解释或更正的具体问题，不等于已经证明数据造假。')
+    if prepared:
+        doc.add_paragraph(f'本总结列出{len(prepared)}篇有风险论文及其核查依据。分析内容与对应复核PDF一致。有风险表示存在需要解释或更正的具体问题，不等于已经证明数据造假。')
+    else:
+        doc.add_paragraph('经复核，该学者纳入本次核查的论文均未发现需要列出的风险问题。各篇复核PDF已单独发布，可在系统中查看。')
     manifest=[]
     for i,(r,title,pdf,paragraphs) in enumerate(prepared,1):
         doc.add_paragraph(f'{i}. {title}','Heading 1')
-        p=doc.add_paragraph();p.paragraph_format.keep_with_next=True
+        p=doc.add_paragraph(f'DOI：{r["doi"]}　');p.paragraph_format.keep_with_next=True
         url=base_url.rstrip('/')+'/'+quote(pdf.name)
         link(p,'查看复核PDF',url)
         for text in paragraphs:

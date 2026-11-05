@@ -87,6 +87,21 @@ def choose_previous(paper, history):
     return None, None
 
 
+def can_resume_submission(entry: dict, paper: dict) -> bool:
+    """Return whether a repeated submission may reuse unfinished work.
+
+    A failed task can still contain a completed detection report and review
+    checkpoints.  Treating every terminal task as fresh work discards those
+    checkpoints when the user presses re-detect after an infrastructure
+    interruption.  A task with a final review verdict remains ineligible for
+    reuse so an explicit re-detection still performs a fresh review.
+    """
+    return (
+        not paper.get('has_final_verdict')
+        and entry.get('status') in (_ACTIVE | {'failed'})
+    )
+
+
 async def blocking_write(operation, *args, **kwargs):
     """Cancellation must drain a DB/file write before a successor takes over."""
     job = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
@@ -129,7 +144,7 @@ async def prepare_submission(task_id, tm):
             entry, prior = choose_previous(paper, task.submission_history)
             if not entry:
                 continue
-            may_reuse = entry['status'] in _ACTIVE and not prior.get('has_final_verdict')
+            may_reuse = can_resume_submission(entry, prior)
             if not may_reuse:
                 # A terminal submission always gets fresh inputs/outputs and
                 # no reviewer cache. Normal risk gating applies to the new run.
@@ -138,16 +153,16 @@ async def prepare_submission(task_id, tm):
                 paper.submission_decision = 'replace_unfinished'
             affected = []
             for snapshot in task.submission_history:
-                if snapshot['status'] not in _ACTIVE:
-                    continue
                 old_task = tm.get_task(snapshot['task_id'])
                 if not old_task:
                     continue
                 for old_paper in old_task.papers:
                     was_final = any(p.get('has_final_verdict') and same_paper(paper, p)
                                     for p in snapshot['papers'])
-                    if (same_paper(paper, old_paper.model_dump())
-                            and not old_paper.superseded_by and not was_final):
+                    if (can_resume_submission(snapshot, old_paper.model_dump())
+                            and not was_final
+                            and same_paper(paper, old_paper.model_dump())
+                            and not old_paper.superseded_by):
                         affected.append((old_task, old_paper))
             # Joining cancellation also reaps owned detector/reviewer subprocesses.
             for old_id in dict.fromkeys(old.task_id for old, _ in affected):

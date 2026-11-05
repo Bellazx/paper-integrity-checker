@@ -8,6 +8,24 @@ from api.services import review
 from api.services.review_validation import validate
 
 
+def test_exact_excel_range_is_preserved_in_renderable_schema():
+    from api.services.review_validation import normalize_excel_evidence
+    original = {'file': 'source.xlsx', 'sheet': 'Fig3', 'range': '$B$4:D9',
+                'issue_index': 2, 'description': '同一实验对应区域'}
+    out = normalize_excel_evidence([original])[0]
+    assert out['regions'] == [{'file': 'source.xlsx', 'sheet': 'Fig3',
+                               'row_range': [4, 9], 'col_range': [2, 4]}]
+    assert out['issue_index'] == 2 and out['caption'] == original['description']
+    assert 'regions' not in original
+    assert normalize_excel_evidence([out]) == [out]
+
+
+def test_descriptive_excel_location_is_never_guessed():
+    from api.services.review_validation import normalize_excel_evidence
+    item = {'file': 'source.xlsx', 'sheet': 'Fig3', 'range': 'all statistical rows'}
+    assert normalize_excel_evidence([item]) == [item]
+
+
 def result(risk='高风险'):
     return {'doi': '10.1/test', 'result': risk, 'verdict': '建议' + risk, 'trigger': 'review',
             'image_review': '已渲染 Fig.1 并核对图像与源数据，未见图文矛盾。',
@@ -51,6 +69,32 @@ def test_fallback_preserves_specific_failure_reason():
     assert error['review_status'] == 'review_error'
     assert error['risk_conclusion'] is None
     assert '未获得可解析' not in error['reason']
+
+
+def test_unknown_screenshot_dimension_is_inferred_from_unique_page():
+    info = result('低风险')
+    info['image_review'] = '(1) 论文第 3 页 Fig. 1 已渲染核对，未见矛盾。'
+    info['evidence_images'] = [{
+        'dimension': 'unknown', 'caption': '论文 PDF 第 3 页 Fig. 1',
+        'issue_index': None, 'path': '/tmp/page3.png',
+    }]
+    checked, gaps = validate(info, {'high_findings': []})
+    assert not any('issue_index' in gap for gap in gaps)
+    assert checked['evidence_images'][0]['dimension'] == 'image'
+    assert checked['evidence_images'][0]['issue_index'] == 1
+
+
+def test_unknown_screenshot_dimension_is_not_guessed_when_page_is_ambiguous():
+    info = result('低风险')
+    info['image_review'] = '(1) 论文第 3 页 Fig. 1 已渲染核对。'
+    info['data_review'] = '(1) 论文第 3 页源数据已核对。'
+    info['evidence_images'] = [{
+        'dimension': 'unknown', 'caption': '论文 PDF 第 3 页',
+        'issue_index': None, 'path': '/tmp/page3.png',
+    }]
+    checked, gaps = validate(info, {'high_findings': []})
+    assert any('invalid dimension' in gap for gap in gaps)
+    assert checked['evidence_images'][0]['dimension'] == 'unknown'
 
 
 @pytest.mark.parametrize('saved_stage', ['judge', 'coverage_repair'])

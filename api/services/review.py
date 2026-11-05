@@ -57,9 +57,9 @@ REVIEW_CLAUDE_SETTINGS_FILE = os.environ.get(
 REVIEW_MAX_TURNS = int(os.environ.get("REVIEW_MAX_TURNS", "36"))
 # The verifier and synthesis prompts receive deterministic evidence plus the
 # first-pass draft, so they need fewer turns than the initial evidence review.
-LOWRISK_VERIFIER_MAX_TURNS = int(os.environ.get("REVIEW_LOWRISK_MAX_TURNS", "16"))
-JUDGE_MAX_TURNS = int(os.environ.get("REVIEW_JUDGE_MAX_TURNS", "12"))
-COVERAGE_REPAIR_MAX_TURNS = int(os.environ.get("REVIEW_REPAIR_MAX_TURNS", "8"))
+LOWRISK_VERIFIER_MAX_TURNS = int(os.environ.get("REVIEW_LOWRISK_MAX_TURNS", str(REVIEW_MAX_TURNS)))
+JUDGE_MAX_TURNS = int(os.environ.get("REVIEW_JUDGE_MAX_TURNS", str(REVIEW_MAX_TURNS)))
+COVERAGE_REPAIR_MAX_TURNS = int(os.environ.get("REVIEW_REPAIR_MAX_TURNS", str(REVIEW_MAX_TURNS)))
 # A clean evidence bundle does not need two independent model narratives.  The
 # first pass has already checked every required dimension and the deterministic
 # gate has no actionable signal to challenge; running a second full CLI session
@@ -1080,13 +1080,39 @@ def _augment_suspicious_same_group_channel_duplicates(
         }
         additions = []
         workbook_cache = {}
+        path_cache = {}
+        sheet_rows = {}
+        label_cache = {}
+        column_cache = {}
 
         def find_workbook(name: str) -> Path | None:
+            if name in path_cache:
+                return path_cache[name]
             direct = root / name
             if direct.is_file():
+                path_cache[name] = direct
                 return direct
             matches = list(root.rglob(Path(name).name))
-            return matches[0] if matches else None
+            path_cache[name] = matches[0] if matches else None
+            return path_cache[name]
+
+        def numeric_column(ws, index: int, start: int):
+            key = (id(ws), index, start)
+            if key not in column_cache:
+                if id(ws) not in sheet_rows:
+                    # openpyxl computes max_row by walking every stored cell.
+                    # Do that once per sheet, not for every duplicate pair.
+                    sheet_rows[id(ws)] = ws.max_row
+                values = {}
+                has_fractional = False
+                for row in range(start, (sheet_rows[id(ws)] or start) + 1):
+                    value = ws.cell(row, index + 1).value
+                    if isinstance(value, (int, float)):
+                        values[row] = value
+                        if abs(float(value) - round(float(value))) > 1e-9:
+                            has_fractional = True
+                column_cache[key] = values, has_fractional
+            return column_cache[key]
 
         def merged_label(ws, col_idx: int, max_header_row: int = 8) -> str:
             """Return the merged/header label governing a zero-based column."""
@@ -1140,17 +1166,25 @@ def _augment_suspicious_same_group_channel_duplicates(
                 if pair.get("sheet") not in wb.sheetnames:
                     continue
                 ws = wb[pair.get("sheet")]
-                label_a = merged_label(ws, a_idx)
-                label_b = merged_label(ws, b_idx)
+                for idx in (a_idx, b_idx):
+                    if (id(ws), idx) not in label_cache:
+                        label_cache[id(ws), idx] = merged_label(ws, idx)
+                label_a = label_cache[id(ws), a_idx]
+                label_b = label_cache[id(ws), b_idx]
                 if not label_a or not label_b or label_a == label_b:
                     continue
                 values_a = []
                 values_b = []
                 start = max(1, int(pair.get("data_start_row") or 3) + 1)
-                for row in range(start, (ws.max_row or start) + 1):
-                    va = ws.cell(row, a_idx + 1).value
-                    vb = ws.cell(row, b_idx + 1).value
-                    if isinstance(va, (int, float)) and isinstance(vb, (int, float)):
+                column_a, fractional_a = numeric_column(ws, a_idx, start)
+                column_b, fractional_b = numeric_column(ws, b_idx, start)
+                # Integer-only pairs cannot pass the existing fractional
+                # measurement threshold. No row or evidence is discarded.
+                if not fractional_a and not fractional_b:
+                    continue
+                for row, va in column_a.items():
+                    if row in column_b:
+                        vb = column_b[row]
                         values_a.append(va)
                         values_b.append(vb)
                 n = min(len(values_a), len(values_b))
@@ -1822,7 +1856,7 @@ def _adaptive_review_plan(evidence: dict | None) -> dict:
     if strong and not figures and high >= 4:
         return {
             "name": "deterministic_data_focus",
-            "max_turns": min(REVIEW_MAX_TURNS, 24),
+            "max_turns": REVIEW_MAX_TURNS,
             "allowed_tools": ("Read",),
             "instruction": (
                 "本篇的工作簿确定性扫描已经完成，并已把长序列重复、重复列和小数位线索"
@@ -1835,7 +1869,7 @@ def _adaptive_review_plan(evidence: dict | None) -> dict:
     if strong or actionable:
         return {
             "name": "targeted_evidence_review",
-            "max_turns": min(REVIEW_MAX_TURNS, 32),
+            "max_turns": REVIEW_MAX_TURNS,
             "allowed_tools": ("Bash", "Read"),
             "instruction": (
                 "确定性证据包是本轮核查清单。优先核查 HIGH 发现及其代表样例，按分组给出结论；"
@@ -1844,7 +1878,7 @@ def _adaptive_review_plan(evidence: dict | None) -> dict:
         }
     return {
         "name": "clean_coverage_review",
-        "max_turns": min(REVIEW_MAX_TURNS, 20),
+        "max_turns": REVIEW_MAX_TURNS,
         "allowed_tools": ("Read",),
         "instruction": (
             "证据包未发现可操作的高风险线索。按证据包覆盖四个维度并抽查关键位置；"
@@ -3114,6 +3148,45 @@ async def _run_review_single_impl(
             doi,
         )
 
+    # A previous invocation may already have completed both substantive
+    # reviewer passes and their publication validation, then failed while
+    # trying to synthesize the same facts.  Re-entering the CLI in that state
+    # only repeats the expensive recovery loop.  Revalidate the saved stages
+    # against the current evidence and close from the independent high-risk
+    # verifier when the deterministic audit agrees.
+    if resume_results and source_audit_seed and source_audit_seed.get("result") == "高风险":
+        cached_first = _get_stage(state, "reviewer1_validated")
+        cached_second = _get_stage(state, "reviewer2_validated")
+        if (
+            _usable_cached_review_result(cached_first)
+            and _usable_cached_review_result(cached_second)
+        ):
+            checked_first = _validate_review_result(
+                doi, report_json_path, input_dir, cached_first, evidence
+            )
+            checked_second = _validate_review_result(
+                doi, report_json_path, input_dir, cached_second, evidence
+            )
+            if (
+                checked_first.get("result") == "低风险"
+                and checked_second.get("result") == "高风险"
+                and not _has_unresolved_coverage(checked_first)
+                and not _has_unresolved_coverage(checked_second)
+            ):
+                final = _clean_internal_references(dict(checked_second))
+                _store_stage(state_path, state, "reviewer1_validated", checked_first)
+                _store_stage(state_path, state, "reviewer2_validated", checked_second)
+                _store_stage(state_path, state, "decision", {
+                    "flow": "resumed_cached_highrisk_verifier",
+                    "reason": "恢复时已存在通过覆盖校验的独立高风险复核与确定性审计，跳过重复模型会话。",
+                })
+                _store_stage(state_path, state, "final", final)
+                log.info(
+                    "DOI=%s final verdict=%s via cached high-risk verifier recovery",
+                    doi, final.get("result"),
+                )
+                return final
+
     llm_evidence_path = _get_stage(state, "llm_evidence_path")
     if evidence_path and (rebuild_evidence or not llm_evidence_path or not Path(llm_evidence_path).exists()):
         llm_evidence_path = _ensure_llm_evidence_bundle(doi, evidence_path)
@@ -3308,7 +3381,15 @@ async def _run_review_single_impl(
         return final
 
     accept, reason = _accept_single_review(doi, result1, validated1, evidence)
-    if accept and not saved_later_review:
+    if (
+        accept
+        and not saved_later_review
+        and not (
+            source_audit_seed
+            and source_audit_seed.get("result") == "高风险"
+            and result1.get("result") == "低风险"
+        )
+    ):
         final = _clean_internal_references(dict(validated1))
         _store_stage(state_path, state, "decision", {"flow": "single", "reason": reason})
         _store_stage(state_path, state, "final", final)
@@ -3350,6 +3431,28 @@ async def _run_review_single_impl(
         _store_stage(state_path, state, "decision", {"flow": "two_review_low_consensus", "reason": decision_reason})
         _store_stage(state_path, state, "final", final)
         log.info("DOI=%s final verdict=%s via low-risk verification consensus", doi, final.get("result"))
+        return final
+
+    # A complete high-risk verifier result backed by the deterministic audit
+    # does not need a third full synthesis pass after a low-risk first pass.
+    # Reusing this already validated result avoids another long CLI session.
+    if (
+        not saved_synthesis
+        and source_audit_seed
+        and source_audit_seed.get("result") == "高风险"
+        and validated1.get("result") == "低风险"
+        and validated2.get("result") == "高风险"
+        and result2.get("trigger") != "review_error"
+        and not validated2.get("_coverage_error")
+        and not validated2.get("_coverage_gaps")
+    ):
+        final = _clean_internal_references(dict(validated2))
+        _store_stage(state_path, state, "decision", {
+            "flow": "deterministic_seed_highrisk_verifier",
+            "reason": "确定性数据证据与独立高风险复核均已通过发布校验，跳过重复综合会话。",
+        })
+        _store_stage(state_path, state, "final", final)
+        log.info("DOI=%s final verdict=%s via deterministic seed and high-risk verifier", doi, final.get("result"))
         return final
 
     if (

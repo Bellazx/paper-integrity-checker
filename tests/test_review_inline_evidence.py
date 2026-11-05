@@ -118,6 +118,26 @@ def test_issue_evidence_accepts_string_and_ordered_indices():
         {'dimension': 'data', 'issue_index': '2'},
     ])
     assert [item[0] for item in issues] == [1, 2]
+
+
+def test_missing_evidence_index_is_repaired_only_when_page_is_unambiguous():
+    text = '(1) 检查论文第 2 页 Fig. 1 的数据。\n(2) 检查论文第 7 页 Fig. 3 的数据。'
+    _, issues = bind_issue_evidence(text, [
+        {'dimension': 'data', 'caption': '论文 PDF 第 7 页 Fig. 3', 'path': 'page7.png'},
+        {'dimension': 'data', 'issue_index': 1, 'caption': '论文 PDF 第 2 页 Fig. 1', 'path': 'page2.png'},
+    ])
+    assert issues[0][0] == 1 and issues[0][2] == [
+        {'dimension': 'data', 'issue_index': 1, 'caption': '论文 PDF 第 2 页 Fig. 1', 'path': 'page2.png'}
+    ]
+    assert issues[1][0] == 2 and issues[1][2][0]['path'] == 'page7.png'
+
+
+def test_ambiguous_missing_evidence_index_still_fails_closed():
+    text = '(1) 论文第 2 页报告第一项。\n(2) 论文第 2 页报告第二项。'
+    with pytest.raises(ValueError, match='issue_index'):
+        bind_issue_evidence(text, [
+            {'dimension': 'data', 'caption': '论文第 2 页截图', 'path': 'page2.png'},
+        ])
     _, issues = bind_issue_evidence(text, [
         {'dimension': 'data'},
         {'dimension': 'data'},

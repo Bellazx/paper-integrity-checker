@@ -29,8 +29,27 @@ TABLE = "yujing_testset_0901_0907_nature_nc_v3cmp"
 OUT = BASE / "data" / "output" / TABLE
 
 
-async def rewrite(row: dict, gate: asyncio.Semaphore) -> dict | None:
+def _complete(result: dict) -> bool:
+    """Every numbered risk issue has a screenshot or a workbook range."""
+    import re
+    have = {(str(e.get("dimension") or "data"), int(e.get("issue_index") or 0))
+            for e in (result.get("evidence_images") or []) + (result.get("excel_evidence_regions") or [])}
+    for dim, field in engine.DIMENSION_FIELD.items():
+        for number in re.findall(r"[（(](\d+)[）)]\s*问题位置", str(result.get(field) or "")):
+            if (dim, int(number)) not in have:
+                return False
+    return True
+
+
+async def rewrite(row: dict, gate: asyncio.Semaphore, reuse: bool = False) -> dict | None:
     doi, run = row["doi"], Path(row["_review_workdir"])
+    if reuse and (run / "final.before_reformat.json").is_file():
+        # Rewritten by an earlier, interrupted pass: keep it when complete.
+        done = json.loads((run / "final.json").read_text())
+        if _complete(done):
+            print(json.dumps({"doi": doi, "result": done["result"], "reused": True,
+                              "screenshots": len(done.get("evidence_images") or [])}, ensure_ascii=False), flush=True)
+            return done
     async with gate:
         try:
             doc = json.loads((run / "finals.json").read_text())
@@ -69,6 +88,7 @@ def main() -> int:
     parser.add_argument("dois", nargs="*")
     parser.add_argument("--high-only", action="store_true")
     parser.add_argument("--workers", type=int, default=12)
+    parser.add_argument("--reuse", action="store_true", help="keep reports an interrupted pass already rewrote")
     args = parser.parse_args()
     path = OUT / "review_results_v3.json"
     rows = {r["doi"]: r for r in json.loads(path.read_text())}
@@ -77,7 +97,7 @@ def main() -> int:
 
     async def run_all():
         gate = asyncio.Semaphore(max(1, args.workers))
-        return await asyncio.gather(*(rewrite(r, gate) for r in todo))
+        return await asyncio.gather(*(rewrite(r, gate, args.reuse) for r in todo))
 
     done = [r for r in asyncio.run(run_all()) if r]
     for result in done:

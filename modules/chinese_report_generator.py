@@ -621,7 +621,8 @@ def _has_decisive_issue(issues: list[dict]) -> bool:
     return any(
         (issue.get("test") in _DECISIVE_DATA_TESTS
          and (issue.get("test") != "verified_manuscript_content_conflict"
-              or issue.get("details", {}).get("verification_status") == "source_grounded_and_counterchecked")
+              or issue.get("details", {}).get("verification_status") in {
+                  "source_grounded_and_counterchecked", "unresolved_needs_review"})
          and (issue.get("test") not in _QUANTITATIVE_DECISIVE_TESTS or issue.get("severity") == "high"))
         or issue.get("issue_type") in _DECISIVE_REFERENCE_TYPES
         for issue in issues

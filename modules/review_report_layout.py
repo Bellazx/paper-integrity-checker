@@ -37,8 +37,34 @@ def evidence_images_html(items: list[dict], *, language: str = 'zh') -> str:
 # Match explicit finding numbers, never a decimal value or a figure number.
 _ISSUE_START = re.compile(
     r'(?m)(?:^|(?<=\n))[ \t]*(?:[（(](\d+)[）)]|([0-9]+)[.、](?!\d)'
-    r'|问题[ \t]*(\d+)[ \t]*[:：])\s*'
+    r'|问题[ \t]*(\d+)[ \t]*[:：]|([一二三四五六七八九十百千万零〇]+)[、.．])\s*'
+    r'|(?<=[。；:：])[ \t]*([一二三四五六七八九十百千万零〇]+)[、.．]\s*'
 )
+
+
+def _chinese_issue_number(value: str) -> int:
+    digits = {'零': 0, '〇': 0, '一': 1, '二': 2, '三': 3, '四': 4,
+              '五': 5, '六': 6, '七': 7, '八': 8, '九': 9}
+    units = {'十': 10, '百': 100, '千': 1000, '万': 10000}
+    total = 0
+    section = 0
+    current = 0
+    for char in value:
+        if char in digits:
+            current = digits[char]
+        elif char in units:
+            unit = units[char]
+            if unit == 10000:
+                section += current
+                total += section * unit
+                section = 0
+                current = 0
+            else:
+                section += (current or 1) * unit
+                current = 0
+        else:
+            raise ValueError(f'Unsupported Chinese issue number: {value}')
+    return total + section + current
 
 
 def split_review_issues(text: str) -> tuple[str, list[tuple[int, str]]]:
@@ -46,7 +72,11 @@ def split_review_issues(text: str) -> tuple[str, list[tuple[int, str]]]:
     matches = list(_ISSUE_START.finditer(text))
     if not matches:
         return '', [(1, text)] if text.strip() else []
-    indices = [int(match.group(1) or match.group(2) or match.group(3)) for match in matches]
+    indices = []
+    for match in matches:
+        raw = match.group(1) or match.group(2) or match.group(3)
+        chinese = match.group(4) or match.group(5)
+        indices.append(int(raw) if raw is not None else _chinese_issue_number(chinese))
     if len(set(indices)) != len(indices):
         raise ValueError('Duplicate issue numbers within a review dimension')
     return text[:matches[0].start()], [
@@ -58,8 +88,44 @@ def split_review_issues(text: str) -> tuple[str, list[tuple[int, str]]]:
 def bind_issue_evidence(text: str, items: list[dict]) -> tuple[str, list[tuple[int, str, list[dict]]]]:
     prefix, issues = split_review_issues(text)
     grouped = {index: [] for index, _ in issues}
+    normalized_items = []
     for item in items:
         index = item.get('issue_index')
+        if isinstance(index, str):
+            value = index.strip()
+            match = re.fullmatch(r'(?:问题\s*)?([0-9]+)', value)
+            if match:
+                index = int(match.group(1))
+            elif re.fullmatch(r'[一二三四五六七八九十百千万零〇]+', value):
+                index = _chinese_issue_number(value)
+        normalized_items.append((item, index))
+    # Repair only unambiguous omissions: a single finding, or an explicit page
+    # in the screenshot caption that occurs in exactly one numbered finding.
+    # This keeps screenshots adjacent to their actual issue without guessing
+    # based on list order when the mapping is ambiguous.
+    for position, (item, index) in enumerate(normalized_items):
+        if index is not None:
+            continue
+        if len(issues) == 1:
+            normalized_items[position] = (item, issues[0][0])
+            continue
+        caption = str(item.get('caption') or '')
+        page_match = re.search(r'第\s*(\d+)\s*页|\bpage\s*(\d+)\b', caption, re.IGNORECASE)
+        page = next((value for value in page_match.groups() if value), None) if page_match else None
+        if not page:
+            continue
+        page_tokens = (f'第{page}页', f'第 {page} 页', f'page {page}')
+        matches = [issue_index for issue_index, body in issues
+                   if any(token.lower() in body.lower() for token in page_tokens)]
+        if len(matches) == 1:
+            normalized_items[position] = (item, matches[0])
+    if normalized_items and all(index is None for _, index in normalized_items):
+        if len(normalized_items) == len(issues):
+            normalized_items = [
+                (item, issues[position][0])
+                for position, (item, _) in enumerate(normalized_items)
+            ]
+    for item, index in normalized_items:
         if index is None and len(issues) == 1:
             index = issues[0][0]
         if type(index) is not int or index not in grouped:

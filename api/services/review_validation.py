@@ -6,11 +6,32 @@ public wording policy only after validation; internal decisions stay intact.
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from functools import lru_cache
 from pathlib import Path
 
 PUBLICATION_POLICY_VERSION = '2026-10-23-public-wording-v2-inline-evidence'
+
+
+def normalize_excel_evidence(items):
+    """Translate explicit A1 ranges to the renderer schema without guessing cells."""
+    from openpyxl.utils.cell import range_boundaries
+    normalized = []
+    for raw in items or []:
+        item = dict(raw) if isinstance(raw, dict) else raw
+        if isinstance(item, dict) and not item.get('regions'):
+            address = str(item.get('range') or '').strip()
+            if (item.get('file') and item.get('sheet') and
+                    re.fullmatch(r'\$?[A-Za-z]+\$?[1-9][0-9]*(?::\$?[A-Za-z]+\$?[1-9][0-9]*)?', address)):
+                c1, r1, c2, r2 = range_boundaries(address)
+                item['regions'] = [{'file': item['file'], 'sheet': item['sheet'],
+                                    'row_range': [r1, r2], 'col_range': [c1, c2]}]
+                item.setdefault('dimension', 'data')
+                if not item.get('caption') and item.get('description'):
+                    item['caption'] = item['description']
+        normalized.append(item)
+    return normalized
 
 
 def renderer_path() -> Path:
@@ -64,8 +85,58 @@ def validate(result: dict, evidence: dict) -> tuple[dict, list[str]]:
     result['dimension_verdicts'] = {
         k: aliases.get(v, v) for k, v in (result.get('dimension_verdicts') or {}).items()
     }
+    if 'excel_evidence_regions' in result:
+        result['excel_evidence_regions'] = normalize_excel_evidence(result['excel_evidence_regions'])
+
+    # Model-generated evidence occasionally labels a screenshot dimension as
+    # unknown even though its caption names a page that appears in exactly one
+    # numbered finding. Resolve only that unique case; ambiguous or unlocated
+    # evidence remains a publication gap.
+    from modules.review_report_layout import split_review_issues
+    fields = {
+        'image': 'image_review',
+        'data': 'data_review',
+        'ref': 'ref_review',
+        'methodology': 'methodology_review',
+    }
+    page_issues = {}
+    for dimension, field in fields.items():
+        try:
+            _, issues = split_review_issues(str(result.get(field) or ''))
+        except ValueError:
+            issues = []
+        for issue_index, body in issues:
+            for match in re.finditer(r'第\s*(\d+)\s*页|\bpage\s*(\d+)\b', body, re.IGNORECASE):
+                page = next((value for value in match.groups() if value), None)
+                if page:
+                    page_issues.setdefault(page, set()).add((dimension, issue_index))
+    for field in ('evidence_images', 'excel_evidence_regions'):
+        normalized = []
+        for raw in result.get(field) or []:
+            item = dict(raw) if isinstance(raw, dict) else raw
+            if isinstance(item, dict) and str(item.get('dimension') or '').strip().lower() in {'', 'unknown'}:
+                caption = str(item.get('caption') or '')
+                page_match = re.search(r'第\s*(\d+)\s*页|\bpage\s*(\d+)\b', caption, re.IGNORECASE)
+                page = next((value for value in page_match.groups() if value), None) if page_match else None
+                candidates = page_issues.get(page, set()) if page else set()
+                if len(candidates) == 1:
+                    dimension, issue_index = next(iter(candidates))
+                    item['dimension'] = dimension
+                    if item.get('issue_index') is None:
+                        item['issue_index'] = issue_index
+            normalized.append(item)
+        if field in result or normalized:
+            result[field] = normalized
 
     gaps = []
+    for field in ('evidence_images', 'excel_evidence_regions'):
+        for item in result.get(field) or []:
+            if not isinstance(item, dict):
+                gaps.append(f'{field} entries must be objects')
+                continue
+            dimension = item.get('dimension') or ('data' if field == 'excel_evidence_regions' else '')
+            if dimension not in fields:
+                gaps.append(f'Evidence has invalid dimension: {dimension or "missing"}')
     if result.get('trigger') == 'review_error':
         gaps.append('A process error is not a substantive review')
     if result.get('result') not in {'高风险', '低风险'}:

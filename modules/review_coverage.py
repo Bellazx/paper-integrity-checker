@@ -50,6 +50,30 @@ def _norm_text_token(value):
     return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
 
+def _mentions_sheet_token(text, sheet_token):
+    text = str(text or "").lower()
+    if not sheet_token:
+        return False
+    if sheet_token in text:
+        return True
+    # Reviewers may describe a consecutive sheet range (e.g. ST13 至 ST16)
+    # when adjudicating one shared class. Recognize only a matching alphabetic
+    # prefix and numeric interval; do not treat arbitrary numbers as locations.
+    target = re.fullmatch(r"([a-z_]+)\s*(\d+)", sheet_token)
+    if not target:
+        return False
+    prefix, number = target.group(1), int(target.group(2))
+    for match in re.finditer(
+        r"(?<![a-z0-9_])([a-z_]+)\s*(\d+)\s*(?:至|到|[-–])\s*([a-z_]+\s*)?(\d+)(?!\d)",
+        text,
+    ):
+        start_prefix, start, end_prefix, end = match.groups()
+        end_prefix = (end_prefix or start_prefix).strip()
+        if start_prefix == prefix == end_prefix and int(start) <= number <= int(end):
+            return True
+    return False
+
+
 def _usable_token(value):
     token = _norm_text_token(value)
     if not token or token in {"unknown", "#", "col", "value", "values", "data"}:
@@ -193,7 +217,7 @@ def validate(result, evidence, enforce=False):
         short_file_token = _norm_text_token(short_file_match.group(0)) if short_file_match else ""
         sheet_token = _norm_text_token(sheet_name)
         has_location = bool(
-            (sheet_token and sheet_token in text)
+            _mentions_sheet_token(text, sheet_token)
             or (file_token and file_token in text)
             or (short_file_token and short_file_token in text)
         )
@@ -277,7 +301,7 @@ def validate(result, evidence, enforce=False):
                 gaps.append(f"未说明跨表重复: {locs[0] if locs else '?'}")
     decimal_items = det.get("decimal_precision_mismatch", []) or []
     if decimal_items and not any(cue in text for cue in (
-        "小数精度", "小数位", "精度不一致", "精度特征", "decimal_uniformity",
+        "小数", "小数精度", "小数位", "精度不一致", "精度特征", "decimal_uniformity",
         "decimal precision mismatch", "decimal_precision_mismatch", "decimal-precision mismatch",
     )):
         gaps.append(f"未说明小数精度不一致类别（共{len(decimal_items)}项）")
@@ -296,7 +320,10 @@ def validate(result, evidence, enforce=False):
         if str(item.get("severity") or "").lower() == "high"
     ]
     if passage_high and not any(
-        cue in text for cue in ("跨行", "伪重复", "整数偏移", "passage", "代次", "跨时间点", "固定比例", "固定倍数", "等比", "fixed_ratio")
+        cue in text for cue in ("跨行", "伪重复", "行偏移", "表内行", "复制问题", "转置", "偏移",
+                                "整数偏移", "行块", "重复行", "表内重复", "行序", "复制",
+                                "转置式", "passage", "代次", "跨时间点", "固定比例", "固定倍数",
+                                "等比", "fixed_ratio")
     ):
         gaps.append(f"未说明HIGH跨行伪重复类别（共{len(passage_high)}项）")
 
@@ -318,6 +345,8 @@ def validate(result, evidence, enforce=False):
         "full_duplicate": ("重复", "跨页", "同图", "同一图", "duplicate", "phash", "嵌入版"),
         "partial_region": ("局部", "区域", "拼接", "模板", "sift", "partial", "复用"),
         "cross_group_duplicate": ("重复", "相同", "复用", "两列", "列", "overlap", "一致"),
+        "feature_matrix_duplicate_columns": ("特征矩阵重复列", "特征矩阵列重复", "重复列矩阵",
+                                             "特征矩阵中的重复列", "特征矩阵的重复列"),
         "verified_manuscript_content_conflict": ("正文表述不一致", "文稿内容冲突", "正文内容矛盾", "稿件内容一致性",
                                                  "正文不一致", "正文矛盾", "正文冲突", "内容不一致", "内容矛盾", "内容冲突",
                                                  "组别顺序", "图号笔误", "计时表述", "时间线"),
@@ -352,7 +381,8 @@ def validate(result, evidence, enforce=False):
         # The detector also emits this type for longitudinal measurements that
         # share an exact multiplicative step. Reviews normally describe those
         # in reader-facing Chinese as “跨时间点固定比例”, not “passage/offset”.
-        "passage_offset_pattern": ("passage", "passages", "伪重复", "跨行", "整数偏移", "offset",
+        "passage_offset_pattern": ("passage", "passages", "伪重复", "跨行", "行偏移", "表内行",
+                                   "复制问题", "转置", "整数偏移", "偏移", "offset",
                                    "半步", "通代", "代次", "timepoint", "跨时间点", "固定比例",
                                    "固定倍数", "等比", "fixed_ratio"),
     }

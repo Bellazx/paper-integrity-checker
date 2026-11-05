@@ -149,8 +149,19 @@ def _normal(text):
 
 def read_pages(pdf_path):
     pages, warnings = [], []
+    # Every page costs model calls (discovery, then verification per chunk),
+    # so a whole book submitted for one chapter would run for an hour and mix
+    # in other authors' chapters. Screen the leading pages, as image
+    # extraction does, and say so.
+    limit = int(os.getenv("INITIAL_CONTENT_MAX_PAGES", "200"))
     with fitz.open(pdf_path) as doc:
+        if 0 < limit < len(doc):
+            log.warning("PDF has %d pages; content screening covers pages 1-%d: %s", len(doc), limit, pdf_path)
+            warnings.append(f"PDF共{len(doc)}页，超过内容核查上限{limit}页，正文内容核查只覆盖前{limit}页；"
+                            "若这是整本书或论文集，应改用对应章节或单篇的PDF")
         for number, page in enumerate(doc, 1):
+            if 0 < limit < number:
+                break
             # Block boundaries avoid flattening two columns into alternating lines.
             blocks = page.get_text("blocks", sort=True)
             text = "\n\n".join(b[4] for b in blocks if len(b) > 6 and b[6] == 0)
@@ -204,6 +215,11 @@ def read_pages(pdf_path):
     if not pages or sum(len(p["text"].strip()) for p in pages) < 80:
         raise ContentScreenIncomplete("正文文字不足，不能完成初审内容核查")
     return pages, warnings
+
+
+def _page_count(pdf_path):
+    with fitz.open(pdf_path) as doc:
+        return len(doc)
 
 
 def _material(pages):
@@ -285,11 +301,13 @@ def _chunks(pages, limit=None):
 
 def _request(prompt, *, model=None):
     from config import MINIMAX_MODEL, MINIMAX_FALLBACK_MODEL
-    from utils.llm_client import LLM_TIMEOUT, get_client
+    from utils.llm_client import get_client
     # A separate bounded budget: do not inherit report writing's long retry loop.
+    # A stalled request fails over to the fallback model after 180 s instead of
+    # waiting out the 300 s report-writing timeout.
     model = model or os.getenv("INITIAL_CONTENT_MODEL", MINIMAX_MODEL)
     fallback = os.getenv("INITIAL_CONTENT_FALLBACK_MODEL", MINIMAX_FALLBACK_MODEL)
-    timeout = float(os.getenv("INITIAL_CONTENT_TIMEOUT", str(LLM_TIMEOUT)))
+    timeout = float(os.getenv("INITIAL_CONTENT_TIMEOUT", "180"))
     max_tokens = int(os.getenv("INITIAL_CONTENT_MAX_TOKENS", "32768"))
     # M3 requires adaptive thinking. A prose instruction cannot reserve answer
     # tokens; the supported effort parameter can bound the reasoning instead.
@@ -943,6 +961,7 @@ def screen_manuscript(pdf_path, *, request=None):
                         "本次初审结论依据其余已核查内容作出")
     audit = {"status": "needs_review" if unresolved else ("partial" if unchecked else "complete"),
              "pages_checked": sorted({p["page"] for p in pages} - set(unchecked_pages)),
+             "pages_total": _page_count(pdf_path),
              "unchecked": unchecked,
              "chunks": len(chunks), "candidate_count": len(candidates),
              "confirmed_count": len(issues) - len(unresolved),

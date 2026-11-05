@@ -26,6 +26,18 @@ class _GapRenderer:
         return {**info, "_coverage_gaps": ["未说明小数精度不一致类别（共1项）"]}
 
 
+def test_feature_matrix_duplicate_coverage_accepts_specific_chinese_but_not_generic_text():
+    from modules.review_coverage import validate
+    evidence = {"high_findings": [{"dim": "data", "test": "feature_matrix_duplicate_columns"}],
+                "deterministic_findings": {}, "main_figures": []}
+    info = {"result": "高风险", "data_review": "数据均正常。"}
+    _, gaps = validate(info, evidence)
+    assert any("feature_matrix_duplicate_columns" in gap for gap in gaps)
+    info["data_review"] = "特征矩阵重复列位于 FS21 的 B/F 列，均为 Magnetic field 自变量，属正常共享横轴。"
+    _, gaps = validate(info, evidence)
+    assert not any("feature_matrix_duplicate_columns" in gap for gap in gaps)
+
+
 def test_resource_coverage_timeout_is_soft_warning(monkeypatch):
     monkeypatch.setenv("REVIEW_COVERAGE_FAILURE_POLICY", "warn")
     renderer = _FakeRenderer()
@@ -86,3 +98,41 @@ def test_highrisk_report_must_not_invent_omitted_rowwise_acknowledgement():
     checked, gaps = validate(info, evidence)
     assert any("rowwise_value_reuse" in gap for gap in gaps)
     assert checked['data_review'] == info['data_review']
+
+
+def test_grouped_duplicate_coverage_accepts_explicit_sheet_range():
+    from modules.review_coverage import validate
+
+    info = {
+        "result": "高风险",
+        "verdict": "建议高风险",
+        "image_review": "已核对图像重复线索，未见独立异常。",
+        "data_review": "Supplementary data 中 ST13 至 ST16 的重复列整类已核查；这些稀疏指示列的重叠属可解释的正常结构，不构成独立测量值复用。",
+        "ref_review": "已核对参考文献著录，未见实质不一致。",
+        "methodology_review": "已核对研究设计、样本数和统计口径。",
+        "reason": "综合判定依据为已确认的数据问题。",
+        "dimension_verdicts": {
+            "image": "建议低风险", "data": "建议高风险",
+            "ref": "建议低风险", "methodology": "建议低风险",
+        },
+    }
+    evidence = {
+        "deterministic_findings": {
+            "duplicate_column_pairs": [
+                {"file": "MOESM3.xlsx", "sheet": "ST14", "col_a_header": "a", "col_b_header": "b"},
+                {"file": "MOESM3.xlsx", "sheet": "ST15", "col_a_header": "c", "col_b_header": "d"},
+            ]
+        },
+        "high_findings": [],
+        "main_figures": [],
+    }
+    _, gaps = validate(info, evidence)
+    assert not any("未说明重复列对" in gap for gap in gaps)
+
+
+def test_sheet_range_match_requires_matching_prefix_and_bounds():
+    from modules.review_coverage import _mentions_sheet_token
+
+    assert _mentions_sheet_token("ST13 至 ST16 的重复列已核查", "st14")
+    assert not _mentions_sheet_token("ST13 至 ST16 的重复列已核查", "st17")
+    assert not _mentions_sheet_token("ST13 至 ST16 的重复列已核查", "supplementary14")
