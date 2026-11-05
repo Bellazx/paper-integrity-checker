@@ -650,7 +650,9 @@ http://202.120.57.100/review_reports/{namespace}/review_{doi_slug}.pdf
 `namespace` 用于隔离不同业务表/流程产生的同 DOI 报告，避免 PDF 互相覆盖：
 
 - 前端 `/api/detection/submit` 使用 `detection_reports/{task_id}`
-- 开发者 `/api/task/submit` 使用传入的 `table_name`，例如 `yujing_quanliang`
+- 开发者 `/api/task/submit` 使用 `{table_name}/{task_id}`，例如 `yujing_quanliang/20261104-f71f600c`
+
+三类报告链接由 nginx 转给只读报告网关（`deployment/report_gateway.py`，端口 8002）。网关先按历史目录结构查找（含旧主机迁移来的 `data/migrated_99_reports`），找不到再按 `chinese_reports/`、`english_reports/`、`review_v2/` 下的命名空间目录查找。网关只返回 PDF；`review_v2/` 中的证据包等其他文件不对外提供。
 
 ## 11. 前端推荐实现
 
@@ -691,6 +693,7 @@ http://202.120.57.100/review_reports/{namespace}/review_{doi_slug}.pdf
 
 - 同一 `file_id` 的论文仍在处理中（批量模式还须 `fold_name` 一致）：新任务替代旧任务。正文、源数据、检测配置和规则版本完全一致时，沿用已完成的初审及复审检查点；未保存的轮次重新执行。存在差异或缺少历史指纹时重新检测，不沿用旧结论。
 - 同一 `file_id` 的旧任务已经完成或对应论文已有最终风险结论：新任务从初审重新执行正常流程，不复用旧任务的结果；初审低风险直接完成，高风险进入复审。
+- 同一 `file_id` 的旧任务因服务重启、进程中断或复核流程错误而失败，且没有最终风险结论：重新检测会复用已完成的初审报告、证据包和 CLI 复核断点，从中断阶段继续；如果断点或输入校验不匹配，才回退到相应阶段重跑。
 - 不同 `file_id` 始终独立处理，即使上传用户、DOI 和文件内容完全相同，也不替代或复用对方的任务。
 - 被整体替代的旧任务返回 `status=superseded`、`superseded_by=<新任务号>`。前端应显示“已被新提交替代”，停止轮询旧任务，并转到新任务号；不得将其显示为检测失败。
 - 批量任务仅替代匹配论文，其他论文继续执行。每篇的 `superseded_by`、`reused_from_task_id`、`submission_decision` 可在任务查询接口读取。
@@ -708,11 +711,22 @@ http://202.120.57.100/review_reports/{namespace}/review_{doi_slug}.pdf
 轮询结果中的顶层 `error` 会包含错误摘要，例如 `Report generation failed: ...`。如果是单篇检测失败，则对应论文的 `papers[].error` 会有具体原因。
 
 
-### 复核恢复与时间预算（2026-10-28）
+### 复核引擎（2026-11-04 起 API 使用 v3）
+
+API 与批量复核使用同一个复核引擎 v3（设计见 `review_v3/DESIGN.md`），由服务环境变量 `REVIEW_ENGINE=v3` 启用（`deployment/paper-api-review-engine.conf`，安装为 `/etc/systemd/system/paper-api.service.d/95-review-engine.conf`）。改为 `v2` 并重启服务即回退到下一节所述的旧流程。
+
+- 流程：证据包与论文资料包 → 按维度分片并行调查（MiniMax-M3.1-Flash）→ 逐分片反证核验 → 分歧仲裁与必查项补查 → 定级 → 实质问题由 Opus 终审 → 每个风险问题截图 → 写作 → 发布校验。
+- 风险结论由台账确定：任一维度存在经终审确认的实质问题即“有风险”。报告只列风险问题，每条写明位置、问题和影响。
+- 证据截图：问题同时涉及论文页面和随文源数据时，两侧都附截图（源数据按问题引用的数值定位单元格，带表头和行名）；截图会话未完成时由程序补截。
+- 时限：`REVIEW_PAPER_TIMEOUT_SECONDS` 为整篇总时限，默认 5400 秒（90 分钟）；各阶段另有时间框（`REVIEW_V3_*_SOFT_SECONDS`）。到总时限时用已核实的结论生成报告，未能核查的必查项在报告中写明。
+- 所有阶段落盘检查点；`resume=True` 时已完成的分片直接复用。
+- 每段会话记录工具调用的等待时间（`tool_wait_s`），并拆分出 PreToolUse hook 开始之前的部分（`before_hook_s`）；中位数超过 `REVIEW_V3_TOOL_WAIT_WARN_SECONDS`（默认 5 秒）时服务日志给出警告。命令本身通常在 1 秒内完成，持续的长等待说明问题在 CLI 或机器环境，而不在复核逻辑。
+
+### v2 复核恢复与时间预算（2026-10-28，仅 `REVIEW_ENGINE=v2` 时适用）
 
 - `run_review_single(..., resume=True)` / `run_reviews(..., resume=True)` 用于中断恢复，复用同一输入的综合草稿和 CLI 断点；默认 `resume=False` 表示显式重新复核，独立保存阶段历史。
 - 第一轮、第二轮或综合阶段返回 `review_error` 后终止该篇，保留检查记录，不再把错误占位交给后续专家继续跑。
-- CLI 研究、恢复和最终整理不再使用独立的阶段时间预算；三者共享单篇论文的唯一总时限。达到首轮轮数上限时，只有已有完整草稿且剩余问题属于格式校验，才直接进入无工具整理；没有草稿或存在事实/证据覆盖缺口时，先执行一次最多 `REVIEW_CLI_RECOVERY_MAX_TURNS` 轮的定向补查，禁止重复全表扫描。到达总时限时回收当前 CLI 进程并保留断点，后续可从同一会话恢复；轮数上限仍可用 `REVIEW_MAX_TURNS`、`REVIEW_CLI_RECOVERY_MAX_TURNS` 和 `REVIEW_CLI_FINAL_MAX_TURNS` 调整。事实与证据缺口仍必须核查，不能放宽发布校验。超时或输出错误不作为论文风险证据。
+- CLI 研究、恢复和最终整理不再使用独立的阶段时间预算；三者共享单篇论文的唯一总时限。达到首轮轮数上限时，只有已有完整草稿且剩余问题属于格式校验，才直接进入无工具整理；没有草稿或存在事实/证据覆盖缺口时，先执行一次定向补查，默认轮数不低于首轮，禁止重复全表扫描。低风险核验、综合判断和覆盖修复的默认轮数也不低于 `REVIEW_MAX_TURNS`。到达总时限时回收当前 CLI 进程并保留断点，后续可从同一会话恢复；轮数上限仍可用 `REVIEW_MAX_TURNS`、`REVIEW_CLI_RECOVERY_MAX_TURNS` 和 `REVIEW_CLI_FINAL_MAX_TURNS` 调整。事实与证据缺口仍必须核查，不能放宽发布校验。超时或输出错误不作为论文风险证据。
 - 首轮会根据确定性证据包选择自适应核查计划：无主图且已有强源数据证据时只读取证据和必要位置，禁止重复全表扫描；有图像或未决线索时保留 Bash/Read 定向核查；证据干净时使用只读覆盖检查。计划只减少重复工作，不跳过四个维度的发布校验。
 - `REVIEW_PAPER_TIMEOUT_SECONDS` 是单次整篇调用的总时限，默认 5400 秒（90 分钟）；到期取消并回收当前 CLI 进程组，保存失败状态和已有断点。强确定性数据证据在首轮后只进入定向覆盖修复，不再自动重复第二次整篇调查。
 - 显式设置 `REVIEW_PAPER_TIMEOUT_SECONDS=0`（或 `none` / `unlimited`）可取消该进程的整篇限时；未设置时采用 5400 秒（90 分钟）。英文结果标签 `low_risk` / `high_risk` 会转换为中文枚举，维度缺项和证据覆盖校验仍必须通过。
