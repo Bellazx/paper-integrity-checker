@@ -61,7 +61,9 @@ def main():
         log.write(json.dumps({"actor": actor, "resume": "--resume" in sys.argv, "session": session,
                               "turns": arg("--max-turns"), "model": arg("--model"),
                               "settings": arg("--settings"), "tools": arg("--tools"),
-                              "prompt_chars": len(prompt)}) + "\n")
+                              "prompt_chars": len(prompt), "ledger": os.environ.get("PV3_LEDGER"),
+                              "added_items": "刚完成核查的问题" in prompt,
+                              "debug": "--debug" in sys.argv}) + "\n")
     marker = Path(os.environ["FAKE_CLAUDE_SCENARIO"] + ".failed_once")
     if scenario.get("transport_fail_first") and not marker.exists():
         marker.write_text("1")
@@ -71,9 +73,21 @@ def main():
         marker.write_text("1")
         sys.stderr.write(f"Error: Session ID {session} is already in use.\n")
         sys.exit(1)
-    if scenario.get("delay"):
+    if scenario.get("delay") or (scenario.get("delays") or {}).get(actor):
         import time
-        time.sleep(float(scenario["delay"]))
+        time.sleep(float(scenario.get("delay") or scenario["delays"][actor]))
+    if scenario.get("hang_after_max_turns"):
+        # The real CLI records the turn limit in its transcript, then waits
+        # for background jobs before it exits.
+        import time
+        folder = Path(os.environ["FAKE_TRANSCRIPTS"]) / "runtime"
+        folder.mkdir(parents=True, exist_ok=True)
+        with open(folder / f"{session}.jsonl", "a") as transcript:
+            transcript.write(json.dumps({"type": "attachment", "attachment": {
+                "type": "max_turns_reached", "maxTurns": 12, "turnCount": 13, "exitCommitted": False}}) + "\n")
+        time.sleep(float(scenario["hang_after_max_turns"]))
+        emit("思考中", subtype="error_max_turns", session=session)
+        return
     if role == "writer":
         if scenario.get("writer") == "broken":
             print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "num_turns": 1,

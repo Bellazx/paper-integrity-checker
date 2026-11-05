@@ -21,6 +21,10 @@ def _int(name: str, default: int) -> int:
 # Model: one configuration for API and batch.
 MODEL = os.environ.get("REVIEW_V3_MODEL", "MiniMax-M3.1-Flash").strip()
 SETTINGS_FILE = os.environ.get("REVIEW_V3_SETTINGS_FILE", "/home/library/.claude/settings-mm.json").strip()
+# Reasoning effort passed to the CLI for review sessions (low/medium/high/
+# xhigh/max). Empty: the CLI's default, which for this model is "high" (the
+# CLAUDE_EFFORT environment variable does not change it; checked 2026-11-05).
+EFFORT = os.environ.get("REVIEW_V3_EFFORT", "").strip()
 # Final review of substantive findings (user decision 2026-10-31): Opus checks
 # every issue that would make a paper high-risk; everything else stays on MODEL.
 JUDGE_MODEL = os.environ.get("REVIEW_V3_JUDGE_MODEL", "claude-opus-5-5").strip()
@@ -46,6 +50,15 @@ TRANSPORT_RETRIES = _int("REVIEW_V3_TRANSPORT_RETRIES", 3)
 RETRY_BACKOFF_SECONDS = _int("REVIEW_V3_RETRY_BACKOFF_SECONDS", 10)
 # One CLI chunk may not exceed this wall time (a hung tool or stalled stream).
 CHUNK_TIMEOUT_SECONDS = _int("REVIEW_V3_CHUNK_TIMEOUT_SECONDS", 900)
+# After its turn limit the CLI waits for background jobs before exiting; the
+# chunk is over at that point, so the process is ended this many seconds later.
+EXIT_WAIT_SECONDS = _int("REVIEW_V3_EXIT_WAIT_SECONDS", 20)
+WATCH_POLL_SECONDS = float(os.environ.get("REVIEW_V3_WATCH_POLL_SECONDS", "3"))
+# One calibrator grades all issues of a paper. With a share below 1 it starts
+# once that share of the shards has settled and takes later shards' issues as
+# they come. Off by default (2026-11-05 rerun of three papers: 4 min faster on
+# average but uneven, calibration cost four times as high).
+CALIBRATE_START_FRACTION = float(os.environ.get("REVIEW_V3_CALIBRATE_START_FRACTION", "1.0"))
 
 # Phase time boxes, measured from the start of the review (seconds). When a
 # phase's box closes, each running session gets one short wrap-up chunk.

@@ -316,6 +316,18 @@ def calibrator_continue(open_ids: list[str], wrapup: bool = False) -> str:
             "category 填类别代码（S1–S6、M1–M10）；问题不成立的改为 status=cleared 并写 basis。")
 
 
+def calibrator_added(items: list[dict], open_ids: list[str]) -> str:
+    """Issues of shards that settled after calibration began, given to the
+    same calibrator, which has already read the paper and graded the rest."""
+    rows = [f"- `{item['id']}`（当前：{'实质问题' if item.get('severity') == 'substantive' else '规范问题'}，"
+            f"{item.get('dimension')}）：{str(item.get('location', ''))[:120]} —— {str(item.get('issue_type', ''))[:60]}"
+            for item in items]
+    return (f"又有 {len(items)} 条刚完成核查的问题需要定级（按同样的规则；详情用 `pv3 item <id>` 查看）：\n"
+            + "\n".join(rows)
+            + "\n若其中某条与你已定级的条目是同一事实，保留已定级的那条，新条目写 status=cleared，basis 写“与 <条目id> 为同一事实”。\n"
+            + calibrator_continue(open_ids))
+
+
 def calibrator(dossier: dict, items: list[dict]) -> str:
     from review_v3.categories import table
     rows = [f"- `{item['id']}`（当前：{'实质问题' if item.get('severity') == 'substantive' else '规范问题'}，"

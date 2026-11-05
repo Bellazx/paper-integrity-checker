@@ -241,8 +241,75 @@ async def _kill(proc) -> None:
         await proc.wait()
 
 
+class _TranscriptTail:
+    """New lines of the session's CLI transcript since the chunk started."""
+
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.path: Path | None = None
+        self.offset = 0
+        self.partial = b""
+
+    def _locate(self) -> Path | None:
+        if self.path is None:
+            self.path = next(iter(TRANSCRIPTS.glob(f"*/{self.session_id}.jsonl")), None)
+        return self.path
+
+    def start(self) -> None:
+        """Skip what earlier chunks of a resumed session wrote."""
+        path = self._locate()
+        try:
+            self.offset = path.stat().st_size if path else 0
+        except OSError:
+            self.offset = 0
+
+    def turn_limit_events(self) -> list[dict]:
+        path = self._locate()
+        try:
+            size = path.stat().st_size if path else 0
+        except OSError:
+            return []
+        if size <= self.offset:
+            return []
+        with open(path, "rb") as handle:
+            handle.seek(self.offset)
+            data = self.partial + handle.read(size - self.offset)
+        self.offset = size
+        lines = data.split(b"\n")
+        self.partial = lines.pop()
+        out = []
+        for line in lines:
+            if b"max_turns_reached" not in line:  # tool results can be megabytes of image data
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if (event.get("attachment") or {}).get("type") == "max_turns_reached":
+                out.append(event["attachment"])
+        return out
+
+
+async def _exit_wait(tail: _TranscriptTail) -> int | None:
+    """Return once the CLI has reached its turn limit and still not exited
+    EXIT_WAIT_SECONDS later (it is waiting for background jobs). Never
+    raises: a failure to read the transcript only disables the watch."""
+    reached, turns = None, None
+    try:
+        while True:
+            await asyncio.sleep(config.WATCH_POLL_SECONDS)
+            for attachment in await asyncio.to_thread(tail.turn_limit_events):
+                reached = reached or time.monotonic()
+                turns = attachment.get("turnCount")
+            if reached is not None and time.monotonic() - reached >= config.EXIT_WAIT_SECONDS:
+                return turns
+    except Exception as exc:  # watching must never end a chunk by itself
+        log.debug("transcript watch for %s stopped: %s", tail.session_id, exc)
+        await asyncio.Event().wait()
+
+
 async def _invoke(spec: SessionSpec, message: str, session_id: str, resume: bool, turns: int,
-                  wrapping: bool = False) -> dict:
+                  wrapping: bool = False, debug: bool = False) -> dict:
     model = PROFILES[spec.profile]()[0]
     # The prompt goes through stdin: a single command-line argument is capped
     # at 128 KB on Linux, and writer/judge prompts can exceed it.
@@ -250,6 +317,11 @@ async def _invoke(spec: SessionSpec, message: str, session_id: str, resume: bool
                "--max-turns", str(turns), "--disable-slash-commands",
                "--resume" if resume else "--session-id", session_id]
     command += ["--settings", settings_file(spec.profile)]
+    if config.EFFORT and spec.profile == "default":
+        command += ["--effort", config.EFFORT]
+    if debug:
+        # The CLI writes its own timeline (hooks, permission, dispatch) to ~/.claude/debug/<session>.txt.
+        command.append("--debug")
     if spec.tools:
         command += ["--tools", "Bash,Read", "--allowedTools", "Bash", "Read"]
         for directory in [spec.workdir, *spec.read_dirs]:
@@ -263,6 +335,8 @@ async def _invoke(spec: SessionSpec, message: str, session_id: str, resume: bool
     if spec.deadline is not None:
         timeout = max(1.0, min(timeout, spec.deadline - now))
     started = time.monotonic()
+    tail = _TranscriptTail(session_id)
+    tail.start()
     # The prompt is in a file before the CLI starts: the CLI waits only 3 s
     # for stdin, and a pipe written from a busy event loop can miss that.
     prompt_file = tempfile.TemporaryFile()
@@ -275,17 +349,32 @@ async def _invoke(spec: SessionSpec, message: str, session_id: str, resume: bool
             start_new_session=True)
     finally:
         prompt_file.close()  # the child holds its own descriptor
+    talking = asyncio.ensure_future(proc.communicate())
+    watching = asyncio.ensure_future(_exit_wait(tail))
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout)
-    except TimeoutError:
+        await asyncio.wait({talking, watching}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+    except asyncio.CancelledError:
+        watching.cancel()
+        await _kill(proc)
+        await asyncio.gather(talking, return_exceptions=True)
+        raise
+    watching.cancel()
+    if not talking.done():
+        stuck_at_exit = watching.done() and not watching.cancelled()
+        await _kill(proc)
+        await asyncio.gather(talking, return_exceptions=True)
+        if stuck_at_exit:
+            # The turns of this chunk are persisted; ending the wait for
+            # background jobs is the same as the CLI exiting on its own.
+            log.info("%s: CLI still running %ds after its turn limit (background jobs); ended",
+                     spec.name, config.EXIT_WAIT_SECONDS)
+            return {"subtype": "error_max_turns", "num_turns": watching.result(), "_exit_killed": True,
+                    "_wall": time.monotonic() - started}
         # A long chunk is slow thinking, not a broken endpoint: keep the
         # session (completed turns are persisted) and continue or wrap up.
-        await _kill(proc)
         return {"_error": "chunk timeout", "_transport": False, "_timeout": True,
                 "_wall": time.monotonic() - started}
-    except asyncio.CancelledError:
-        await _kill(proc)
-        raise
+    stdout, stderr = talking.result()
     raw: dict = {}
     try:
         parsed = json.loads(stdout.decode(errors="replace") or "{}")
@@ -370,7 +459,8 @@ async def run(spec: SessionSpec) -> SessionOutcome:
             raw, attempt = {}, 0
             while True:
                 raw = await _invoke(spec, message, state["session_id"], resume,
-                                    config.WRAPUP_TURNS if wrapping else spec.chunk_turns, wrapping)
+                                    config.WRAPUP_TURNS if wrapping else spec.chunk_turns, wrapping,
+                                    debug=bool(state.get("debug")))
                 if raw.get("_error") == "session id in use" and not resume:
                     state.setdefault("lost_sessions", []).append(state["session_id"])
                     state["session_id"] = str(uuid.uuid4())
@@ -399,6 +489,8 @@ async def run(spec: SessionSpec) -> SessionOutcome:
                       "cost": raw.get("total_cost_usd"), "error": raw.get("_error"),
                       "input_tokens": usage.get("input_tokens"), "cache_read": usage.get("cache_read_input_tokens"),
                       "output_tokens": usage.get("output_tokens"), "closed": after[0]}
+            if raw.get("_exit_killed"):
+                metric["exit_killed"] = True
             if spec.tools:
                 try:
                     metric.update(tool_waits(state["session_id"], state["launched_at"], spec.workdir, spec.ledger_path))
@@ -411,6 +503,12 @@ async def run(spec: SessionSpec) -> SessionOutcome:
                             "PreToolUse hook started; commands themselves take under a second",
                             spec.name, state["chunks"], metric["tool_wait_s"], metric["tool_calls"],
                             metric.get("before_hook_s"))
+                if not state.get("debug"):
+                    # Such stalls have lasted hours and are gone by the time anyone looks:
+                    # the session's next chunks record where the CLI spends the time.
+                    state["debug"] = True
+                    log.warning("%s: next chunks run with CLI debug logging: %s", spec.name,
+                                Path.home() / ".claude" / "debug" / f"{state['session_id']}.txt")
             if isinstance(raw.get("result"), str):
                 outcome_text = raw["result"]
                 state["text"] = outcome_text
@@ -441,3 +539,21 @@ def reset(spec_name: str, workdir: Path) -> None:
     path = workdir / "sessions" / f"{spec_name}.json"
     if path.exists():
         path.rename(path.with_name(f"{spec_name}.{int(time.time())}.done.json"))
+
+
+def reopen(spec_name: str, workdir: Path) -> int:
+    """Let a finished session take new work: it resumes with its context and
+    its earlier chunks still count. Returns the chunks used so far."""
+    path = workdir / "sessions" / f"{spec_name}.json"
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    if state.get("status"):
+        for key in ("status", "stop_reason", "wrapped", "finished_at", "last_error"):
+            state.pop(key, None)
+        state["no_progress"] = 0
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, path)
+    return int(state.get("chunks", 0))

@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -115,6 +116,14 @@ class Review:
         self.arbitration_round: int | None = None
         self.prior_decided: dict[str, dict] = {}
         self.shard_finals: dict[str, dict] = {}
+        # Calibration runs beside the slower shards (see calibrate()).
+        self.cal_pending: list[dict] = []
+        self.cal_offered: set[str] = set()
+        self.cal_wake = asyncio.Event()
+        self.cal_worker: asyncio.Future | None = None
+        self.cal_closing = False
+        self.cal_status = "not run"
+        self.settled_shards = 0
         self._complete_gate: asyncio.Semaphore | None = None
         origin = started if started is not None else time.monotonic()
         # Phase time boxes; the whole-paper deadline stays the hard limit.
@@ -324,6 +333,10 @@ class Review:
         completed = time.monotonic()
         self.shard_finals[shard["id"]] = await self.complete(finals, scope=shard["id"])
         out["complete_seconds"] = round(time.monotonic() - completed, 1)
+        self.offer_for_calibration(self.shard_finals[shard["id"]].values())
+        self.settled_shards += 1
+        if self.settled_shards >= max(1, math.ceil(config.CALIBRATE_START_FRACTION * len(self.shards))):
+            self.start_calibration()
         return out
 
     # -- merge
@@ -404,26 +417,80 @@ class Review:
             decided.update(records)
         return decided
 
-    async def calibrate(self, finals: dict) -> dict:
-        """Second look at the severity of every confirmed issue (both directions)."""
-        issues = [r for r in finals.values() if r.get("status") == "issue"]
-        if not issues:
-            return finals
-        issues.sort(key=lambda r: r.get("severity") != "substantive")
+    # -- calibration: one calibrator per paper, started before the slowest shards end
+    def offer_for_calibration(self, records) -> None:
+        """Queue confirmed issues for the calibrator (each once)."""
+        for record in records:
+            if record.get("status") == "issue" and record["id"] not in self.cal_offered:
+                self.cal_offered.add(record["id"])
+                self.cal_pending.append(record)
+        self.cal_wake.set()
+
+    def start_calibration(self) -> None:
+        if self.cal_worker is None:
+            self.cal_worker = asyncio.ensure_future(self._calibration_worker())
+            self.background.append(self.cal_worker)
+
+    async def _calibration_worker(self) -> None:
+        """Grade issues as they are offered, in one session that keeps its
+        context: issues of shards that settle later are added to the same
+        ledger and the calibrator, having read the paper already, goes on."""
+        while True:
+            batch, self.cal_pending = self.cal_pending, []
+            if batch:
+                await self._calibration_pass(batch)
+                continue
+            if self.cal_closing:
+                return
+            self.cal_wake.clear()
+            await self.cal_wake.wait()
+
+    async def _calibration_pass(self, batch: list[dict]) -> None:
+        batch.sort(key=lambda r: r.get("severity") != "substantive")
         path = self.ledger_path("cal", "all")
+        known = set(ledger.load(path).get("items") or {})
         ledger.create(path, {"shard": "calibrate", "role": "calibrator", "allow_new": False, "require_category": True},
                       [{"id": r["id"], "title": r.get("title") or r["id"], "dimension": r.get("dimension"),
-                        "first": _compact(r)} for r in issues])
-        spec = self._spec("cal_all", prompts.calibrator(self.dossier, issues), path,
-                          config.MAX_CHUNKS_CALIBRATE, "calibrator", "calibrate")
+                        "first": _compact(r)} for r in batch])
+        added = [r for r in batch if r["id"] not in known] if known else []
+        used = session.reopen("cal_all", self.run_dir) if added else 0
+        spec = self._spec("cal_all", prompts.calibrator(self.dossier, batch), path,
+                          used + config.MAX_CHUNKS_CALIBRATE, "calibrator", "calibrate")
+        announce = list(added) if used else []
 
-        def open_ids(_state):
+        def open_ids():
             return [item["id"] for item in ledger.open_items(ledger.load(path))]
-        spec.continue_prompt = lambda state: prompts.calibrator_continue(open_ids(state))
-        spec.wrapup_prompt = lambda state: prompts.calibrator_continue(open_ids(state), wrapup=True)
+
+        def next_message(_state):
+            if announce:
+                items = announce[:]
+                announce.clear()
+                return prompts.calibrator_added(items, open_ids())
+            return prompts.calibrator_continue(open_ids())
+        spec.continue_prompt = next_message
+        spec.wrapup_prompt = lambda state: prompts.calibrator_continue(open_ids(), wrapup=True)
         outcome = await session.run(spec)
-        decided = ledger.load(path).get("items") or {}
-        left = [i for i, r in decided.items() if not _categorized(r)]
+        self.cal_status = outcome.status
+
+    async def calibrate(self, finals: dict) -> dict:
+        """Second look at the severity of every confirmed issue (both directions).
+
+        Usually the calibrator is already at work: it started when part of the
+        shards had settled. Here it gets whatever is still missing, and the
+        grades are applied once it has finished."""
+        issues = [r for r in finals.values() if r.get("status") == "issue"]
+        issues.sort(key=lambda r: r.get("severity") != "substantive")
+        self.offer_for_calibration(issues)
+        self.cal_closing = True
+        if issues:
+            self.start_calibration()
+        if self.cal_worker is not None:
+            self.cal_wake.set()
+            await self.cal_worker
+        if not issues:
+            return finals
+        decided = ledger.load(self.ledger_path("cal", "all")).get("items") or {}
+        left = [r["id"] for r in issues if not _categorized(decided.get(r["id"]) or {})]
         if left:
             # One short follow-up for what the first session did not reach.
             rest_path = self.ledger_path("cal", "rest")
@@ -443,7 +510,7 @@ class Review:
             for item_id, record in (ledger.load(rest_path).get("items") or {}).items():
                 if _categorized(record):
                     decided[item_id] = record
-            left = [i for i, r in decided.items() if not _categorized(r)]
+            left = [r["id"] for r in issues if not _categorized(decided.get(r["id"]) or {})]
             if left:
                 log.warning("DOI=%s calibration left %d issue(s) uncategorized: %s", self.doi, len(left), left[:8])
         out = dict(finals)
@@ -471,7 +538,7 @@ class Review:
                 if (before.get("severity"), before.get("status")) != (updated.get("severity"), updated.get("status")):
                     updated["calibrated_from"] = {"status": before.get("status"), "severity": before.get("severity")}
                 out[item_id] = updated
-        log.info("DOI=%s calibration %s", self.doi, outcome.status)
+        log.info("DOI=%s calibration %s", self.doi, self.cal_status)
         return out
 
     async def complete(self, finals: dict, scope: str = "") -> dict:
@@ -1068,22 +1135,31 @@ def _figure_sentence(finals: dict, evidence: dict) -> str:
     done, open_, problem = [], [], []
     for record in finals.values():
         number = str(record.get("id", ""))[5:] if str(record.get("id", "")).startswith("fig::") else ""
-        if not number:
+        if not re.fullmatch(r"\d+[A-Za-z]?", number):  # e.g. fig::overall is no figure number
             continue
         label = f"图{number}（Fig. {number}）"
         status = record.get("status")
         (problem if status == "issue" and record.get("severity") == "substantive"
          else open_ if status in ("open", "unresolved") else done).append(label)
     if not (done or open_ or problem):
+        # Captions were not recognised: one fig::overall check covered the
+        # main figures, and its outcome is what the sentence may state.
         count = len((evidence or {}).get("main_figures") or [])
-        done = [f"图{n}（Fig. {n}）" for n in range(1, min(count, 6) + 1)]
+        labels = [f"图{n}（Fig. {n}）" for n in range(1, min(count, 6) + 1)]
+        overall = finals.get("fig::overall") or {}
+        if overall.get("status") in ("open", "unresolved"):
+            open_ = labels
+        elif overall.get("status") == "issue" and overall.get("severity") == "substantive":
+            problem = labels
+        else:
+            done = labels
     parts = []
     if done:
         parts.append(f"已渲染并核对{'、'.join(done)}与正文、表格中的对应数值，结果一致")
     if problem:
         parts.append(f"{'、'.join(problem)}与正文或表格不一致，见上文")
     if open_:
-        parts.append(f"{'、'.join(open_)}未能完成核对，不作为问题依据")
+        parts.append(f"{'、'.join(open_)}与正文、源数据是否一致未能完成核对，不作为问题依据")
     return "图文一致性：" + "；".join(parts) + "。"
 
 
@@ -1349,10 +1425,11 @@ def _start_regrade(run_dir: Path, final_path: Path, calibration: bool = True) ->
     stamp = time.strftime("%Y%m%d_%H%M%S")
     final_path.rename(final_path.with_name(f"final.{stamp}.json"))
     if calibration:
-        ledger_file = run_dir / "ledgers" / "cal_all.json"
-        if ledger_file.exists():
-            ledger_file.rename(ledger_file.with_name(f"cal_all.{stamp}.json"))
-        session.reset("cal_all", run_dir)
+        for ledger_file in sorted((run_dir / "ledgers").glob("cal_*.json")):
+            if ledger_file.name.count(".") > 1:  # set aside by an earlier regrade
+                continue
+            ledger_file.rename(ledger_file.with_name(f"{ledger_file.stem}.{stamp}.json"))
+            session.reset(ledger_file.stem, run_dir)
         judge_file = run_dir / "ledgers" / "jdg_all.json"
         if judge_file.exists():
             judge_file.rename(judge_file.with_name(f"jdg_all.{stamp}.json"))

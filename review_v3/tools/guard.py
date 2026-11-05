@@ -93,6 +93,10 @@ def check(tool: str, payload: dict) -> str | None:
             return None
         return f"只能读取本论文材料与资料包目录：{target} 不在允许范围内"
     if tool == "Bash":
+        if payload.get("run_in_background"):
+            # At the turn limit the CLI waits for background jobs before it
+            # exits, which holds the whole phase for minutes.
+            return "复核会话中不要后台运行命令（run_in_background）；请前台执行，耗时长的计算拆成几步。"
         raw = str(payload.get("command") or "")
         actor = os.environ.get("PV3_ACTOR", "")
         if actor.startswith(("calibrator", "evidence")) and re.search(r"\bcurl\b|\bwget\b|pv3\s+(?:crossref|refcheck)", raw):

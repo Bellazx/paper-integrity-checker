@@ -1111,3 +1111,122 @@ def test_guard_records_when_it_starts(tmp_path):
            text=True, env=env, check=True)
     stamp, ledger_name, tool = (tmp_path / "hook_times.log").read_text().strip().split("\t")
     assert float(stamp) > 0 and ledger_name == "inv_a.json" and tool == "Bash"
+
+
+def test_cli_waiting_for_background_jobs_after_its_turn_limit_is_ended(tmp_path, fake_cli, monkeypatch):
+    # At its turn limit the CLI waits for background jobs before exiting; the
+    # chunk is over then, so the wait is cut short instead of running to the
+    # chunk timeout, and the session goes on as after any turn-limited chunk.
+    configure, calls = fake_cli
+    configure(hang_after_max_turns=40)
+    monkeypatch.setattr(session, "TRANSCRIPTS", tmp_path / "projects")
+    monkeypatch.setenv("FAKE_TRANSCRIPTS", str(tmp_path / "projects"))
+    monkeypatch.setattr(config, "EXIT_WAIT_SECONDS", 1)
+    monkeypatch.setattr(config, "WATCH_POLL_SECONDS", 0.2)
+    path = tmp_path / "l.json"
+    ledger.create(path, {}, [{"id": "i", "title": "t"}])
+    spec = _spec(tmp_path, path)
+    spec.max_chunks = 2
+    outcome = asyncio.run(session.run(spec))
+    assert [m.get("exit_killed") for m in outcome.metrics] == [True, True]
+    assert all(m["wall"] < 15 and m["error"] is None and m["subtype"] == "error_max_turns" for m in outcome.metrics)
+    assert [c["resume"] for c in calls()] == [False, True]
+
+
+def test_transcript_watch_reads_only_what_the_current_chunk_wrote(tmp_path, monkeypatch):
+    monkeypatch.setattr(session, "TRANSCRIPTS", tmp_path)
+    (tmp_path / "p").mkdir()
+    transcript = tmp_path / "p" / "sid.jsonl"
+    limit = json.dumps({"type": "attachment", "attachment": {"type": "max_turns_reached", "turnCount": 13}})
+    transcript.write_text(limit + "\n")  # an earlier chunk of the resumed session
+    tail = session._TranscriptTail("sid")
+    tail.start()
+    assert tail.turn_limit_events() == []
+    with open(transcript, "a") as handle:
+        handle.write(json.dumps({"type": "user", "message": {"content": "x" * 5000}}) + "\n" + limit[:20])
+    assert tail.turn_limit_events() == []  # the half-written line waits for its end
+    with open(transcript, "a") as handle:
+        handle.write(limit[20:] + "\n")
+    assert [e["turnCount"] for e in tail.turn_limit_events()] == [13]
+
+
+def test_guard_refuses_background_commands(tmp_path):
+    env = {"PV3_WORKDIR": str(tmp_path), "PV3_INPUT_DIR": str(tmp_path / "paper"), "PAPER_INTEGRITY_ROOT": str(ROOT)}
+    refused = _guard("Bash", {"command": "python3 big.py", "run_in_background": True}, env)
+    assert refused.returncode == 2 and "run_in_background" in refused.stderr
+    assert _guard("Bash", {"command": "python3 big.py", "run_in_background": False}, env).returncode == 0
+
+
+def _two_issue_paper(tmp_path):
+    paper = _make_paper(tmp_path)
+    evidence = paper["evidence_obj"]
+    evidence["high_findings"].append({"dim": "data", "test": "decimal_mismatch", "location": "data.xlsx / Sheet1 / treat"})
+    evidence["coverage_manifest"] = {"must_address": ["high::data::0", "high::data::1"],
+                                     "counts": {"total_must_address": 2}}
+    Path(paper["evidence"]).write_text(json.dumps(evidence))
+    return paper
+
+
+def test_calibration_starts_before_the_slowest_shard_and_takes_its_issues_later(tmp_path, fake_cli, monkeypatch):
+    # One calibrator per paper: it starts when the first shard has settled and
+    # the slow shard's issue is added to the same session (resumed, context kept).
+    configure, calls = fake_cli
+    both = {"high::data::0": "substantive", "high::data::1": "substantive"}
+    monkeypatch.setattr(config, "DATA_SHARD_SIZE", 1)  # the two findings land in two shards
+    paper = _two_issue_paper(tmp_path)
+    shards = engine.checklist.build_shards(json.loads(Path(paper["evidence"]).read_text()), {})
+    slow = next(s["id"] for s in shards if any(i["id"] == "high::data::1" for i in s["items"]))
+    configure(investigator={"issue": both}, challenger={"issue": both},
+              calibrator={"issue": {"high::data::0": "substantive", "high::data::1": "minor"}},
+              delays={f"investigator:{slow}": 4})
+    monkeypatch.setattr(config, "CALIBRATE_START_FRACTION", 0.01)
+    result = _run(paper, tmp_path, monkeypatch)
+    graders = [c for c in calls() if c["actor"] == "calibrator"]
+    assert {Path(c["ledger"]).name for c in graders} == {"cal_all.json"}
+    assert not graders[0]["resume"] and not graders[0]["added_items"]
+    # The slow shard's issue reached a calibrator that had already started.
+    assert any(c["resume"] and c["added_items"] for c in graders[1:])
+    finals = json.loads(Path(result["_review_workdir"], "finals.json").read_text())["finals"]
+    assert finals["high::data::0"]["severity"] == "substantive"
+    assert finals["high::data::1"]["severity"] == "minor"
+    assert result["result"] == "高风险"
+
+
+def test_reopened_session_resumes_and_keeps_counting_its_chunks(tmp_path, fake_cli):
+    configure, calls = fake_cli
+    configure(investigator="clear_all")
+    path = tmp_path / "l.json"
+    ledger.create(path, {}, [{"id": "a", "title": "t"}])
+    first = asyncio.run(session.run(_spec(tmp_path, path)))
+    assert first.status == "done"
+    ledger.create(path, {}, [{"id": "a", "title": "t"}, {"id": "b", "title": "t"}])
+    assert asyncio.run(session.run(_spec(tmp_path, path))).status == "done"  # finished sessions stay finished
+    assert len(calls()) == 1
+    used = session.reopen("s", tmp_path)
+    again = asyncio.run(session.run(_spec(tmp_path, path, max_chunks=used + 2)))
+    assert again.status == "done" and len(again.metrics) == 2
+    assert [c["resume"] for c in calls()] == [False, True]
+    assert ledger.load(path)["items"]["b"]["status"] == "cleared"
+
+
+def test_slow_tool_calls_turn_on_cli_debug_logging_for_the_next_chunks(tmp_path, fake_cli, monkeypatch):
+    configure, calls = fake_cli
+    configure(investigator="one_per_call")
+    waits = iter([{"tool_calls": 5, "tool_wait_s": 25.7, "before_hook_s": 25.5}, {}, {}])
+    monkeypatch.setattr(session, "tool_waits", lambda *args: next(waits))
+    path = tmp_path / "l.json"
+    ledger.create(path, {}, [{"id": f"i{n}", "title": "t"} for n in range(3)])
+    assert asyncio.run(session.run(_spec(tmp_path, path))).status == "done"
+    assert [c["debug"] for c in calls()] == [False, True, True]
+
+
+def test_figure_sentence_ignores_records_without_a_figure_number():
+    finals = {"fig::overall": {"id": "fig::overall", "status": "issue", "severity": "minor"},
+              "figure::x_0001.png": {"id": "figure::x_0001.png", "status": "cleared"}}
+    sentence = engine._figure_sentence(finals, {"main_figures": [{}, {}, {}]})
+    assert "overall" not in sentence and "Fig. 1" in sentence and "Fig. 3" in sentence
+    unfinished = {"fig::overall": {"id": "fig::overall", "status": "unresolved"}}
+    assert "未能完成核对" in engine._figure_sentence(unfinished, {"main_figures": [{}]})
+    assert "结果一致" not in engine._figure_sentence(unfinished, {"main_figures": [{}]})
+    numbered = {"fig::2": {"id": "fig::2", "status": "cleared"}, **finals}
+    assert "Fig. 2" in engine._figure_sentence(numbered, {}) and "overall" not in engine._figure_sentence(numbered, {})
