@@ -1,0 +1,19 @@
+[Unit]
+Description=Paper Report Read-only Gateway
+After=network.target
+
+[Service]
+Type=simple
+User=library
+Group=library
+WorkingDirectory=/home/sjtu/paper-integrity-checker
+# The gateway is versioned with the project (deployment/report_gateway.py);
+# work/ is scratch space and must not hold a running service.
+# Starting through the system shell gives this static unit the distro's
+# initrc_t transition; init_t cannot execute user_home_t here.
+ExecStart=/usr/bin/bash -lc 'exec /home/sjtu/paper-integrity-checker/venv/bin/python /home/sjtu/paper-integrity-checker/deployment/report_gateway.py --host 127.0.0.1 --port 8002'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

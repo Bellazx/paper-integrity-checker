@@ -1,17 +1,28 @@
 #!/usr/bin/env python3
-"""Read-only HTTP gateway for migrated and newly generated paper reports."""
+"""Read-only HTTP gateway for migrated and newly generated paper reports.
+
+nginx proxies /chinese_reports/, /english_reports/ and /review_reports/ here
+(deployment/paper-report-gateway.service). A public URL is resolved against the
+migrated copy of the retired host first, then local output. Only PDF reports
+are served: review_v2/ also holds evidence bundles that must stay private.
+"""
 
 from __future__ import annotations
 
 import argparse
 import mimetypes
+import os
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 
-PROJECT_ROOT = Path("/home/sjtu/paper-integrity-checker")
+PROJECT_ROOT = Path(os.environ.get("PAPER_INTEGRITY_ROOT", "/home/sjtu/paper-integrity-checker"))
+# Public URL prefix -> directory that holds the reports under one namespace
+# per table or task: chinese_reports/{namespace}/..., review_v2/{namespace}/...
+DIRECT = {"/chinese_reports/": "chinese_reports", "/english_reports/": "english_reports",
+          "/review_reports/": "review_v2"}
 ROOTS = (
     (PROJECT_ROOT / "data/migrated_99_reports/output").resolve(),
     (PROJECT_ROOT / "data/output").resolve(),
@@ -33,6 +44,21 @@ def _safe_relative(raw: str) -> Path | None:
 
 
 def _relative_candidates(url_path: str) -> list[Path]:
+    """The legacy nginx layout first (what every existing URL resolves to),
+    then the per-namespace layout written since: {table}/{task_id}/ for the
+    developer API and namespaces such as yujing_audit, which the legacy layout
+    maps to a directory that does not exist."""
+    legacy = _legacy_candidates(url_path)
+    for prefix, directory in DIRECT.items():
+        if url_path.startswith(prefix):
+            suffix = _safe_relative(url_path.removeprefix(prefix))
+            direct = Path(directory) / suffix if suffix is not None else None
+            if direct is not None and direct not in legacy:
+                legacy.append(direct)
+    return legacy
+
+
+def _legacy_candidates(url_path: str) -> list[Path]:
     """Translate the public report URL using the legacy Nginx layout."""
     if url_path.startswith("/chinese_reports/"):
         suffix = _safe_relative(url_path.removeprefix("/chinese_reports/"))
@@ -80,6 +106,8 @@ def _relative_candidates(url_path: str) -> list[Path]:
 
 
 def resolve_report(url_path: str) -> Path | None:
+    if not url_path.lower().endswith(".pdf"):
+        return None
     for relative in _relative_candidates(url_path):
         for root in ROOTS:  # Migrated 99 copy takes precedence over local output.
             candidate = (root / relative).resolve()
@@ -87,7 +115,7 @@ def resolve_report(url_path: str) -> Path | None:
                 candidate.relative_to(root)
             except ValueError:
                 continue
-            if candidate.is_file():
+            if candidate.is_file() and candidate.suffix.lower() == ".pdf":
                 return candidate
     return None
 
