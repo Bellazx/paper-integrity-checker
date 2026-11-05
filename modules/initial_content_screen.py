@@ -809,8 +809,11 @@ def screen_manuscript(pdf_path, *, request=None):
                               'error': str(exc)[:300]})
             return [], []
 
-    for chunk_index, chunk in enumerate(chunks):
-        result = discover(chunk)
+    # Chunks are searched independently; results are taken in chunk order so
+    # candidate ids do not depend on which request finishes first.
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        discovered = list(pool.map(discover, chunks))
+    for result in discovered:
         found = result[0]
         dropped_leads.extend(result[1])
         for candidate, calculation in found:
@@ -830,50 +833,63 @@ def screen_manuscript(pdf_path, *, request=None):
     pending = [c for c in candidates if c["id"] not in decisions]
     # All chunks, including appendices, are searched for counterevidence. A
     # positive result in one chunk cannot override an explanation in another.
+    def verify_chunk(chunk, group, ids, depth=0):
+        # A counter-check that cannot be completed on this chunk yields no
+        # decision from it (smaller pieces are tried first); candidates
+        # left without support or rejection go to arbitration.
+        try:
+            return list(_checked(request, VERIFY + "\n候选:\n" + json.dumps(_locators_only(group), ensure_ascii=False)
+                                 + "\n论文材料:\n" + json.dumps(_material(chunk), ensure_ascii=False),
+                                 lambda result, final=False: _validate_checks(result, ids, pages, final),
+                                 repair_request=repair_request))
+        except ContentScreenIncomplete as exc:
+            parts = _halves(chunk)
+            if parts and depth < 2:
+                return [check for part in parts for check in verify_chunk(part, group, ids, depth + 1)]
+            unchecked.append({'stage': 'counter-check', 'pages': sorted({p['page'] for p in chunk}),
+                              'candidates': sorted(ids), 'error': str(exc)[:300]})
+            return []
+    # Read-only checks are independent: every (candidate group, chunk) pair runs
+    # at once within the worker bound, merged in group and page order for
+    # repeatable decisions.
+    jobs = []
     for start in range(0, len(pending), 8):
         group = pending[start:start + 8]
-        ids = {c["id"] for c in group}
-        def verify_chunk(chunk, group=group, ids=ids, depth=0):
-            # A counter-check that cannot be completed on this chunk yields no
-            # decision from it (smaller pieces are tried first); candidates
-            # left without support or rejection go to arbitration.
-            try:
-                return list(_checked(request, VERIFY + "\n候选:\n" + json.dumps(_locators_only(group), ensure_ascii=False)
-                                     + "\n论文材料:\n" + json.dumps(_material(chunk), ensure_ascii=False),
-                                     lambda result, final=False: _validate_checks(result, ids, pages, final),
-                                     repair_request=repair_request))
-            except ContentScreenIncomplete as exc:
-                parts = _halves(chunk)
-                if parts and depth < 2:
-                    return [check for part in parts for check in verify_chunk(part, group, ids, depth + 1)]
-                unchecked.append({'stage': 'counter-check', 'pages': sorted({p['page'] for p in chunk}),
-                                  'candidates': sorted(ids), 'error': str(exc)[:300]})
-                return []
-        # Read-only checks are independent; merge in page order for repeatable
-        # decisions. Bound concurrency instead of spawning one request per page.
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            for checks in pool.map(verify_chunk, chunks):
-                for check in checks:
-                    decisions.setdefault(check["id"], []).append(check)
+        jobs += [(chunk, group, {c["id"] for c in group}) for chunk in chunks]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for checks in pool.map(lambda job: verify_chunk(*job), jobs):
+            for check in checks:
+                decisions.setdefault(check["id"], []).append(check)
+
+    def arbitrate(candidate):
+        checks = decisions[candidate["id"]]
+        cited_pages = {e['page'] for item in [candidate, *checks] for e in item.get('evidence', [])}
+        context_pages = {n + offset for n in cited_pages for offset in (-1, 0, 1)}
+        material = _material([p for p in pages if p['page'] in context_pages])
+        try:
+            return _checked(repair_request, ARBITRATE + '\n候选:\n' + json.dumps(_locators_only(candidate), ensure_ascii=False)
+                            + '\n分块核查及原文证据:\n' + json.dumps(_locators_only(checks), ensure_ascii=False)
+                            + '\n所引证据页的原文材料:\n' + json.dumps(material, ensure_ascii=False),
+                            lambda result, final=False: _validate_checks(result, {candidate['id']}, pages, final))[0]
+        except ContentScreenIncomplete as exc:
+            # Arbitration could not be completed: the candidate stays
+            # unresolved and goes to review as an initial high-risk lead.
+            unchecked.append({'stage': 'arbitration', 'candidates': [candidate['id']], 'error': str(exc)[:300]})
+            return _neutral({'id': candidate['id'], 'reason': ''}, '仲裁未能完成')
+
+    def needs_arbitration(candidate):
+        verdicts = {c["verdict"] for c in decisions.setdefault(candidate["id"], [])}
+        return ('support' in verdicts and 'reject' in verdicts
+                or 'uncertain' in verdicts or not verdicts & {'support', 'reject'})
+    disputed = [c for c in candidates if needs_arbitration(c)]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        arbitrated = dict(zip((c["id"] for c in disputed), pool.map(arbitrate, disputed)))
     issues, seen, unresolved = [], {}, []
     for candidate in candidates:
         checks = decisions.setdefault(candidate["id"], [])
         verdicts = {c["verdict"] for c in checks}
-        if ('support' in verdicts and 'reject' in verdicts
-                or 'uncertain' in verdicts or not verdicts & {'support', 'reject'}):
-            cited_pages = {e['page'] for item in [candidate, *checks] for e in item.get('evidence', [])}
-            context_pages = {n + offset for n in cited_pages for offset in (-1, 0, 1)}
-            material = _material([p for p in pages if p['page'] in context_pages])
-            try:
-                resolved = _checked(repair_request, ARBITRATE + '\n候选:\n' + json.dumps(_locators_only(candidate), ensure_ascii=False)
-                                    + '\n分块核查及原文证据:\n' + json.dumps(_locators_only(checks), ensure_ascii=False)
-                                    + '\n所引证据页的原文材料:\n' + json.dumps(material, ensure_ascii=False),
-                                    lambda result, final=False: _validate_checks(result, {candidate['id']}, pages, final))[0]
-            except ContentScreenIncomplete as exc:
-                # Arbitration could not be completed: the candidate stays
-                # unresolved and goes to review as an initial high-risk lead.
-                unchecked.append({'stage': 'arbitration', 'candidates': [candidate['id']], 'error': str(exc)[:300]})
-                resolved = _neutral({'id': candidate['id'], 'reason': ''}, '仲裁未能完成')
+        if candidate["id"] in arbitrated:
+            resolved = arbitrated[candidate["id"]]
             decisions[candidate['id']].append(dict(resolved, stage='arbitration'))
             verdicts = {resolved['verdict']}
             if resolved['verdict'] == 'support' and isinstance(resolved.get('description'), str) and resolved['description'].strip():

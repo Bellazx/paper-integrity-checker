@@ -23,6 +23,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+# Same limits as paper-api.service, set before numpy/OpenCV load: unlimited,
+# each paper thread starts one OpenCV/OpenBLAS thread per CPU and concurrent
+# papers spend their time contending for locks.
+for _name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+              "NUMEXPR_NUM_THREADS", "OPENCV_FOR_THREADS_NUM"):
+    os.environ.setdefault(_name, "1")
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import INPUT_DIR, OUTPUT_DIR

@@ -745,3 +745,31 @@ def test_long_pdf_is_screened_up_to_the_page_limit_with_a_warning(tmp_path, monk
     assert any("共5页" in w and "前3页" in w for w in warnings)
     monkeypatch.setenv("INITIAL_CONTENT_MAX_PAGES", "0")
     assert len(screen.read_pages(path)[0]) == 5  # 0 disables the limit
+
+
+@pytest.mark.parametrize("parallel_safe, concurrent", [(True, True), (False, False)])
+def test_discovery_chunks_are_searched_concurrently_when_the_request_allows(tmp_path, monkeypatch, parallel_safe, concurrent):
+    import threading
+    import time
+    path = tmp_path / "long.pdf"
+    with fitz.open() as doc:
+        for n in range(1, 5):
+            doc.new_page().insert_textbox(fitz.Rect(40, 40, 540, 750), f"Section {n}. " + "Measured values are reported. " * 12)
+        doc.save(path)
+    monkeypatch.setenv("INITIAL_CONTENT_CHUNK_CHARS", "700")
+    active, peak = [0], [0]
+    lock = threading.Lock()
+
+    def request(prompt):
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        time.sleep(0.1)
+        with lock:
+            active[0] -= 1
+        return json.dumps({"complete": True, "candidates": []})
+    request.parallel_safe = parallel_safe
+
+    issues, _, audit = screen.screen_manuscript(path, request=request)
+    assert not issues and audit["chunks"] >= 3 and audit["status"] == "complete"
+    assert (peak[0] > 1) is concurrent

@@ -69,3 +69,36 @@ def test_content_edges_remove_long_chart_axes_but_keep_local_signal():
 
     assert np.count_nonzero(content[60:120, 120:180]) > 0
     assert np.count_nonzero(content[175:190, :]) < np.count_nonzero(cv2.Canny(chart, 50, 150)[175:190, :])
+
+
+def _textured(seed: int, height: int = 360, width: int = 480) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    image = rng.integers(0, 255, (height // 8, width // 8, 3), dtype=np.uint8)
+    return cv2.resize(image, (width, height), interpolation=cv2.INTER_NEAREST)
+
+
+def test_parallel_sift_and_template_stages_match_a_serial_run_and_repeat(tmp_path, monkeypatch):
+    # A shared panel pasted into two different figures: SIFT candidates and
+    # template verification both fire. FLANN is seeded per pair, so the
+    # findings repeat exactly and do not depend on the worker count.
+    from modules import image_checker
+
+    shared = _textured(1, 160, 200)
+    images = []
+    for k in range(6):
+        base = _textured(10 + k)
+        if k in (1, 4):
+            base[40:200, 60:260] = shared
+        images.append(ExtractedImage(page_num=k + 1, img_index=0, filepath=str(tmp_path / f"p{k}.png"),
+                                     array=base, width=base.shape[1], height=base.shape[0],
+                                     source_id=f"source:{k}"))
+
+    def run(workers, name):
+        monkeypatch.setattr(image_checker, "IMAGE_WORKERS", workers)
+        out = image_checker.check_image_duplicates(images, str(tmp_path / name))
+        return [(r["page_a"], r["page_b"], r["match_type"], r["severity"], r["region_a"], r["region_b"]) for r in out]
+
+    serial = run(1, "serial")
+    assert serial and any(item[:2] == (2, 5) for item in serial)
+    assert run(4, "parallel_a") == serial
+    assert run(4, "parallel_b") == serial

@@ -13,6 +13,12 @@ Heuristics to keep a candidate table:
   - first non-empty row must look like a header (mostly short strings, no figures)
   - at least 30% of cells must be numeric — otherwise it's prose
   - overall cell density > 50%
+
+Only pages that carry a table caption ("Table 2", "Supplementary Table S5",
+"表 3") and the page after each are searched. Spectra, micrographs and prose
+pages hold no tables but made pdfplumber run into its per-page timeout (30 s,
+twice per strategy), which dominated screening time for long supplements, and
+the "tables" it cut from prose and coordinate lists split numbers apart.
 """
 from __future__ import annotations
 
@@ -278,6 +284,26 @@ def _extract_with_strategy(
     return accepted
 
 
+TABLE_CAPTION = re.compile(r"\b(?:Supplementary\s+|Extended\s+Data\s+)?Table\s*S?\d+|(?:补充)?表\s*S?\d+", re.I)
+
+
+def _caption_page_indices(pdf_path: str) -> list[int] | None:
+    """Pages with a table caption and the page after each (tables run over a
+    page break without repeating the caption). None when the PDF has no text
+    layer to search, so the caller falls back to sampling every page."""
+    import fitz
+
+    with fitz.open(pdf_path) as document:
+        texts = [page.get_text() for page in document]
+    if not any(text.strip() for text in texts):
+        return None
+    pages = set()
+    for index, text in enumerate(texts):
+        if TABLE_CAPTION.search(text):
+            pages.update(i for i in (index, index + 1) if i < len(texts))
+    return sorted(pages)
+
+
 def _select_page_indices(page_count: int, max_pages: int) -> list[int]:
     """Select a bounded, evenly distributed page sample for very large PDFs."""
     if page_count <= 0:
@@ -315,8 +341,18 @@ def extract_tables_from_pdf(pdf_path: str, output_dir: str, *,
     try:
         with pdfplumber.open(str(pdf_path)) as pdf:
             page_count = len(pdf.pages)
-        page_indices = _select_page_indices(page_count, max_pages)
-        if len(page_indices) < page_count:
+        try:
+            captioned = _caption_page_indices(str(pdf_path))
+        except Exception as exc:  # an unreadable text layer must not lose the tables
+            log.warning("Table caption scan failed for %s (%s); searching every page", pdf_path, exc)
+            captioned = None
+        if captioned is not None:
+            log.info("Table extraction: %d of %d pages carry a table caption or follow one: %s",
+                     len(captioned), page_count, pdf_path)
+            page_indices = [captioned[i] for i in _select_page_indices(len(captioned), max_pages)]
+        else:
+            page_indices = _select_page_indices(page_count, max_pages)
+        if captioned is None and len(page_indices) < page_count:
             log.warning(
                 "PDF has %d pages; sampling %d evenly distributed pages for table extraction: %s",
                 page_count,

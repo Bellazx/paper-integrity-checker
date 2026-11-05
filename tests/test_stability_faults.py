@@ -371,3 +371,27 @@ def test_every_archive_gate_rejects_traversal_members(tmp_path, filename):
     assert isinstance(errors, list) and any('不安全路径' in e for e in errors)
     with pytest.raises(ValueError, match='unsafe path'):
         validate_archive(archive)
+
+
+def test_table_extraction_searches_captioned_pages_and_the_page_after(tmp_path):
+    import fitz
+    from utils.pdf_table_extractor import _caption_page_indices
+    path = tmp_path / "si.pdf"
+    with fitz.open() as doc:
+        doc.new_page().insert_text((50, 80), "Figure S1. NMR spectrum of compound 3.")
+        doc.new_page().insert_text((50, 80), "Results are summarised in Supplementary Table S2 | Summary of yields")
+        doc.new_page().insert_text((50, 80), "1.0 M KOH   -0.503   1.95")
+        doc.new_page().insert_text((50, 80), "Figure S4. Micrograph.")
+        doc.new_page().insert_text((50, 80), "表 3 电池性能", fontname="china-s")
+        doc.save(path)
+    assert _caption_page_indices(str(path)) == [1, 2, 4]
+
+
+def test_table_extraction_without_a_text_layer_searches_every_page(tmp_path):
+    import fitz
+    from utils.pdf_table_extractor import _caption_page_indices
+    path = tmp_path / "scan.pdf"
+    with fitz.open() as doc:
+        doc.new_page().draw_rect(fitz.Rect(50, 50, 300, 300))
+        doc.save(path)
+    assert _caption_page_indices(str(path)) is None

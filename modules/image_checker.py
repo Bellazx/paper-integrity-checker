@@ -271,10 +271,125 @@ def _stage1_phash(images: list[ExtractedImage]) -> set[tuple[int, int]]:
     return equivalent_pairs
 
 
+# Pairwise SIFT and template matching run in threads: OpenCV releases the GIL
+# in feature detection, FLANN matching, RANSAC and matchTemplate. Results are
+# merged in pair order, so the output is the same as a serial run.
+IMAGE_WORKERS = max(1, int(os.getenv("PAPER_IMAGE_WORKERS", "8")))
+FLANN_SEED = 20261105
+
+
+def _parallel_map(fn, items):
+    items = list(items)
+    if IMAGE_WORKERS == 1 or len(items) < 2:
+        return [fn(item) for item in items]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(IMAGE_WORKERS, len(items))) as pool:
+        return list(pool.map(fn, items))
+
+
+def _sift_pair(i, j, descriptors, keypoints_list, resized, images, matcher):
+    """Geometry of one candidate pair, or None when it is not a partial-region
+    candidate. Pure computation: no files, no logging of matches."""
+    if descriptors[i] is None or descriptors[j] is None:
+        return None
+    if len(descriptors[i]) < SIFT_MIN_MATCHES or len(descriptors[j]) < SIFT_MIN_MATCHES:
+        return None
+    # FLANN builds randomized kd-trees from OpenCV's per-thread RNG; a fixed
+    # seed per pair makes the matches, and so the findings, repeatable.
+    cv2.setRNGSeed(FLANN_SEED)
+    try:
+        raw_matches = matcher().knnMatch(descriptors[i], descriptors[j], k=2)
+    except cv2.error:
+        return None
+
+    good = []
+    for pair in raw_matches:
+        if len(pair) == 2:
+            m, n = pair
+            if m.distance < SIFT_RATIO_THRESHOLD * n.distance:
+                good.append(m)
+
+    if len(good) < SIFT_MIN_MATCHES:
+        return None
+
+    pts_a = np.float32([keypoints_list[i][m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+    pts_b = np.float32([keypoints_list[j][m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+
+    H, mask = cv2.findHomography(pts_a, pts_b, cv2.RANSAC, RANSAC_THRESHOLD)
+    if H is None or mask is None:
+        return None
+
+    inliers = mask.ravel().sum()
+    if inliers < SIFT_MIN_MATCHES:
+        return None
+    inlier_ratio = inliers / len(good)
+    if inlier_ratio < SIFT_MIN_INLIER_RATIO:
+        return None
+
+    inlier_pts_a = pts_a[mask.ravel() == 1].reshape(-1, 2)
+    inlier_pts_b = pts_b[mask.ravel() == 1].reshape(-1, 2)
+
+    hull_area_a = cv2.contourArea(cv2.convexHull(inlier_pts_a.astype(np.float32)))
+    hull_area_b = cv2.contourArea(cv2.convexHull(inlier_pts_b.astype(np.float32)))
+    analysis_area_a = resized[i].shape[0] * resized[i].shape[1]
+    analysis_area_b = resized[j].shape[0] * resized[j].shape[1]
+    has_2d_support = (
+        hull_area_a >= SIFT_MIN_HULL_AREA * analysis_area_a
+        and hull_area_b >= SIFT_MIN_HULL_AREA * analysis_area_b
+    )
+
+    x1a, y1a = inlier_pts_a.min(axis=0).astype(int)
+    x2a, y2a = inlier_pts_a.max(axis=0).astype(int)
+    x1b, y1b = inlier_pts_b.min(axis=0).astype(int)
+    x2b, y2b = inlier_pts_b.max(axis=0).astype(int)
+
+    region_a = (int(x1a), int(y1a), int(x2a - x1a), int(y2a - y1a))
+    region_b = (int(x1b), int(y1b), int(x2b - x1b), int(y2b - y1b))
+
+    if min(region_a[2], region_a[3], region_b[2], region_b[3]) <= 0:
+        return None
+    area_a = region_a[2] * region_a[3]
+    area_b = region_b[2] * region_b[3]
+    img_area_a = resized[i].shape[0] * resized[i].shape[1]
+    img_area_b = resized[j].shape[0] * resized[j].shape[1]
+
+    if not has_2d_support or (
+        area_a < SIFT_MIN_REGION_AREA * img_area_a
+        or area_b < SIFT_MIN_REGION_AREA * img_area_b
+    ):
+        return None
+
+    similarity = inliers / len(good)
+
+    h_a, w_a = images[i].array.shape[:2]
+    h_s, w_s = resized[i].shape[:2]
+    sx_a, sy_a = w_a / w_s, h_a / h_s
+    h_b, w_b = images[j].array.shape[:2]
+    h_s2, w_s2 = resized[j].shape[:2]
+    sx_b, sy_b = w_b / w_s2, h_b / h_s2
+
+    orig_region_a = (int(region_a[0] * sx_a), int(region_a[1] * sy_a),
+                     int(region_a[2] * sx_a), int(region_a[3] * sy_a))
+    orig_region_b = (int(region_b[0] * sx_b), int(region_b[1] * sy_b),
+                     int(region_b[2] * sx_b), int(region_b[3] * sy_b))
+    return similarity, inliers, len(good), orig_region_a, orig_region_b
+
+
 def _stage2_sift(images: list[ExtractedImage], skip_pairs: set[tuple[int, int]], output_dir: str) -> tuple[list[DuplicateMatch], list[tuple[int, int, tuple, tuple]]]:
     """Stage 2: SIFT feature matching for partial region duplicates."""
-    sift = cv2.SIFT_create(nfeatures=max(0, MAX_SIFT_FEATURES))
-    flann = cv2.FlannBasedMatcher({"algorithm": 1, "trees": 5}, {"checks": 50})
+    import threading
+    local = threading.local()
+
+    def sift():
+        if not hasattr(local, "sift"):
+            local.sift = cv2.SIFT_create(nfeatures=max(0, MAX_SIFT_FEATURES))
+        return local.sift
+
+    def matcher():
+        # A FLANN matcher keeps per-call state; one per thread.
+        if not hasattr(local, "flann"):
+            local.flann = cv2.FlannBasedMatcher({"algorithm": 1, "trees": 5}, {"checks": 50})
+        return local.flann
 
     analysis_dimension = 1000 if len(images) > 200 else MAX_DIMENSION
     hashes = _compute_phashes(images)
@@ -288,106 +403,29 @@ def _stage2_sift(images: list[ExtractedImage], skip_pairs: set[tuple[int, int]],
             len(images), len(candidate_pairs), all_pairs,
         )
 
-    descriptors = []
-    keypoints_list = []
-    resized = []
-
-    for img in images:
+    def features(img):
         small = _resize_for_analysis(img.array, analysis_dimension)
-        gray = _to_gray(small)
-        resized.append(small)
-        kp, des = sift.detectAndCompute(gray, None)
-        keypoints_list.append(kp)
-        descriptors.append(des)
+        kp, des = sift().detectAndCompute(_to_gray(small), None)
+        return small, kp, des
+
+    computed = _parallel_map(features, images)
+    resized = [c[0] for c in computed]
+    keypoints_list = [c[1] for c in computed]
+    descriptors = [c[2] for c in computed]
+
+    pairs = [(i, j) for i, j in candidate_pairs
+             if not _same_image_source(images[i], images[j]) and (i, j) not in skip_pairs]
+    geometry = _parallel_map(
+        lambda pair: _sift_pair(pair[0], pair[1], descriptors, keypoints_list, resized, images, matcher),
+        pairs,
+    )
 
     matches = []
     region_candidates = []
-    for i, j in candidate_pairs:
-        if _same_image_source(images[i], images[j]):
+    for (i, j), found in zip(pairs, geometry):
+        if found is None:
             continue
-        if (i, j) in skip_pairs:
-            continue
-        if descriptors[i] is None or descriptors[j] is None:
-            continue
-        if len(descriptors[i]) < SIFT_MIN_MATCHES or len(descriptors[j]) < SIFT_MIN_MATCHES:
-            continue
-
-        try:
-            raw_matches = flann.knnMatch(descriptors[i], descriptors[j], k=2)
-        except cv2.error:
-            continue
-
-        good = []
-        for pair in raw_matches:
-            if len(pair) == 2:
-                m, n = pair
-                if m.distance < SIFT_RATIO_THRESHOLD * n.distance:
-                    good.append(m)
-
-        if len(good) < SIFT_MIN_MATCHES:
-            continue
-
-        pts_a = np.float32([keypoints_list[i][m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-        pts_b = np.float32([keypoints_list[j][m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-
-        H, mask = cv2.findHomography(pts_a, pts_b, cv2.RANSAC, RANSAC_THRESHOLD)
-        if H is None or mask is None:
-            continue
-
-        inliers = mask.ravel().sum()
-        if inliers < SIFT_MIN_MATCHES:
-            continue
-
-        inlier_ratio = inliers / len(good)
-        if inlier_ratio < SIFT_MIN_INLIER_RATIO:
-            continue
-
-        inlier_pts_a = pts_a[mask.ravel() == 1].reshape(-1, 2)
-        inlier_pts_b = pts_b[mask.ravel() == 1].reshape(-1, 2)
-
-        hull_area_a = cv2.contourArea(cv2.convexHull(inlier_pts_a.astype(np.float32)))
-        hull_area_b = cv2.contourArea(cv2.convexHull(inlier_pts_b.astype(np.float32)))
-        analysis_area_a = resized[i].shape[0] * resized[i].shape[1]
-        analysis_area_b = resized[j].shape[0] * resized[j].shape[1]
-        has_2d_support = (
-            hull_area_a >= SIFT_MIN_HULL_AREA * analysis_area_a
-            and hull_area_b >= SIFT_MIN_HULL_AREA * analysis_area_b
-        )
-
-        x1a, y1a = inlier_pts_a.min(axis=0).astype(int)
-        x2a, y2a = inlier_pts_a.max(axis=0).astype(int)
-        x1b, y1b = inlier_pts_b.min(axis=0).astype(int)
-        x2b, y2b = inlier_pts_b.max(axis=0).astype(int)
-
-        region_a = (int(x1a), int(y1a), int(x2a - x1a), int(y2a - y1a))
-        region_b = (int(x1b), int(y1b), int(x2b - x1b), int(y2b - y1b))
-
-        if min(region_a[2], region_a[3], region_b[2], region_b[3]) <= 0:
-            continue
-        area_a = region_a[2] * region_a[3]
-        area_b = region_b[2] * region_b[3]
-        img_area_a = resized[i].shape[0] * resized[i].shape[1]
-        img_area_b = resized[j].shape[0] * resized[j].shape[1]
-
-        if not has_2d_support or (
-            area_a < SIFT_MIN_REGION_AREA * img_area_a
-            or area_b < SIFT_MIN_REGION_AREA * img_area_b
-        ):
-            continue
-
-        similarity = inliers / len(good)
-
-        h_a, w_a = images[i].array.shape[:2]
-        h_s, w_s = resized[i].shape[:2]
-        sx_a, sy_a = w_a / w_s, h_a / h_s
-        h_b, w_b = images[j].array.shape[:2]
-        h_s2, w_s2 = resized[j].shape[:2]
-        sx_b, sy_b = w_b / w_s2, h_b / h_s2
-
-        orig_region_a = (int(region_a[0] * sx_a), int(region_a[1] * sy_a),
-                         int(region_a[2] * sx_a), int(region_a[3] * sy_a))
-        orig_region_b = (int(region_b[0] * sx_b), int(region_b[1] * sy_b),
-                         int(region_b[2] * sx_b), int(region_b[3] * sy_b))
+        similarity, inliers, good_count, orig_region_a, orig_region_b = found
 
         if _regions_cover_both_images(
             orig_region_a, orig_region_b, images[i].array, images[j].array
@@ -419,7 +457,7 @@ def _stage2_sift(images: list[ExtractedImage], skip_pairs: set[tuple[int, int]],
             region_b=orig_region_b,
             annotation_path=ann_path,
             severity="medium",
-            details=f"SIFT candidate: inliers={inliers}/{len(good)}; awaiting template confirmation",
+            details=f"SIFT candidate: inliers={inliers}/{good_count}; awaiting template confirmation",
             source_a=images[i].source_id,
             source_b=images[j].source_id,
             risk_evidence=False,
@@ -429,7 +467,7 @@ def _stage2_sift(images: list[ExtractedImage], skip_pairs: set[tuple[int, int]],
         log.info("SIFT match: page %d img %d <-> page %d img %d (inliers=%d/%d)",
                  images[i].page_num, images[i].img_index,
                  images[j].page_num, images[j].img_index,
-                 inliers, len(good))
+                 inliers, good_count)
 
     return matches, region_candidates
 
@@ -449,10 +487,12 @@ def _stage3_template_verify(images: list[ExtractedImage], candidates: list[tuple
             reverse=True,
         )[:MAX_TEMPLATE_CANDIDATES]
 
-    for idx, (match_index, i, j, region_a, region_b) in enumerate(candidates):
+    def best_match(candidate):
+        """(score, scale, location) of the template's best match, or None."""
+        _, i, j, region_a, _ = candidate
         x, y, w, h = region_a
         if w < 20 or h < 20:
-            continue
+            return None
 
         src = images[i].array
         x = max(0, x)
@@ -462,7 +502,7 @@ def _stage3_template_verify(images: list[ExtractedImage], candidates: list[tuple
         template = src[y:y+h, x:x+w]
 
         if template.size == 0:
-            continue
+            return None
 
         target_gray = _to_gray(images[j].array)
         template_gray = _to_gray(template)
@@ -472,7 +512,7 @@ def _stage3_template_verify(images: list[ExtractedImage], candidates: list[tuple
             cv2.countNonZero(target_content) < TEMPLATE_MIN_EDGE_PIXELS
             or cv2.countNonZero(template_content) < TEMPLATE_MIN_EDGE_PIXELS
         ):
-            continue
+            return None
 
         best_val = -1
         best_scale = 1.0
@@ -494,10 +534,17 @@ def _stage3_template_verify(images: list[ExtractedImage], candidates: list[tuple
                 best_val = max_val
                 best_scale = scale
                 best_loc = max_loc
+        return best_val, best_scale, best_loc, template_content.shape
+
+    for idx, (candidate, found) in enumerate(zip(candidates, _parallel_map(best_match, candidates))):
+        if found is None:
+            continue
+        match_index, i, j, region_a, region_b = candidate
+        best_val, best_scale, best_loc, template_shape = found
 
         if best_val >= TEMPLATE_EDGE_MATCH_THRESHOLD:
-            tw = int(template_content.shape[1] * best_scale)
-            th = int(template_content.shape[0] * best_scale)
+            tw = int(template_shape[1] * best_scale)
+            th = int(template_shape[0] * best_scale)
             verified_region_b = (best_loc[0], best_loc[1], tw, th)
 
             ann_path = f"{output_dir}/annotations/template_verified_{idx:03d}.png"

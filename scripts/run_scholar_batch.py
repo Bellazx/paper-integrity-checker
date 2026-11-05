@@ -15,6 +15,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
+# Same limits as paper-api.service. Without them every paper thread lets
+# OpenCV/OpenBLAS start one thread per CPU (192 here), and four papers in
+# parallel spent most of their time contending for locks. Set before numpy
+# and OpenCV are imported.
+for _name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+              "NUMEXPR_NUM_THREADS", "OPENCV_FOR_THREADS_NUM"):
+    os.environ.setdefault(_name, "1")
+
 import openpyxl
 import pymssql
 
