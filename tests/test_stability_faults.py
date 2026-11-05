@@ -208,12 +208,15 @@ def test_english_urls_require_matching_current_owner_row(monkeypatch, row):
     connection.close.assert_called_once()
 
 
+@pytest.mark.parametrize('has_scholar', [True, False])
 @pytest.mark.parametrize('rows', [[], [('低风险', 'old-url', 2)], [('高风险', 'new-url', 2)]])
-def test_batch_db_writer_verifies_before_commit_and_closes(monkeypatch, rows):
+def test_batch_db_writer_verifies_before_commit_and_closes(monkeypatch, rows, has_scholar):
     from types import SimpleNamespace
     from unittest.mock import Mock
     from scripts.generate_review_report import _patch_database_writer
     cursor = Mock(); cursor.fetchall.return_value = rows
+    # Test-set tables have no scholar column; the writer probes the schema first.
+    cursor.fetchone.return_value = (1,) if has_scholar else None
     connection = Mock(); connection.cursor.return_value = cursor
     module = SimpleNamespace(DB_CONFIG={}, pymssql=SimpleNamespace(connect=lambda **kw: connection))
     _patch_database_writer(module)
@@ -227,7 +230,10 @@ def test_batch_db_writer_verifies_before_commit_and_closes(monkeypatch, rows):
             module._update_db(updates, scholar='scholar')
         connection.commit.assert_not_called()
         connection.rollback.assert_called_once()
-    assert all('AND scholar=%(scholar)s' in c.args[0] for c in cursor.execute.call_args_list)
+    probe, *statements = [c.args[0] for c in cursor.execute.call_args_list]
+    assert 'INFORMATION_SCHEMA.COLUMNS' in probe
+    assert statements
+    assert all(('AND scholar=%(scholar)s' in sql) == has_scholar for sql in statements)
     connection.close.assert_called_once()
 
 
@@ -310,3 +316,58 @@ def test_same_doi_batch_folders_publish_independent_bilingual_reports(monkeypatc
         assert chinese[fold]['chushen_report_url'] == r['chushen_report_url']
         assert chinese[fold]['review_report_url'] == r['review_report_url']
         assert bilingual[fold] == (r['english_chushen_report_url'], r['english_review_report_url'])
+
+
+CAPTION_STYLE_MEMBERS = [
+    '10.1038_s41467-026-77281-x/figure/Fig. 1_ Experimental realization of hydrodynamic reconfiguration..png',
+    '10.1021_jacs.5c04397/figure/10.1021-jacs.5c04397_Figure_1..pptx',
+    'paper/notes...txt',
+]
+TRAVERSAL_MEMBERS = ['../escape.pdf', 'C:/escape.pdf', '..\\escape.pdf', '/escape.pdf', 'a/../b.pdf']
+
+
+def _archive_with(tmp_path, member):
+    archive = tmp_path / 'upload.zip'
+    with zipfile.ZipFile(archive, 'w') as z:
+        if '/' in member and not member.startswith(('/', '..')):
+            z.writestr(member.split('/')[0] + '/main.pdf', b'%PDF-1.4')
+        z.writestr(member, b'%PDF-1.4' if member.endswith('.pdf') else b'x')
+    return archive
+
+
+@pytest.mark.parametrize('member', CAPTION_STYLE_MEMBERS)
+def test_upload_validation_accepts_caption_style_double_dot_filenames(tmp_path, member):
+    # 200 of 226 Nature packages carry "<caption>..png" figure names; the old
+    # substring test for ".." rejected them as traversal attempts.
+    from api.routes.upload import _validate_archive_contents
+    info = _validate_archive_contents(_archive_with(tmp_path, member), '.zip')
+    assert not isinstance(info, list), info
+    assert info.paper_count == 1
+
+
+@pytest.mark.parametrize('member', CAPTION_STYLE_MEMBERS)
+def test_every_archive_gate_accepts_caption_style_double_dot_filenames(tmp_path, member):
+    # /api/upload, the /api/run debug stream and extraction share one rule.
+    from api.routes.run import _validate_contents
+    from api.services.zip_handler import validate_archive
+    archive = _archive_with(tmp_path, member)
+    assert not isinstance(_validate_contents(archive, '.zip'), list)
+    validate_archive(archive)
+
+
+@pytest.mark.parametrize('filename', TRAVERSAL_MEMBERS)
+def test_upload_validation_still_rejects_traversal_members(tmp_path, filename):
+    from api.routes.upload import _validate_archive_contents
+    errors = _validate_archive_contents(_archive_with(tmp_path, filename), '.zip')
+    assert isinstance(errors, list) and any('不安全路径' in e for e in errors)
+
+
+@pytest.mark.parametrize('filename', TRAVERSAL_MEMBERS)
+def test_every_archive_gate_rejects_traversal_members(tmp_path, filename):
+    from api.routes.run import _validate_contents
+    from api.services.zip_handler import validate_archive
+    archive = _archive_with(tmp_path, filename)
+    errors = _validate_contents(archive, '.zip')
+    assert isinstance(errors, list) and any('不安全路径' in e for e in errors)
+    with pytest.raises(ValueError, match='unsafe path'):
+        validate_archive(archive)

@@ -21,7 +21,7 @@ from api.config import (
 )
 from api.models import FileInfo, UploadResponse
 from api.services.runtime_tools import require_rar_tool
-from api.services.zip_handler import validate_archive
+from api.services.zip_handler import is_unsafe_archive_path, validate_archive
 from api.services.submission_policy import blocking_write
 
 log = logging.getLogger(__name__)
@@ -150,7 +150,7 @@ def _validate_archive_contents(archive_path: Path, ext: str) -> FileInfo | list[
     errors: list[str] = []
 
     # Path safety
-    unsafe_paths = [n for n in names if ".." in n or n.startswith("/")]
+    unsafe_paths = [n for n in names if is_unsafe_archive_path(n)]
     for p in unsafe_paths:
         errors.append(f"压缩包内含不安全路径: {p}")
 

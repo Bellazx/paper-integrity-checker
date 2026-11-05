@@ -22,7 +22,7 @@ from api.config import (
 from api.services.detect import run_detection_single
 from api.services.review import run_review_single
 from api.services.report import generate_reports
-from api.services.zip_handler import apply_doi_override, extract_single, extract_batch
+from api.services.zip_handler import apply_doi_override, extract_single, extract_batch, is_unsafe_archive_path
 from modules.doi_utils import choose_authoritative_doi, normalize_doi
 
 log = logging.getLogger(__name__)
@@ -384,7 +384,7 @@ def _validate_contents(archive_path: Path, ext: str) -> dict | list[str]:
 
     errors = []
 
-    unsafe = [n for n in names if ".." in n or n.startswith("/")]
+    unsafe = [n for n in names if is_unsafe_archive_path(n)]
     for p in unsafe:
         errors.append(f"不安全路径: {p}")
 

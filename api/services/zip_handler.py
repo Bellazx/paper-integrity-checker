@@ -28,6 +28,15 @@ def _open_archive(archive_path: Path):
     return zipfile.ZipFile(archive_path)
 
 
+def is_unsafe_archive_path(name: str) -> bool:
+    """A member that escapes the extraction root: a ``..`` component, an
+    absolute path or a drive.  Judged by component, not substring: publisher
+    figure files are named from captions ending in a period ("Fig. 1_ ... ..png")."""
+    normalized = name.replace('\\', '/')
+    return ('..' in PurePosixPath(normalized).parts or normalized.startswith('/')
+            or bool(PureWindowsPath(normalized).drive))
+
+
 def validate_archive(archive_path: Path) -> None:
     if archive_path.stat().st_size > MAX_UPLOAD_SIZE_BYTES:
         raise ValueError(f"Archive exceeds maximum size ({archive_path.stat().st_size / 1024 / 1024:.0f}MB)")
@@ -49,9 +58,7 @@ def validate_archive(archive_path: Path) -> None:
             raise ValueError('Insufficient free space for extraction and input copy')
         for item in entries:
             name = item.filename
-            normalized = name.replace('\\', '/')
-            if ('..' in PurePosixPath(normalized).parts or normalized.startswith('/')
-                    or PureWindowsPath(normalized).drive):
+            if is_unsafe_archive_path(name):
                 raise ValueError(f"Archive contains unsafe path: {name}")
             if isinstance(item, zipfile.ZipInfo):
                 mode = stat.S_IFMT(item.external_attr >> 16)
