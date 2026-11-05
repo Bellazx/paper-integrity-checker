@@ -598,11 +598,11 @@ class Review:
         return flagged
 
     async def capture(self, finals: dict) -> dict:
-        """Every risk issue in the report carries a local screenshot of the
-        cited values; issues that lack one get a short capture session."""
-        need = [r for r in finals.values() if _is_issue(r, "substantive")
-                and not any(ledger.is_excel(ev) or (ledger.is_crop(ev.get("path", "")) and Path(ev["path"]).is_file())
-                            for ev in r.get("evidence") or [] if isinstance(ev, dict))]
+        """Every risk issue in the report carries local screenshots of the
+        cited values, one for each carrier it cites: the paper's page and the
+        source-data cells when the issue sets them against each other. Issues
+        missing a carrier get a short capture session, then a code fallback."""
+        need = [r for r in finals.values() if _is_issue(r, "substantive") and _missing_carriers(r, self.input_dir)]
         if not need:
             return finals
         # One short session per issue, a few at a time: a single session for
@@ -617,7 +617,8 @@ class Review:
                                       "dimension": record.get("dimension"), "first": _compact(record)}])
             if created.get("added"):
                 session.reset(name, self.run_dir)
-            spec = self._spec(name, prompts.evidence(self.dossier, [record]), path,
+            item = {**record, "missing": sorted(_missing_carriers(record, self.input_dir))}
+            spec = self._spec(name, prompts.evidence(self.dossier, [item]), path,
                               config.MAX_CHUNKS_EVIDENCE, "evidence", "evidence")
             async with gate:
                 await session.run(spec)
@@ -629,22 +630,25 @@ class Review:
             for item_id, record in items.items():
                 crops = [ev for ev in record.get("evidence") or [] if ledger.is_evidence(ev)]
                 if record.get("status") == "issue" and crops and item_id in out:
-                    out[item_id] = {**out[item_id], "evidence": crops}
+                    out[item_id] = {**out[item_id], "evidence": _merged_evidence(out[item_id], crops)}
         missing = []
         for r in need:
-            if any(ledger.is_evidence(ev) for ev in out[r["id"]].get("evidence") or []):
+            gaps = _missing_carriers(out[r["id"]], self.input_dir)
+            if not gaps:
                 continue
-            # Fallback made in code: the cited figure or table with its caption,
-            # or the cited cells of the source-data workbook.
+            # Fallback made in code for each carrier still without a screenshot:
+            # the cited figure or table with its caption, the cited workbook cells.
+            shots = []
             try:
-                shots = (autocrop.crop_for(out[r["id"]], self.dossier, self.run_dir)
-                         or autocrop.cells_for(out[r["id"]], self.input_dir))
-            except Exception as exc:  # a broken PDF must not stop the report
+                if "pdf" in gaps:
+                    shots += autocrop.crop_for(out[r["id"]], self.dossier, self.run_dir)
+                if "workbook" in gaps:
+                    shots += autocrop.cells_for(out[r["id"]], self.input_dir)
+            except Exception as exc:  # a broken PDF or workbook must not stop the report
                 log.warning("DOI=%s automatic screenshot failed for %s: %s", self.doi, r["id"], exc)
-                shots = []
             if shots:
-                out[r["id"]] = {**out[r["id"]], "evidence": shots}
-            else:
+                out[r["id"]] = {**out[r["id"]], "evidence": _merged_evidence(out[r["id"]], shots)}
+            if not any(ledger.is_evidence(ev) for ev in out[r["id"]].get("evidence") or []):
                 missing.append(r["id"])
         log.info("DOI=%s evidence capture done; still without screenshot: %s", self.doi, missing)
         return out
@@ -798,6 +802,48 @@ def _capped(entries: list[dict], outcome: str) -> list[dict]:
     if len(entries) <= limit:
         return entries
     return entries[:limit] + [{"条目": f"另有 {len(entries) - limit} 项，{outcome}"}]
+
+
+# A location that cites the paper itself, and text that cites the submitted
+# workbook. "Fig.1 sheet" names a worksheet, not a printed figure.
+PAPER_CITED = re.compile(r"第\s*\d+\s*页|\bp(?:age)?\.?\s*\d+\b|正文|摘要|补充材料|图注|Supplementary|Extended\s+Data", re.I)
+WORKBOOK_CITED = re.compile(r"源数据|source[\s_-]*data|\.xls[xm]\b|工作表|\bsheet\b", re.I)
+# In the finding only a pointer into the workbook counts; "源数据未提供" does not.
+WORKBOOK_POINTED = re.compile(r"\.xls[xm]\b|工作表|\bsheet\b|源数据[^。；;]{0,40}第\s*\d+\s*行", re.I)
+
+
+def _missing_carriers(record: dict, input_dir: str) -> set[str]:
+    """The carriers an issue cites that none of its screenshots shows:
+    "pdf" for the paper's pages, "workbook" for the submitted source data."""
+    location = str(record.get("location") or "")
+    cited = set()
+    if PAPER_CITED.search(location):
+        cited.add("pdf")
+    if ((WORKBOOK_CITED.search(location) or WORKBOOK_POINTED.search(str(record.get("finding") or "")))
+            and input_dir and any(Path(input_dir).rglob("*.xls[xm]"))):
+        cited.add("workbook")
+    evidence = [ev for ev in record.get("evidence") or [] if isinstance(ev, dict)]
+    shown = set()
+    if any(ledger.is_crop(ev.get("path", "")) and Path(ev["path"]).is_file() for ev in evidence):
+        shown.add("pdf")
+    if any(ledger.is_excel(ev) for ev in evidence):
+        shown.add("workbook")
+    if not cited and not shown:
+        cited.add("pdf")  # nothing located: still one screenshot of the paper
+    return cited - shown
+
+
+def _merged_evidence(record: dict, new: list[dict]) -> list[dict]:
+    """The issue's screenshots followed by the new ones, without repeats."""
+    out, seen = [], set()
+    for ev in [*(record.get("evidence") or []), *new]:
+        if not ledger.is_evidence(ev):
+            continue
+        key = (ev.get("path") or "", ev.get("file") or "", ev.get("sheet") or "", ev.get("range") or "")
+        if key not in seen:
+            seen.add(key)
+            out.append(ev)
+    return out
 
 
 def _section_heads(result: dict, verdicts: dict) -> dict:
@@ -1255,8 +1301,9 @@ def _bind_evidence(result: dict, evidence: dict) -> list[dict]:
             log.warning("writer numbering left %d %s screenshots unbound; dropped",
                         len(evidence.get(dim, [])) - len(kept), dim)
         images.extend(ev for ev in kept if not ledger.is_excel(ev))
-        # Workbook cell ranges are rendered from the submitted file at render time.
-        cells.extend(ev for ev in kept if ledger.is_excel(ev) and dim == "data")
+        # Workbook cell ranges are rendered from the submitted file at render
+        # time, in whichever section holds the issue they support.
+        cells.extend(ev for ev in kept if ledger.is_excel(ev))
     result["excel_evidence_regions"] = cells
     return images
 

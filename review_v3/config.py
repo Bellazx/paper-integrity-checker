@@ -76,6 +76,9 @@ PHASE_FLOOR_SECONDS = {"arbitrate": _int("REVIEW_V3_ARBITRATE_FLOOR_SECONDS", 6 
 REGRADE = os.environ.get("REVIEW_V3_REGRADE", "0") == "1"
 SOFT_GRACE_SECONDS = _int("REVIEW_V3_SOFT_GRACE_SECONDS", 180)
 WRAPUP_TURNS = _int("REVIEW_V3_WRAPUP_TURNS", 8)
+# A tool call that waits longer than this (median per chunk) is logged with
+# where the wait happened: before the PreToolUse hook ran or after it.
+TOOL_WAIT_WARN_SECONDS = _int("REVIEW_V3_TOOL_WAIT_WARN_SECONDS", 5)
 WRAPUP_SECONDS = _int("REVIEW_V3_WRAPUP_SECONDS", 300)
 
 # Sharding.

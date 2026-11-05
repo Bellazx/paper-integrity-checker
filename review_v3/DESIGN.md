@@ -29,6 +29,8 @@ API 与批量复核共用的同一个复核引擎。入口：`review_v3.engine.r
 7. **分歧仲裁**：只对两方结论不一致的条目开定向会话。
 8. **定稿**：风险结论由台账确定性给出（任一维度存在已确认的实质问题即“有风险”）；
    写作会话不带工具，只把已核实事实写成报告 JSON。截图与问题编号由台账确定性绑定。
+   一个问题同时涉及论文页面和随文源数据时，两侧都必须有截图；截图会话没补齐的一侧由
+   `review_v3/autocrop.py` 补截（表格截到最后一行，源数据按引用数值定位单元格）。
 9. **发布校验**：与渲染器共用 `api.services.review_validation.validate`；
    不通过时先做纯写作修复，缺事实再对缺口条目做定向补查。
 
@@ -43,5 +45,5 @@ API 与批量复核共用的同一个复核引擎。入口：`review_v3.engine.r
 
 ## 与旧版的切换
 
-- API：`REVIEW_ENGINE=v3` 时 `run_review_single` 转交 v3（需重载服务后生效）；`REVIEW_ENGINE=v2` 立即回退。
+- API：`REVIEW_ENGINE=v3` 时 `run_review_single` 转交 v3（需重启服务后生效）；改为 `v2` 并重启即回退。2026-11-04 起线上 API 已启用 v3，配置见 `deployment/paper-api-review-engine.conf`。
 - 批量：`python -m review_v3.batch` 通用批量入口，按表名/条件取论文，替代按批次复制的 r1/r2/judge 守护脚本。

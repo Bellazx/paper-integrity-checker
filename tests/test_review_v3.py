@@ -6,6 +6,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -955,3 +956,158 @@ def test_source_data_issue_gets_its_workbook_cells_as_evidence(tmp_path):
     assert cells == [{"file": "source.xlsx", "sheet": "Fig5h", "range": "B19:B30",
                       "caption": "随文源数据 Fig5h 表 B19:B30（单元格原值）"}]
     assert ledger.is_excel(cells[0]) and ledger.is_evidence(cells[0])
+
+
+def _ruled_table_pdf(path, rows=4):
+    """A page with a captioned table drawn with rules, then a body paragraph."""
+    import fitz
+    pdf = fitz.open()
+    page = pdf.new_page()
+    page.insert_textbox(fitz.Rect(90, 72, 560, 106), "Supplementary Table 2 Comparison of anthropogenic black carbon "
+                        "direct radiative forcing and effective radiative forcing", fontsize=10)
+    y = 110
+    page.draw_line((90, y), (490, y))
+    body = "\n".join(f"Study {i}    2015    1.{i}1    1.83" for i in range(rows))
+    page.insert_textbox(fitz.Rect(90, y + 2, 490, y + 2 + 16 * rows), body, fontsize=10)
+    y += 4 + 16 * rows
+    page.draw_line((90, y), (490, y))
+    page.insert_textbox(fitz.Rect(90, y + 60, 500, y + 200), "Body text " * 40, fontsize=10)
+    pdf.save(str(path))
+    return y
+
+
+def test_table_screenshot_ends_at_the_table(tmp_path):
+    # A short table used to be cut at 45% of the page height, half of it blank.
+    import fitz
+    from review_v3 import autocrop
+    bottom_rule = _ruled_table_pdf(tmp_path / "s.pdf")
+    page = fitz.open(str(tmp_path / "s.pdf"))[0]
+    rect = autocrop._table_rect(page, autocrop._caption_rect(page, "table", "2"))
+    assert bottom_rule <= rect.y1 <= bottom_rule + 10
+
+
+def test_long_table_body_closed_by_a_rule_is_kept(tmp_path):
+    # Rows set as one long text block, with a wide gap between header and
+    # bottom rules, are still the table, not a body paragraph.
+    import fitz
+    from review_v3 import autocrop
+    pdf = fitz.open()
+    page = pdf.new_page()
+    page.insert_textbox(fitz.Rect(36, 357, 580, 395), "Supplementary Table 4. Solar-blind ultraviolet "
+                        "photodetectors based on Schottky junction of inorganic materials.", fontsize=10)
+    page.draw_line((36, 399), (560, 399))
+    page.insert_textbox(fitz.Rect(89, 401, 558, 430), "Materials  Wavelength  P  R  D*  Reference", fontsize=10)
+    page.draw_line((36, 431), (560, 431))
+    page.insert_textbox(fitz.Rect(67, 434, 536, 664), "\n".join(f"Ga2O3 MSM {i}   254   87   1.70   230   {50 + i}"
+                                                                  for i in range(15)), fontsize=10)
+    page.draw_line((36, 666), (560, 666))
+    rect = autocrop._table_rect(page, autocrop._caption_rect(page, "table", "4"))
+    assert 664 <= rect.y1 <= 680
+
+
+def test_workbook_cells_are_found_by_the_quoted_values(tmp_path):
+    # Two figure blocks side by side in one sheet: the range is the block that
+    # holds the quoted values, with its title, header row and row labels.
+    import openpyxl
+    from review_v3 import autocrop
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Fig.1"
+    years = [2015, 2020, 2030, 2040, 2050, 2060]
+    ws.append([])
+    ws.append(["Fig.1c", "PKU", *years, "Fig.1d", "PKU-BC", *years])
+    for k, name in enumerate(("SSP1", "SSP2", "SSP3")):
+        ws.append([None, name, *(50.0 + k + i for i in range(6)), None, name, 1.7005281876211287, *(0.5 + i / 10 for i in range(5))])
+    ws.append([None, "CMIP6", *years, None, "CMIP6", *years])
+    for k, name in enumerate(("SSP1", "SSP2", "SSP3")):
+        ws.append([None, name, *(26.0 + k + i for i in range(6)), None, name, 2.1408835006086777, *(1.5 + i / 10 for i in range(5))])
+    other = wb.create_sheet("Fig.10")
+    other.append([1.7005281876211287])
+    wb.save(tmp_path / "source.xlsx")
+    record = {"location": "正文第4页",
+              "finding": "源数据 Fig.1d（Fig.1 sheet 第3-9行）为 1.7005281876211287 与 2.1408835006086777"}
+    cells = autocrop.cells_for(record, str(tmp_path))
+    assert [(c["sheet"], c["range"]) for c in cells] == [("Fig.1", "I2:P9")]
+
+
+def test_conflict_between_paper_and_source_data_shows_both_sides(tmp_path, monkeypatch):
+    # The issue already has the printed table; the source-data cells it is set
+    # against are added, and a capture session is asked only for that side.
+    import openpyxl
+    from review_v3 import session as session_mod
+    _ruled_table_pdf(tmp_path / "supp.pdf")
+    inputs = tmp_path / "input"
+    inputs.mkdir()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Fig.1"
+    ws.append(["Fig.1d", "PKU-BC", 2015])
+    ws.append([None, "SSP1", 1.7005281876211287])
+    wb.save(inputs / "source.xlsx")
+    crop = tmp_path / "s1_p001_c20_69_575_200_d150.png"
+    crop.write_bytes(b"png")
+    record = {"id": "high::data::8", "status": "issue", "severity": "substantive", "dimension": "methodology",
+              "location": "Supplementary Table 2（第1页）", "title": "ERF",
+              "finding": "Table 2 为 1.83，而源数据 Fig.1 sheet 第2行为 1.7005281876211287",
+              "evidence": [{"path": str(crop), "caption": "补充材料第1页 Table S2（原文截图）"}]}
+    assert engine._missing_carriers(record, str(inputs)) == {"workbook"}
+    prompts_seen = []
+
+    async def no_session(spec):
+        prompts_seen.append(spec.prompt)
+
+    monkeypatch.setattr(session_mod, "run", no_session)
+    review = engine.Review("10.1/x", "", str(inputs), tmp_path / "run", None)
+    review.dossier = {"docs": [{"id": "s1", "name": "supp.pdf", "path": str(tmp_path / "supp.pdf"), "pages": 1}]}
+    monkeypatch.setattr(engine.Review, "_spec", lambda self, name, prompt, *a: SimpleNamespace(prompt=prompt))
+    out = asyncio.run(review.capture({record["id"]: record}))
+    evidence = out[record["id"]]["evidence"]
+    assert evidence[0]["path"] == str(crop)
+    assert [(e.get("sheet"), e.get("range")) for e in evidence[1:]] == [("Fig.1", "A1:C2")]
+    assert "还缺：随文源数据的单元格区域" in prompts_seen[0]
+    assert engine._missing_carriers(out[record["id"]], str(inputs)) == set()
+
+
+def test_source_data_cells_render_in_the_section_of_their_issue():
+    parsed = {"methodology_review": "本节结论：有风险。\n（1）问题位置：Table S2 与源数据。问题：互斥。影响：结论改变。",
+              "data_review": "本节结论：未发现风险。", "image_review": "", "ref_review": ""}
+    evidence = {"methodology": [{"file": "s.xlsx", "sheet": "Fig.1", "range": "I11:P18", "caption": "c",
+                                 "dimension": "methodology", "issue_index": 1}]}
+    images = engine._bind_evidence(parsed, evidence)
+    assert images == []
+    assert parsed["excel_evidence_regions"][0]["dimension"] == "methodology"
+
+
+def test_tool_waits_split_at_the_guard_hook(tmp_path, monkeypatch):
+    # A tool call that waits 25 s before the guard runs is reported as such:
+    # the wait is in the CLI or the machine, not in the command.
+    from datetime import datetime, timezone
+    monkeypatch.setattr(session, "TRANSCRIPTS", tmp_path / "projects")
+    folder = tmp_path / "projects" / "x"
+    folder.mkdir(parents=True)
+
+    def stamp(seconds):
+        return datetime.fromtimestamp(1000 + seconds, timezone.utc).isoformat().replace("+00:00", "Z")
+
+    events = []
+    for i, (use, hook, result) in enumerate([(0, 25.2, 25.4), (30, 55.3, 55.5), (60, 60.1, 60.2)]):
+        events.append({"timestamp": stamp(use), "message": {"content": [{"type": "tool_use", "id": f"t{i}"}]}})
+        events.append({"timestamp": stamp(result), "message": {"content": [{"type": "tool_result", "tool_use_id": f"t{i}"}]}})
+    (folder / "sid.jsonl").write_text("\n".join(json.dumps(e) for e in events))
+    workdir = tmp_path / "run"
+    workdir.mkdir()
+    (workdir / "hook_times.log").write_text(
+        "".join(f"{1000 + h:.3f}\t{name}\tBash\n" for h, name in [(25.2, "inv_a.json"), (55.3, "inv_a.json"),
+                                                                    (60.1, "inv_a.json"), (25.0, "other.json")]))
+    waits = session.tool_waits("sid", 1000, workdir, workdir / "inv_a.json")
+    assert waits == {"tool_calls": 3, "tool_wait_s": 25.4, "before_hook_s": 25.2}
+
+
+def test_guard_records_when_it_starts(tmp_path):
+    import subprocess as sp
+    env = {**os.environ, "PV3_WORKDIR": str(tmp_path), "PV3_LEDGER": str(tmp_path / "ledgers" / "inv_a.json")}
+    guard = Path(engine.__file__).parent / "tools" / "guard.py"
+    sp.run([sys.executable, "-I", str(guard)], input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "pv3 info"}}),
+           text=True, env=env, check=True)
+    stamp, ledger_name, tool = (tmp_path / "hook_times.log").read_text().strip().split("\t")
+    assert float(stamp) > 0 and ledger_name == "inv_a.json" and tool == "Bash"

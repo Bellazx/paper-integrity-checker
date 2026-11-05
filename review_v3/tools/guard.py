@@ -111,11 +111,30 @@ def check(tool: str, payload: dict) -> str | None:
     return None
 
 
+HOOK_LOG = "hook_times.log"
+
+
+def _record_start(tool: str) -> None:
+    """One line per call in the run's work directory: when the hook started,
+    for which session. Splits a slow tool call into the wait before the hook
+    and the time after it (see session.tool_waits). Never blocks the call."""
+    workdir = os.environ.get("PV3_WORKDIR")
+    if not workdir:
+        return
+    try:
+        import time
+        with open(os.path.join(workdir, HOOK_LOG), "a", encoding="utf-8") as handle:
+            handle.write(f"{time.time():.3f}\t{os.path.basename(os.environ.get('PV3_LEDGER', ''))}\t{tool}\n")
+    except OSError:
+        pass
+
+
 def main() -> None:
     try:
         event = json.load(sys.stdin)
     except ValueError:
         return
+    _record_start(str(event.get("tool_name", "")))
     reason = check(event.get("tool_name", ""), event.get("tool_input") or {})
     if reason:
         print(reason, file=sys.stderr)

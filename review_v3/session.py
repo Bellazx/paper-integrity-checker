@@ -87,6 +87,57 @@ def settings_file(profile: str = "default") -> str:
     return str(path)
 
 
+TRANSCRIPTS = Path.home() / ".claude" / "projects"
+
+
+def tool_waits(session_id: str, since: float, workdir: Path, ledger_path: Path | None) -> dict:
+    """Seconds from each tool call to its result in this session since
+    ``since``, split at the moment the PreToolUse guard started (it logs to
+    the work directory). A command itself runs in well under a second; long
+    waits before the hook point at the CLI or the machine, not the review."""
+    from datetime import datetime
+    calls = []
+    for path in TRANSCRIPTS.glob(f"*/{session_id}.jsonl"):
+        pending = {}
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                event = json.loads(line)
+                stamp = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00")).timestamp()
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue
+            content = (event.get("message") or {}).get("content")
+            for block in content if isinstance(content, list) else []:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use" and stamp >= since:
+                    pending[block.get("id")] = stamp
+                elif block.get("type") == "tool_result" and block.get("tool_use_id") in pending:
+                    calls.append((pending.pop(block["tool_use_id"]), stamp))
+    if not calls:
+        return {}
+    hooks = []
+    name = ledger_path.name if ledger_path else ""
+    try:
+        for line in (Path(workdir) / "hook_times.log").read_text(encoding="utf-8").splitlines():
+            stamp, ledger_name, _tool = (line.split("\t") + ["", ""])[:3]
+            if ledger_name == name and float(stamp) >= since:
+                hooks.append(float(stamp))
+    except (OSError, ValueError):
+        pass
+    total, before = [], []
+    for start, end in calls:
+        total.append(end - start)
+        inside = [h for h in hooks if start - 0.5 <= h <= end]
+        if inside:
+            before.append(min(inside) - start)
+
+    def median(values):
+        values = sorted(values)
+        return round(values[len(values) // 2], 1) if values else None
+
+    return {"tool_calls": len(total), "tool_wait_s": median(total), "before_hook_s": median(before)}
+
+
 def session_env(workdir: Path, ledger_path: Path | None, actor: str, extra: dict | None = None) -> dict:
     env = dict(os.environ)
     env.update(extra or {})
@@ -348,8 +399,18 @@ async def run(spec: SessionSpec) -> SessionOutcome:
                       "cost": raw.get("total_cost_usd"), "error": raw.get("_error"),
                       "input_tokens": usage.get("input_tokens"), "cache_read": usage.get("cache_read_input_tokens"),
                       "output_tokens": usage.get("output_tokens"), "closed": after[0]}
+            if spec.tools:
+                try:
+                    metric.update(tool_waits(state["session_id"], state["launched_at"], spec.workdir, spec.ledger_path))
+                except Exception as exc:  # measuring must never fail a chunk
+                    log.debug("%s tool wait measurement failed: %s", spec.name, exc)
             state["metrics"].append(metric)
             log.info("%s chunk=%d %s", spec.name, state["chunks"], json.dumps(metric, ensure_ascii=False))
+            if (metric.get("tool_wait_s") or 0) > config.TOOL_WAIT_WARN_SECONDS:
+                log.warning("%s chunk=%d: tool calls waited %.1f s (median of %d), %s s of it before the "
+                            "PreToolUse hook started; commands themselves take under a second",
+                            spec.name, state["chunks"], metric["tool_wait_s"], metric["tool_calls"],
+                            metric.get("before_hook_s"))
             if isinstance(raw.get("result"), str):
                 outcome_text = raw["result"]
                 state["text"] = outcome_text

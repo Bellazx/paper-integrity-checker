@@ -90,9 +90,29 @@ def _previous_page_figure(page):
 
 
 def _table_rect(page, caption):
+    """From the caption down to the table's last row: its rules, its rows (a
+    long block counts when it starts inside the table or a rule closes it),
+    then short notes that follow without a wide gap. A short table no longer
+    carries half a page of blank space."""
     import fitz
     x0, y0, x1, y1 = caption
-    return fitz.Rect(page.rect.x0 + 20, y0 - 4, page.rect.x1 - 20, min(page.rect.y1, y0 + page.rect.height * 0.45))
+    limit = page.rect.y1 - 30  # above the page number
+    rules = sorted((d["rect"].y0, d["rect"].y1) for d in page.get_drawings() if y1 - 1 < d["rect"].y0 <= limit)
+    blocks = sorted(((b[1], b[3], len(" ".join(str(b[4]).split()))) for b in page.get_text("blocks")
+                     if y1 - 1 < b[1] <= limit and str(b[4]).strip()), key=lambda b: b[0])
+    bottom, grown = y1, True
+    while grown:
+        grown = False
+        for top, end in rules:
+            if end > bottom and top - bottom <= 60:
+                bottom, grown = end, True
+        for top, end, length in blocks:
+            if end <= bottom or top - bottom > 36:
+                continue
+            closed = any(end - 4 <= rule <= end + 14 for rule, _ in rules)
+            if top < bottom - 1 or length <= 180 or closed:
+                bottom, grown = end, True
+    return fitz.Rect(page.rect.x0 + 20, y0 - 4, page.rect.x1 - 20, min(limit, bottom) + 6)
 
 
 def _value_rect(page, values: list[str]):
@@ -183,21 +203,31 @@ def _column_letters(index: int) -> str:
 
 def cells_for(record: dict, input_dir: str) -> list[dict]:
     """The cited cells of a submitted workbook, rendered from the file at report
-    time: the workbook and sheet the location names, the rows and columns it
-    cites (the first rows and columns when it cites none)."""
+    time: the workbook and sheet the location names. Cells holding the values
+    the finding quotes anchor the range, widened to their block's header row and
+    label column; otherwise the rows and columns the location cites (the first
+    rows and columns when it cites none). One range per cited sheet, at most two."""
     from openpyxl import load_workbook
     text = f"{record.get('location') or ''} {record.get('finding') or ''}"
     books = sorted(Path(input_dir).rglob("*.xls[xm]")) if input_dir and Path(input_dir).is_dir() else []
     named = [b for b in books if b.name in text or b.stem in text]
+    values = _quoted_values(text)
     for book in named or books:
         try:
             workbook = load_workbook(book, read_only=True, data_only=True)
         except Exception:
             continue
         try:
-            sheets = sorted((n for n in workbook.sheetnames if n and n in text), key=len, reverse=True)
+            sheets = _cited_sheets(workbook.sheetnames, text)
             if not sheets:
                 continue
+            anchored = []
+            for name in sheets:
+                box = _anchor_box(workbook[name], values)
+                if box:
+                    anchored.append((name, box))
+            if anchored:
+                return [_cells(book.name, name, *box) for name, box in anchored[:2]]
             sheet = workbook[sheets[0]]
             width = sheet.max_column or SHOWN_COLS
             rows = ROWS.search(text)
@@ -216,9 +246,93 @@ def cells_for(record: dict, input_dir: str) -> list[dict]:
                 left, right = 1, min(width, SHOWN_COLS)
             left, right = sorted((left, right))
             right = min(right, left + SHOWN_COLS - 1)
-            cell_range = f"{_column_letters(left)}{first}:{_column_letters(right)}{first + SHOWN_ROWS - 1}"
-            return [{"file": book.name, "sheet": sheets[0], "range": cell_range,
-                     "caption": f"随文源数据 {sheets[0]} 表 {cell_range}（单元格原值）"}]
+            return [_cells(book.name, sheets[0], first, first + SHOWN_ROWS - 1, left, right)]
         finally:
             workbook.close()
     return []
+
+
+def _cells(file: str, sheet: str, top: int, bottom: int, left: int, right: int) -> dict:
+    cell_range = f"{_column_letters(left)}{top}:{_column_letters(right)}{bottom}"
+    return {"file": file, "sheet": sheet, "range": cell_range,
+            "caption": f"随文源数据 {sheet} 表 {cell_range}（单元格原值）"}
+
+
+def _cited_sheets(names: list[str], text: str) -> list[str]:
+    """Sheets the text names, in the order it first names them. A name followed
+    by another digit ("Fig.1" in "Fig.10") is not a citation of that sheet; a
+    panel letter is ("Fig.1" in "Fig.1d")."""
+    found = []
+    for name in sorted((n for n in names if n), key=len, reverse=True):
+        spans = [m.start() for m in re.finditer(re.escape(name), text)
+                 if not text[m.end():m.end() + 1].isdigit()]
+        if spans:
+            found.append((spans[0], name))
+    return [name for _, name in sorted(found)]
+
+
+# Values a finding quotes with enough digits to identify a cell.
+QUOTED = re.compile(r"(?<![\w.])-?\d+\.\d{3,}(?![\d])")
+SCAN_ROWS = 5000
+SCAN_COLS = 200
+
+
+def _quoted_values(text: str) -> list[str]:
+    seen = []
+    for value in QUOTED.findall(text):
+        if value not in seen:
+            seen.append(value)
+    return seen[:8]
+
+
+def _matches(cell, value: str) -> bool:
+    """The cell holds the quoted value, written in full or rounded."""
+    if isinstance(cell, bool) or not isinstance(cell, (int, float)):
+        return False
+    decimals = len(value.split(".")[1])
+    return abs(float(cell) - float(value)) <= 0.5 * 10 ** -decimals + 1e-12
+
+
+def _anchor_box(sheet, values: list[str]):
+    """(top, bottom, left, right) around the cells holding the quoted values,
+    widened to the block they sit in (header row, label column) and capped at
+    SHOWN_ROWS x SHOWN_COLS; None when no quoted value is in the sheet."""
+    if not values:
+        return None
+    grid = [list(row[:SCAN_COLS]) for row in sheet.iter_rows(max_row=SCAN_ROWS, values_only=True)]
+    hits = [(r, c) for r, row in enumerate(grid) for c, cell in enumerate(row)
+            if any(_matches(cell, v) for v in values)]
+    if not hits:
+        return None
+
+    def filled(r: int, c: int) -> bool:
+        return 0 <= r < len(grid) and 0 <= c < len(grid[r]) and grid[r][c] not in (None, "")
+
+    def text(r: int, c: int) -> bool:
+        return filled(r, c) and isinstance(grid[r][c], str)
+
+    top, bottom = min(r for r, _ in hits), max(r for r, _ in hits)
+    left, right = min(c for _, c in hits), max(c for _, c in hits)
+    # Up to the block's header row: the first row above that carries a label.
+    while (top > 0 and bottom - top + 1 < SHOWN_ROWS
+           and any(filled(top - 1, c) for c in range(left, right + 1))):
+        top -= 1
+        if any(text(top, c) for c in range(left, right + 1)):
+            break
+    # Left to the row-label column, then a title column that is filled only on
+    # the header row ("Fig.1d" above "SSP1"); a neighbouring block placed side
+    # by side starts beyond it.
+    while (left > 0 and right - left + 1 < SHOWN_COLS
+           and any(filled(r, left - 1) for r in range(top, bottom + 1))):
+        left -= 1
+        if any(text(r, left) for r in range(top + 1, bottom + 1)):
+            break
+    if (left > 0 and right - left + 1 < SHOWN_COLS and filled(top, left - 1)
+            and not any(filled(r, left - 1) for r in range(top + 1, bottom + 1))):
+        left -= 1
+    # The rest of the block to the right and below, within the shown size.
+    while right - left + 1 < SHOWN_COLS and any(filled(r, right + 1) for r in range(top, bottom + 1)):
+        right += 1
+    while bottom - top + 1 < SHOWN_ROWS and any(filled(bottom + 1, c) for c in range(left, right + 1)):
+        bottom += 1
+    return top + 1, bottom + 1, left + 1, right + 1

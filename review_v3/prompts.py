@@ -228,8 +228,17 @@ EOF
 
 
 def evidence(dossier: dict, items: list[dict]) -> str:
-    rows = [f"- `{item['id']}`：位置：{str(item.get('location', ''))[:200]}\n  要点：{str(item.get('finding', ''))[:300]}"
-            for item in items]
+    carriers = {"pdf": "论文原文（正文/补充材料页面）的截图", "workbook": "随文源数据的单元格区域"}
+    rows = []
+    for item in items:
+        row = f"- `{item['id']}`：位置：{str(item.get('location', ''))[:200]}\n  要点：{str(item.get('finding', ''))[:300]}"
+        shown = [str(ev.get("caption") or ev.get("range") or "") for ev in item.get("evidence") or []
+                 if isinstance(ev, dict) and (ev.get("path") or ev.get("range"))]
+        if shown:
+            row += f"\n  已有截图：{'；'.join(shown)[:200]}"
+        if item.get("missing"):
+            row += f"\n  还缺：{'、'.join(carriers[m] for m in item['missing'] if m in carriers)}（只补这一侧，已有的不要重截）"
+        rows.append(row)
     return f"""你负责为复核报告中的风险问题制作证据截图。每条问题都必须附上能直接看清问题的原文局部截图。
 
 ## 论文
