@@ -121,7 +121,7 @@ EVIDENCE_SOFT_SECONDS = _int("REVIEW_V3_EVIDENCE_SOFT_SECONDS", 38 * 60)
 # A late phase still gets this much time from its own start when earlier
 # phases ran over (the whole-paper deadline remains the hard limit).
 PHASE_FLOOR_SECONDS = {"arbitrate": _int("REVIEW_V3_ARBITRATE_FLOOR_SECONDS", 6 * 60),
-                       "calibrate": _int("REVIEW_V3_CALIBRATE_FLOOR_SECONDS", 5 * 60),
+                       "calibrate": _int("REVIEW_V3_CALIBRATE_FLOOR_SECONDS", 10 * 60),
                        "evidence": _int("REVIEW_V3_EVIDENCE_FLOOR_SECONDS", 4 * 60)}
 
 # When the rules change, finished reviews can be re-graded from their saved
@@ -153,6 +153,14 @@ PAPER_TIMEOUT_SECONDS = _int("REVIEW_PAPER_TIMEOUT_SECONDS", 90 * 60)
 # grading, screenshots and writing always run and a report is published.
 FINISH_RESERVE_SECONDS = _int("REVIEW_V3_FINISH_RESERVE_SECONDS", 15 * 60)
 GRADING_RESERVE_SECONDS = _int("REVIEW_V3_GRADING_RESERVE_SECONDS", 6 * 60)
+# Calibration ends this long before the paper deadline so that the judge
+# (median 2 min, see 2026-11-06 runs) gets its turn; three API papers lost
+# their judge because calibration ran to the deadline.
+JUDGE_RESERVE_SECONDS = _int("REVIEW_V3_JUDGE_RESERVE_SECONDS", 5 * 60)
+# Issues per calibration session. One session grading 25-48 issues spent
+# its first chunk (8 min) reading and wrote nothing; batches of this size
+# run in parallel, each grading its own issues (same dimension together).
+CALIBRATE_BATCH = _int("REVIEW_V3_CALIBRATE_BATCH", 12)
 
 # Memory retrieval.
 MEMORY_DIR = Path(os.environ.get(

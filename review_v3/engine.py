@@ -244,9 +244,15 @@ class Review:
         if api_review_budget.get():
             # The API already reserved report time. Do not deduct another
             # 15/6 minutes and discard productive follow-ups or screenshots.
+            # Calibration alone stops early: the judge must still run.
+            if phase == "calibrate" and config.JUDGE_ENABLED:
+                return self.deadline - config.JUDGE_RESERVE_SECONDS
             return self.deadline
         if phase in ("calibrate", "judge", "evidence"):
-            return self.deadline - config.GRADING_RESERVE_SECONDS
+            reserve = config.GRADING_RESERVE_SECONDS
+            if phase == "calibrate" and config.JUDGE_ENABLED:
+                reserve = max(reserve, config.JUDGE_RESERVE_SECONDS)
+            return self.deadline - reserve
         return self.deadline - config.FINISH_RESERVE_SECONDS
 
     def _phase_deadline(self, phase: str) -> float | None:
@@ -477,6 +483,9 @@ class Review:
         ledger.create(path, {"shard": "calibrate", "role": "calibrator", "allow_new": False, "require_category": True},
                       [{"id": r["id"], "title": r.get("title") or r["id"], "dimension": r.get("dimension"),
                         "first": _compact(r)} for r in batch])
+        if not known and len(batch) > config.CALIBRATE_BATCH:
+            await self._calibration_batches(batch, path)
+            return
         added = [r for r in batch if r["id"] not in known] if known else []
         used = session.reopen("cal_all", self.run_dir) if added else 0
         spec = self._spec("cal_all", prompts.calibrator(self.dossier, batch), path,
@@ -503,6 +512,55 @@ class Review:
         spec.wrapup_prompt = lambda state: prompts.calibrator_continue(open_ids(), wrapup=True)
         outcome = await self._run_calibration(spec, "main")
         self.cal_status = outcome.status
+
+    async def _calibration_batches(self, batch: list[dict], path: Path) -> None:
+        """Many issues: several calibrators in parallel, each with the issues
+        of one or two dimensions (related facts stay together), results
+        merged into the cal_all ledger that the rest of the pipeline reads."""
+        groups = _calibration_groups(batch, config.CALIBRATE_BATCH)
+        log.info("DOI=%s calibration in %d batches of %s issues", self.doi, len(groups),
+                 "/".join(str(len(g)) for g in groups))
+
+        async def one(number: int, items: list[dict]) -> None:
+            name = f"cal_b{number}"
+            sub = self.ledger_path("cal", f"b{number}")
+            ledger.create(sub, {"shard": name, "role": "calibrator", "allow_new": False, "require_category": True},
+                          [{"id": r["id"], "title": r.get("title") or r["id"], "dimension": r.get("dimension"),
+                            "first": _compact(r)} for r in items])
+            spec = self._spec(name, prompts.calibrator(self.dossier, items), sub,
+                              config.MAX_CHUNKS_CALIBRATE, "calibrator", "calibrate")
+
+            def open_ids():
+                return [item["id"] for item in ledger.open_items(ledger.load(sub))]
+
+            spec.continue_prompt = lambda state: prompts.calibrator_continue(open_ids())
+
+            def restart_message(_state):
+                records = list((ledger.load(sub).get("items") or {}).values())
+                pending = [r for r in records if r.get("status") == "open"]
+                return (prompts.calibrator(self.dossier, [{"id": r["id"], **(r.get("first") or {})} for r in pending])
+                        + prompts.calibrator_recovery([r for r in records if _categorized(r)],
+                                                      [r["id"] for r in pending], "原会话不可用，从已保存台账接续"))
+            spec.restart_prompt = restart_message
+            spec.wrapup_prompt = lambda state: prompts.calibrator_continue(open_ids(), wrapup=True)
+            await self._run_calibration(spec, f"batch{number}")
+
+        await asyncio.gather(*(one(n, items) for n, items in enumerate(groups, start=1)))
+        merged = []
+        for number in range(1, len(groups) + 1):
+            for record in (ledger.load(self.ledger_path("cal", f"b{number}")).get("items") or {}).values():
+                if _categorized(record):
+                    merged.append({k: v for k, v in record.items()
+                                   if k in ("id", "status", "category", "why", "basis", "location",
+                                            "issue_type", "finding", "dimension")})
+        applied, errors = ledger.update(path, merged, "calibrator") if merged else (0, [])
+        if errors:
+            log.warning("DOI=%s calibration merge rejected %d record(s): %s", self.doi, len(errors), errors[:3])
+        records = (ledger.load(path).get("items") or {}).values()
+        pending = [r["id"] for r in records if not _categorized(r)]
+        self.cal_status = "done" if not pending else "incomplete"
+        self.calibration_metrics.update(status=self.cal_status, pending_ids=pending, batches=len(groups))
+        _write_json(self.run_dir / "calibration.json", self.calibration_metrics)
 
     async def _run_calibration(self, spec: session.SessionSpec, stage: str) -> session.SessionOutcome:
         started = time.monotonic()
@@ -547,7 +605,7 @@ class Review:
             if _categorized(record):
                 decided[item_id] = record
         left = [r["id"] for r in issues if not _categorized(decided.get(r["id"]) or {})]
-        hard_deadline = self._hard_deadline("evidence")
+        hard_deadline = self._hard_deadline("calibrate")
         if left and (hard_deadline is None or time.monotonic() < hard_deadline):
             # One bounded recovery, carrying useful session context and only
             # the remaining work. Never reset its budget on process resume.
@@ -570,7 +628,7 @@ class Review:
                 return (prompts.calibrator(self.dossier, [r for r in rest if r["id"] in ids]) if fresh else "") + context
 
             rest_spec = self._spec("cal_rest", recovery_prompt(fresh=True), rest_path,
-                                  int(carry.get("continuation_base_chunks", 0)) + 2, "calibrator", "evidence")
+                                  int(carry.get("continuation_base_chunks", 0)) + 2, "calibrator", "calibrate")
             rest_spec.continue_prompt = lambda state: recovery_prompt()
             rest_spec.restart_prompt = lambda state: recovery_prompt(fresh=True)
             rest_spec.wrapup_prompt = lambda state: prompts.calibrator_continue(
@@ -1667,6 +1725,24 @@ def _admits_minor(record: dict) -> bool:
     if MINOR_ADMISSION.search(text.replace("不是规范问题", "").replace("不属于规范问题", "")):
         return True
     return record.get("category") == "S3" and bool(DIRECTION_KEPT.search(text))
+
+
+def _calibration_groups(records: list[dict], size: int) -> list[list[dict]]:
+    """Split issues into calibration batches of at most ``size``: issues of
+    one dimension stay together (same facts are compared and deduplicated
+    there), small dimensions share a batch, large ones are cut in order."""
+    by_dim: dict[str, list[dict]] = {}
+    for record in records:
+        by_dim.setdefault(str(record.get("dimension") or ""), []).append(record)
+    groups: list[list[dict]] = []
+    for items in by_dim.values():
+        chunks = [items[i:i + size] for i in range(0, len(items), size)]
+        for chunk in chunks:
+            if groups and len(groups[-1]) + len(chunk) <= size:
+                groups[-1].extend(chunk)
+            else:
+                groups.append(list(chunk))
+    return groups
 
 
 def _categorized(record: dict) -> bool:
