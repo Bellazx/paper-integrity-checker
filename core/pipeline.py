@@ -331,6 +331,7 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
     if doi_override:
         metadata["doi"] = normalize_doi(doi_override) or doi_override.strip()
 
+    doi_mismatch = None
     if not metadata.get("doi"):
         doi_file = Path(paper_dir) / "doi.txt"
         if doi_file.exists():
@@ -339,6 +340,15 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
             folder_name = Path(paper_dir).name
             from modules.doi_utils import dir_name_to_doi
             metadata["doi"] = normalize_doi(dir_name_to_doi(folder_name))
+    elif not doi_override:
+        # The DOI came from the PDF itself. A directory named after another DOI
+        # most likely holds a misplaced file; the result is kept but not filed.
+        from modules.doi_utils import dir_doi_conflict
+        conflict = dir_doi_conflict(Path(paper_dir).name, metadata["doi"])
+        if conflict:
+            doi_mismatch = {"pdf_doi": metadata["doi"], "directory_doi": conflict}
+            log.warning("DOI in the PDF (%s) differs from the directory name (%s): the file may be misplaced; "
+                        "the result will not be written to the database", metadata["doi"], conflict)
 
     from utils.crossref import is_bad_title, enrich_metadata
     if metadata.get("doi") and (is_bad_title(metadata.get("title", "")) or not metadata.get("journal")):
@@ -656,6 +666,7 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
         "data_anomalies": data_results,
         "reference_issues": ref_results,
         "analysis_warnings": data_warnings,
+        "doi_mismatch": doi_mismatch,
         "content_screening": {k: v for k, v in content_audit.items()
                               if k not in {"candidates", "decisions", "calculations"}},
         "summary": {

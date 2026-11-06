@@ -76,6 +76,18 @@ def dir_name_to_doi(name_or_path) -> str:
     return f"{prefix}/" + "/".join(parts[1:])
 
 
+def dir_doi_conflict(name_or_path, doi: str) -> str:
+    """The directory's DOI when ``doi`` (as read from the PDF) is not the DOI
+    the directory is named after; "" when the name is not a DOI or they agree.
+    A PDF whose own DOI differs from its directory is usually a misplaced
+    file, so callers hold the result back instead of filing it under either."""
+    candidates = [c.lower() for c in (normalize_doi(x) for x in dir_name_to_doi_candidates(name_or_path)) if c]
+    if not candidates or not candidates[0].startswith("10."):
+        return ""
+    given = (normalize_doi(doi) or (doi or "").strip()).lower()
+    return "" if not given or given in candidates else candidates[0]
+
+
 def dir_name_to_doi_candidates(name_or_path) -> list[str]:
     """Return all plausible DOI candidates for a dir name, in priority order.
 

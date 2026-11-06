@@ -111,6 +111,11 @@ def _source_path_for_root(root: Path) -> str:
         return resolved.as_posix()
 
 
+def _held_message(paper: str, mismatch: dict) -> str:
+    return (f"Not written to the database: {paper} holds a PDF whose DOI is {mismatch['pdf_doi']}, "
+            f"not {mismatch['directory_doi']}; check the upload and rerun with --input/--doi")
+
+
 def run_single(input_dir: str, output_dir: str, skip_refs: bool = False, author_type: str = "", no_db: bool = False, doi: str = "", report_namespace: str = "", table_root: str = "", table_name: str = ""):
     paper_name = Path(input_dir).name
     out = Path(output_dir) / paper_name
@@ -124,6 +129,8 @@ def run_single(input_dir: str, output_dir: str, skip_refs: bool = False, author_
 
     if no_db:
         log.info("Skipping DB insert (--no-db)")
+    elif findings.get("doi_mismatch"):
+        log.warning(_held_message(paper_name, findings["doi_mismatch"]))
     elif not findings.get("pdf_generated", True) and not findings.get("pdf_skipped_low_risk", False):
         raise RuntimeError("Initial PDF generation failed; result was not inserted into DB")
     else:
@@ -336,8 +343,12 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
             if excel_data:
                 findings = merge_excel_metadata(findings, excel_data)
 
+            held = None
             if no_db:
                 pass
+            elif findings.get("doi_mismatch"):
+                held = findings["doi_mismatch"]
+                log.warning(_held_message(paper_dir.name, held))
             elif not findings.get("pdf_generated", True) and not findings.get("pdf_skipped_low_risk", False):
                 raise RuntimeError("Initial PDF generation failed; result was not inserted into DB")
             else:
@@ -357,7 +368,8 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
                 "paper": paper_dir.name,
                 "doi": findings["paper"].get("doi", ""),
                 "title": findings["paper"].get("title", ""),
-                "status": "success",
+                "status": "held" if held else "success",
+                **({"held_reason": "doi_mismatch", "doi_mismatch": held} if held else {}),
                 "total_issues": findings["summary"]["total_issues"],
                 "high_severity": findings["summary"]["high_severity"],
                 "elapsed_seconds": round(elapsed, 1),
@@ -395,7 +407,7 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
             result = future.result()
             with lock:
                 batch_results.append(result)
-            status = "OK" if result["status"] == "success" else "FAILED"
+            status = {"success": "OK", "held": "HELD"}.get(result["status"], "FAILED")
             issues = result.get("total_issues", "N/A")
             elapsed = result.get("elapsed_seconds", 0)
             log.info("[%d/%d] [%s] %s (%s issues, %.0fs)",
@@ -406,11 +418,13 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
 
     success = sum(1 for r in batch_results if r["status"] == "success")
     failed = sum(1 for r in batch_results if r["status"] == "error")
+    held = [r for r in batch_results if r["status"] == "held"]
 
     summary = {
         "total_papers": len(paper_dirs),
         "success": success,
         "failed": failed,
+        "held": len(held),
         "total_time_seconds": round(total_time, 1),
         "avg_time_per_paper": round(total_time / len(paper_dirs), 1) if paper_dirs else 0,
         "workers": max_workers,
@@ -427,7 +441,9 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
     print(f"\n{'='*60}")
-    print(f"Batch complete: {success} OK, {failed} failed, {total_time:.0f}s total")
+    print(f"Batch complete: {success} OK, {failed} failed, {len(held)} held, {total_time:.0f}s total")
+    for r in held:
+        print(f"  HELD (not in DB): {r['paper']} — PDF DOI {r['doi_mismatch']['pdf_doi']} != directory {r['doi_mismatch']['directory_doi']}")
     print(f"Average: {total_time / len(paper_dirs):.1f}s/paper ({max_workers} workers)")
     print(f"Summary: {summary_path}")
     print(f"{'='*60}\n")
