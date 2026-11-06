@@ -42,6 +42,36 @@ JUDGE_SOFT_SECONDS = _int("REVIEW_V3_JUDGE_SOFT_SECONDS", 18 * 60)
 # extended only while its ledger keeps closing items.
 CHUNK_TURNS = _int("REVIEW_V3_CHUNK_TURNS", 12)
 MAX_CHUNKS_INVESTIGATE = _int("REVIEW_V3_MAX_CHUNKS", 16)
+# Investigation chunks by shard size. A one-item shard took the same three
+# chunks (39 turns) as a twelve-item one and wrote its ledger only in the
+# last chunk; the session then ends with a wrap-up chunk (WRAPUP_TURNS) that
+# records everything verified, so a small budget loses no result. The
+# page-by-page visual pass keeps the full budget: its one item covers every
+# figure page.
+INVESTIGATE_CHUNKS_SMALL = _int("REVIEW_V3_INVESTIGATE_CHUNKS_SMALL", 2)   # <= SMALL_SHARD_ITEMS items
+INVESTIGATE_CHUNKS_MEDIUM = _int("REVIEW_V3_INVESTIGATE_CHUNKS_MEDIUM", 3)  # <= MEDIUM_SHARD_ITEMS items
+SMALL_SHARD_ITEMS = _int("REVIEW_V3_SMALL_SHARD_ITEMS", 2)
+MEDIUM_SHARD_ITEMS = _int("REVIEW_V3_MEDIUM_SHARD_ITEMS", 6)
+FULL_BUDGET_SHARD_KINDS = ("image_scan",)
+
+
+def chunk_budget(items: int, cap: int, kind: str | None = None) -> int:
+    """Chunk budget for a session that checks ``items`` ledger entries, under
+    the phase cap ``cap``. The same pattern held for challenge, arbitration
+    and follow-up sessions on 2026-11-06: one or two items took three chunks
+    and the ledger was written in the last one."""
+    if kind in FULL_BUDGET_SHARD_KINDS:
+        return cap
+    if items <= SMALL_SHARD_ITEMS:
+        return min(INVESTIGATE_CHUNKS_SMALL, cap)
+    if items <= MEDIUM_SHARD_ITEMS:
+        return min(INVESTIGATE_CHUNKS_MEDIUM, cap)
+    return cap
+
+
+def investigate_chunks(shard: dict) -> int:
+    """Chunk budget for one investigation shard (see above)."""
+    return chunk_budget(len(shard.get("items") or []), MAX_CHUNKS_INVESTIGATE, shard.get("kind"))
 MAX_CHUNKS_CHALLENGE = _int("REVIEW_V3_MAX_CHUNKS_CHALLENGE", 10)
 MAX_CHUNKS_ARBITRATE = _int("REVIEW_V3_MAX_CHUNKS_ARBITRATE", 6)
 MAX_CHUNKS_CALIBRATE = _int("REVIEW_V3_MAX_CHUNKS_CALIBRATE", 4)
@@ -67,9 +97,14 @@ CALIBRATE_START_FRACTION = float(os.environ.get("REVIEW_V3_CALIBRATE_START_FRACT
 
 # Phase time boxes, measured from the start of the review (seconds). When a
 # phase's box closes, each running session gets one short wrap-up chunk.
-INVESTIGATE_SOFT_SECONDS = _int("REVIEW_V3_INVESTIGATE_SOFT_SECONDS", 14 * 60)
-CHALLENGE_SOFT_SECONDS = _int("REVIEW_V3_CHALLENGE_SOFT_SECONDS", 22 * 60)
-ARBITRATE_SOFT_SECONDS = _int("REVIEW_V3_ARBITRATE_SOFT_SECONDS", 30 * 60)
+# 2026-11-06, six API papers: sessions ran until the box closed whatever the
+# shard held, results were written in the last chunk, and the phase ended at
+# the box edge (19/28/38 min). With tool calls no longer stalling (7b43225)
+# the same checks fit in smaller boxes; the earlier 14/22/30 values are
+# reachable again through the environment.
+INVESTIGATE_SOFT_SECONDS = _int("REVIEW_V3_INVESTIGATE_SOFT_SECONDS", 10 * 60)
+CHALLENGE_SOFT_SECONDS = _int("REVIEW_V3_CHALLENGE_SOFT_SECONDS", 16 * 60)
+ARBITRATE_SOFT_SECONDS = _int("REVIEW_V3_ARBITRATE_SOFT_SECONDS", 24 * 60)
 # Follow-up for must-check findings still open after arbitration: small
 # batches in parallel, each with its own time box, at most this many rounds.
 COMPLETE_BATCH = _int("REVIEW_V3_COMPLETE_BATCH", 6)

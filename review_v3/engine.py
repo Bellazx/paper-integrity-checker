@@ -290,7 +290,7 @@ class Review:
     async def investigate(self, shard: dict) -> session.SessionOutcome:
         path = self.ledger_path("inv", shard["id"])
         prompt = prompts.investigator(shard, self.dossier, self.hints.get(shard["id"], ""))
-        outcome = await session.run(self._spec(f"inv_{shard['id']}", prompt, path, config.MAX_CHUNKS_INVESTIGATE,
+        outcome = await session.run(self._spec(f"inv_{shard['id']}", prompt, path, config.investigate_chunks(shard),
                                                f"investigator:{shard['id']}", "investigate"))
         self.offer_capture((ledger.load(path).get("items") or {}).values())
         self._close_leftovers(path, outcome, "investigator")
@@ -321,7 +321,8 @@ class Review:
                              "allow_new": True}, items)
         prompt = prompts.challenger(shard, self.dossier, self.hints.get(shard["id"], ""), first,
                                     {item["id"] for item in items})
-        outcome = await session.run(self._spec(f"chk_{shard['id']}", prompt, path, config.MAX_CHUNKS_CHALLENGE,
+        outcome = await session.run(self._spec(f"chk_{shard['id']}", prompt, path,
+                                               config.chunk_budget(len(items), config.MAX_CHUNKS_CHALLENGE, shard.get("kind")),
                                                f"challenger:{shard['id']}", "challenge"))
         return outcome
 
@@ -429,7 +430,8 @@ class Review:
                           [{"id": i["id"], "title": i.get("title"), "dimension": dimension, "members": i.get("members"),
                             "first": i.get("first"), "second": i.get("second")} for i in items])
             outcome = await session.run(self._spec(f"arb{round_no}_{name}", prompts.arbiter(dimension, self.dossier, items),
-                                                   path, config.MAX_CHUNKS_ARBITRATE, f"arbiter:{dimension}",
+                                                   path, config.chunk_budget(len(items), config.MAX_CHUNKS_ARBITRATE),
+                                                   f"arbiter:{dimension}",
                                                    "arbitrate"))
             self._close_leftovers(path, outcome, "arbiter")
             return ledger.load(path).get("items") or {}
@@ -652,7 +654,8 @@ class Review:
                          "items": [by_id[r["id"]][1] for r in records]}
                 prompt = prompts.investigator(shard, self.dossier, self.hints.get(by_id[records[0]["id"]][0]["id"], ""))
                 prompt += prompts.completion_note()
-                spec = self._spec(name, prompt, path, config.MAX_CHUNKS_COMPLETE, f"investigator:{name}", "complete")
+                spec = self._spec(name, prompt, path, config.chunk_budget(len(records), config.MAX_CHUNKS_COMPLETE, kind),
+                                  f"investigator:{name}", "complete")
                 # Shards complete concurrently: each follow-up has its own time box.
                 spec.soft_deadline = soft
                 # Shards complete concurrently; one paper still runs at most

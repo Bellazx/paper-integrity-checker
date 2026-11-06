@@ -1267,3 +1267,34 @@ def test_session_env_uses_the_no_login_shell(monkeypatch, tmp_path):
     assert subprocess.run([wrapper, "--version"], capture_output=True, text=True, timeout=30).returncode == 0
     monkeypatch.setenv("CLAUDE_CODE_SHELL", "/bin/bash")
     assert session.session_env(tmp_path, None, "investigator")["CLAUDE_CODE_SHELL"] == "/bin/bash"
+
+
+def test_investigate_chunk_budget_follows_shard_size(monkeypatch):
+    """Small shards get a small chunk budget; the visual pass keeps the full
+    one; the session loop still ends every budget with a wrap-up chunk."""
+    from review_v3 import config
+
+    def shard(kind, n):
+        return {"id": kind, "kind": kind, "items": [{"id": f"{kind}::{i}"} for i in range(n)]}
+
+    assert config.investigate_chunks(shard("ref", 1)) == config.INVESTIGATE_CHUNKS_SMALL == 2
+    assert config.investigate_chunks(shard("consistency", 2)) == 2
+    assert config.investigate_chunks(shard("methodology", 3)) == config.INVESTIGATE_CHUNKS_MEDIUM == 3
+    assert config.investigate_chunks(shard("data", 6)) == 3
+    assert config.investigate_chunks(shard("data", 12)) == config.MAX_CHUNKS_INVESTIGATE
+    assert config.investigate_chunks(shard("image_scan", 1)) == config.MAX_CHUNKS_INVESTIGATE
+    monkeypatch.setattr(config, "MAX_CHUNKS_INVESTIGATE", 1)
+    assert config.investigate_chunks(shard("ref", 1)) == 1  # never above the overall cap
+    # challenge, arbitration and follow-up sessions use the same rule under their own caps
+    assert config.chunk_budget(1, config.MAX_CHUNKS_CHALLENGE) == 2
+    assert config.chunk_budget(4, config.MAX_CHUNKS_ARBITRATE) == 3
+    assert config.chunk_budget(9, config.MAX_CHUNKS_ARBITRATE) == config.MAX_CHUNKS_ARBITRATE == 6
+    assert config.chunk_budget(1, config.MAX_CHUNKS_COMPLETE, "image_scan") == config.MAX_CHUNKS_COMPLETE
+
+
+def test_phase_boxes_after_shell_fix():
+    from review_v3 import config
+    assert (config.INVESTIGATE_SOFT_SECONDS, config.CHALLENGE_SOFT_SECONDS, config.ARBITRATE_SOFT_SECONDS) == (600, 960, 1440)
+    # later boxes and floors unchanged: calibration still gets its window after arbitration
+    assert config.CALIBRATE_SOFT_SECONDS == 34 * 60 and config.EVIDENCE_SOFT_SECONDS == 38 * 60
+    assert config.ARBITRATE_SOFT_SECONDS < config.CALIBRATE_SOFT_SECONDS - config.PHASE_FLOOR_SECONDS["calibrate"]
