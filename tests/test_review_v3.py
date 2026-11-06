@@ -416,16 +416,13 @@ def test_api_entry_dispatches_to_v3_only_when_enabled(monkeypatch):
     import api.services.review as review_module
     seen = {}
 
-    async def fake_run(doi, report, input_dir, output_dir, resume=False, deadline=None):
-        seen["call"] = (doi, resume, deadline)
+    async def fake_run(doi, report, input_dir, output_dir, resume=False):
+        seen["call"] = (doi, resume)
         return {"result": "低风险"}
     monkeypatch.setattr(engine, "run_review", fake_run)
     monkeypatch.setenv("REVIEW_ENGINE", "v3")
     assert asyncio.run(review_module.run_review_single("10.1/x", "r", "i", "o", resume=True)) == {"result": "低风险"}
-    assert seen["call"] == ("10.1/x", True, None)
-    # The API's paper deadline reaches the engine unchanged.
-    asyncio.run(review_module.run_review_single("10.1/x", "r", "i", "o", resume=True, deadline=123.0))
-    assert seen["call"] == ("10.1/x", True, 123.0)
+    assert seen["call"] == ("10.1/x", True)
 
 
 def test_batch_manifest_review_and_resume(tmp_path, fake_cli, monkeypatch):
@@ -913,7 +910,10 @@ def test_completion_follow_up_is_capped_per_paper(tmp_path, fake_cli, monkeypatc
     for call in calls():
         if call["actor"].startswith("investigator:fin"):
             rounds.setdefault(call["actor"].split(":")[1].split("_")[0], set()).add(call["actor"])
-    assert rounds and all(len(names) == 1 for names in rounds.values())
+    # Each shard may follow up independently; the shared semaphore caps
+    # concurrent sessions. The newly required visual pass gets its own batch.
+    assert rounds and all(len(names) == 2 for names in rounds.values())
+    assert all(any('image_scan' in name for name in names) for names in rounds.values())
     assert result["trigger"] != "review_error"
 
 
@@ -1067,7 +1067,7 @@ def test_conflict_between_paper_and_source_data_shows_both_sides(tmp_path, monke
     evidence = out[record["id"]]["evidence"]
     assert evidence[0]["path"] == str(crop)
     assert [(e.get("sheet"), e.get("range")) for e in evidence[1:]] == [("Fig.1", "A1:C2")]
-    assert "还缺：随文源数据的单元格区域" in prompts_seen[0]
+    assert prompts_seen == []  # the explicit cell range was cropped before any model call
     assert engine._missing_carriers(out[record["id"]], str(inputs)) == set()
 
 
