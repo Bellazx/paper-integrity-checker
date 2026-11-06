@@ -1,0 +1,19 @@
+#!/bin/bash
+# bash without the login flag, for Claude CLI review sessions (CLAUDE_CODE_SHELL).
+#
+# The CLI starts its shell snapshot, and every command when no snapshot
+# exists, as a login shell (`bash -c -l …`). On this host a login shell run
+# from the paper-api service domain stalls ~25 s in /etc/profile, so the
+# snapshot (10 s limit) never succeeds and every Bash call pays 25 s.
+# Review sessions need no login environment: ~/.bashrc is sourced by the
+# snapshot script itself and session.py passes PATH explicitly.
+args=()
+for a in "$@"; do
+  case "$a" in
+    -l|--login) ;;
+    -lc) args+=("-c") ;;
+    *) args+=("$a") ;;
+  esac
+done
+[ -n "$PV3_SHELL_LOG" ] && printf '%s\t%q\n' "$(date +%H:%M:%S.%N)" "$@" >> "$PV3_SHELL_LOG" 2>/dev/null
+exec /bin/bash "${args[@]}"

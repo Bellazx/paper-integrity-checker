@@ -20,6 +20,8 @@ def _int(name: str, default: int) -> int:
 
 # Model: one configuration for API and batch.
 MODEL = os.environ.get("REVIEW_V3_MODEL", "MiniMax-M3.1-Flash").strip()
+# Shell the CLI runs tool commands with (see review_v3/bin/bash-nologin).
+SHELL = Path(os.environ.get("REVIEW_V3_SHELL") or str(PACKAGE_DIR / "bin" / "bash-nologin"))
 SETTINGS_FILE = os.environ.get("REVIEW_V3_SETTINGS_FILE", "/home/library/.claude/settings-mm.json").strip()
 # Reasoning effort passed to the CLI for review sessions (low/medium/high/
 # xhigh/max). Empty: the CLI's default, which for this model is "high" (the

@@ -157,6 +157,12 @@ def session_env(workdir: Path, ledger_path: Path | None, actor: str, extra: dict
         env["PYTHONPATH"] = os.pathsep.join(p for p in (str(runtime), env.get("PYTHONPATH", "")) if p)
         env.setdefault("PAPER_REVIEW_GUARD_READONLY_CELL", "1")
     env.pop("CLAUDECODE", None)
+    # The CLI starts its shell snapshot, and every command while it has no
+    # snapshot, as a login shell. From the paper-api service domain a login
+    # shell stalls ~25 s in /etc/profile (hostnamectl waits for a D-Bus reply
+    # that never comes), so the snapshot (10 s limit) fails and every Bash
+    # call pays 25 s. A bash wrapper that drops -l avoids the login shell.
+    env.setdefault("CLAUDE_CODE_SHELL", str(config.SHELL))
     return env
 
 

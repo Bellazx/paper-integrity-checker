@@ -1244,3 +1244,26 @@ def test_judge_prompt_asks_for_refutation_with_the_category_checklist():
     assert engine.calibration_version() != engine._digest(
         [p for p in config.RULES_DIR.glob("*.md") if p.name not in engine.REPORT_RULES]
         + [Path(engine.__file__).with_name("categories.py")], f"judge:3:{config.JUDGE_MODEL}")
+
+
+def test_session_env_uses_the_no_login_shell(monkeypatch, tmp_path):
+    """Review sessions must not run login shells: from the API service domain
+    /etc/profile stalls ~25 s per shell, which made every Bash tool call
+    take 25 s and timed out evidence sessions (2026-11-06)."""
+    import os
+    import subprocess
+    from review_v3 import config, session
+
+    monkeypatch.delenv("CLAUDE_CODE_SHELL", raising=False)
+    env = session.session_env(tmp_path, None, "investigator")
+    wrapper = env["CLAUDE_CODE_SHELL"]
+    assert wrapper == str(config.SHELL) and "bash" in wrapper  # the CLI accepts only bash/zsh paths
+    assert os.access(wrapper, os.X_OK)
+    probe = "shopt -q login_shell && echo LOGIN || echo plain"
+    # the CLI's snapshot command is `<shell> -c -l <script>`; its fallback `<shell> -l -c <cmd>`
+    for args in (["-c", "-l", probe], ["-l", "-c", probe], ["-lc", probe]):
+        out = subprocess.run([wrapper, *args], capture_output=True, text=True, timeout=30)
+        assert out.returncode == 0 and out.stdout.strip() == "plain", (args, out.stdout, out.stderr)
+    assert subprocess.run([wrapper, "--version"], capture_output=True, text=True, timeout=30).returncode == 0
+    monkeypatch.setenv("CLAUDE_CODE_SHELL", "/bin/bash")
+    assert session.session_env(tmp_path, None, "investigator")["CLAUDE_CODE_SHELL"] == "/bin/bash"
