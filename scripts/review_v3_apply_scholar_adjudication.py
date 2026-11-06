@@ -122,7 +122,9 @@ def publish(results: list[dict], round_dir: Path, scholar: str, namespace: str =
     results_path.parent.mkdir(parents=True, exist_ok=True)
     results_path.write_text(json.dumps(results, ensure_ascii=False, indent=1), encoding="utf-8")
     command = [str(PYTHON), str(REVIEW_REPORT_SCRIPT), "--results", str(results_path), "--output", str(output),
-               "--table", TABLE, "--namespace", namespace, "--scholar", scholar]
+               "--table", TABLE, "--namespace", namespace]
+    if scholar:
+        command += ["--scholar", scholar]
     if no_db:
         command.append("--no-db")
     proc = subprocess.run(command, cwd=str(config.BASE_DIR), capture_output=True, text=True,
@@ -133,14 +135,17 @@ def publish(results: list[dict], round_dir: Path, scholar: str, namespace: str =
 
 
 def main() -> int:
+    global TABLE
     parser = argparse.ArgumentParser()
     parser.add_argument("--round", required=True)
-    parser.add_argument("--scholar", required=True)
+    parser.add_argument("--scholar", default="", help="scope the DB update to this scholar (yujing_scholar rounds)")
+    parser.add_argument("--table", default=TABLE, help="yujing_* table of the round (default yujing_scholar)")
     parser.add_argument("--edits", required=True, type=Path)
     parser.add_argument("--dry-run", action="store_true", help="show the verdict each paper would get")
     parser.add_argument("--namespace", default="", help="report directory under review_v2/ (default: the table)")
     parser.add_argument("--no-db", action="store_true", help="only re-render PDFs; the batch has no database rows")
     args = parser.parse_args()
+    TABLE = args.table
     round_dir = ROUNDS / args.round
     state_path = round_dir / "state.json"
     state = json.loads(state_path.read_text())
