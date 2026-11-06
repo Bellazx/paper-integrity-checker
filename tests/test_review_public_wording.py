@@ -67,7 +67,7 @@ def test_legacy_heading_disclaimer_and_section_label_are_reader_facing():
     assert '本节结论：有风险' in text
     assert '不涉及对作者主观意图的认定' in text
     assert '所有发现均基于算法分析' not in text
-    for term in ('Paper Pecker', '学术不端', '本模块复核结论'):
+    for term in ('预警报告', '学术不端', '本模块复核结论'):
         assert term not in text
     assert result == public_report_html(result)
 

@@ -41,15 +41,17 @@ def public_text(text: str) -> str:
     text = PROCESS_REFERENCE.sub('待核查线索', text)
     text = re.sub(r'(?:初审|初检|初筛)(?:阶段|环节|结果)?', '线索筛查', text)
     text = text.replace('原复审', '复核').replace('原复核', '复核')
-    # Reader-facing reports must not expose the internal product name or the
-    # renderer's implementation label.  These replacements are display-only;
-    # result/verdict enums and validation logic remain unchanged.
+    # Reader-facing reports carry one title whatever stage produced them; the
+    # product name stays in footers (user decision 2026-11-06). These
+    # replacements are display-only; result/verdict enums and validation logic
+    # remain unchanged.
     text = text.replace('Paper Pecker论文预警报告（AI复核版）', '论文复核报告')
     text = text.replace('Paper Pecker论文预警报告', '论文复核报告')
     text = text.replace('Paper Pecker Risk Alert Report — AI Review', 'Paper Review Report')
     text = text.replace('Paper Pecker Risk Alert Report', 'Paper Review Report')
-    text = text.replace('Paper Pecker', '论文复核系统')
     text = text.replace('本模块复核结论', '本节结论')
+    text = text.replace('本报告由Paper Pecker自动生成，所有发现均基于算法分析，仅供参考。',
+                        '本报告依据本次提供的论文及补充材料，列示可核查的问题及依据。')
     text = text.replace('本报告由论文复核系统自动生成，所有发现均基于算法分析，仅供参考。',
                         '本报告依据本次提供的论文及补充材料，列示可核查的问题及依据。')
     text = text.replace('该风险结论不等同于已经证明存在学术不端',

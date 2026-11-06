@@ -22,7 +22,8 @@ class InitialReportExplainabilityTest(unittest.TestCase):
         html = report._build_full_html(findings, "")
         self.assertIn("论文复核报告", html)
         self.assertIn("Paper Review Report", html)
-        self.assertNotIn("Paper Pecker", html)
+        self.assertIn("Paper Pecker", html)  # product name stays in the footer
+        self.assertNotIn("预警报告", html)
 
     def test_high_risk_analysis_requires_structured_explanation(self):
         vague = "<p>公式计算结果与表格不一致。</p>"

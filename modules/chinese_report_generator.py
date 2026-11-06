@@ -111,10 +111,10 @@ METHODS_HTML = """
 
 DISCLAIMER_HTML = """
 <h2 style="font-size:13pt; color:#1a1a1a; margin-top:18pt; margin-bottom:6pt;">六、免责声明</h2>
-<p style="font-size:9pt; color:#666; margin-bottom:3pt;">本报告由论文复核系统自动生成，所有发现均基于算法分析，仅供参考。</p>
+<p style="font-size:9pt; color:#666; margin-bottom:3pt;">本报告由Paper Pecker自动生成，所有发现均基于算法分析，仅供参考。</p>
 <p style="font-size:9pt; color:#666; margin-bottom:3pt;">部分图像相似性可能来源于合理的实验设计（如共用内参对照、标准分子量标记等），部分数据特征可能有合理的科学解释。</p>
 <p style="font-size:9pt; color:#666; margin-bottom:3pt;">最终结论须结合原始实验材料、作者说明及领域专家的人工审核后方可作出。</p>
-<p style="font-size:9pt; color:#999; margin-top:10pt;">报告生成日期：{date} | 论文复核系统</p>
+<p style="font-size:9pt; color:#999; margin-top:10pt;">报告生成日期：{date} | Paper Pecker</p>
 """
 
 CN_SYSTEM_PROMPT = """你是学术论文风险检测领域的专家。
