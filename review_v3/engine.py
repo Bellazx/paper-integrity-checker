@@ -628,7 +628,7 @@ class Review:
         spec = self._spec("jdg_all", prompts.judge(self.dossier, issues, related), path,
                           config.MAX_CHUNKS_JUDGE, "judge", "judge")
         spec.profile, spec.chunk_turns = "judge", config.JUDGE_CHUNK_TURNS
-        spec.soft_deadline = time.monotonic() + 12 * 60
+        spec.soft_deadline = time.monotonic() + config.JUDGE_SOFT_SECONDS
         spec.continue_prompt = lambda state: prompts.calibrator_continue(
             [item["id"] for item in ledger.open_items(ledger.load(path))])
         spec.wrapup_prompt = lambda state: prompts.calibrator_continue(
@@ -1399,7 +1399,7 @@ def _digest(paths, seed: str = "") -> str:
     return digest.hexdigest()[:12]
 
 
-JUDGE_VERSION = "3"
+JUDGE_VERSION = "4"  # 4: the judge tries to refute each substantive issue (rules/judge.md)
 
 
 def calibration_version() -> str:
