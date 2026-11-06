@@ -276,7 +276,7 @@ def judge(dossier: dict, items: list[dict], related: list[dict]) -> str:
     context = [f"- {str(r.get('location', ''))[:100]}：{str(r.get('issue_type', ''))[:60]}（{r.get('category') or '规范问题'}）"
                for r in related[:30]]
     return f"""你是学术论文诚信复核的终审人员。下列问题在前序核查中至少被一个环节定为实质问题（括号内是定级后的当前类别，有的已被降为规范问题），一旦确认为实质问题，这篇论文会被判为“有风险”。
-你的任务是逐条核对论文原文，确认每条问题是否属实、属于哪一类。不要相信前序核查的转述，以原文为准。
+你的任务不是确认，而是**尝试推翻**：逐条按下面的方法找替代解释，只有替代解释都被原文排除时才维持实质问题。不要相信前序核查的转述，以原文和随文源数据为准。
 
 ## 论文
 {_paper_block(dossier)}
@@ -285,11 +285,13 @@ def judge(dossier: dict, items: list[dict], related: list[dict]) -> str:
 
 {rule('calibrate').replace('{table}', table())}
 
+{rule('judge')}
+
 ## 终审要求
-- 对每条问题：先用 `pv3 item <id>` 读前序记录（字段 first），再打开原文对应页、表、图核实关键数值（`pv3 page`、`pv3 render --clip`、Read 查看图片；必要时自己写脚本复算）。
-- 判断：问题本身是否属实（数值有没有读错、有没有把不同的量当成同一个量）；若属实，它属于哪个类别。只有所有条件都满足才定 S 类。
-- 问题不成立（读错、误解）→ status=cleared，basis 写明原文实际是什么。属实但属于规范问题 → status=issue，category 填 M 类。确为实质问题 → status=issue，category 填 S 类。
-- why 写明你核实到的原文数值和定类理由（一到三句）。
+- 对每条问题：先用 `pv3 item <id>` 读前序记录（字段 first），再打开原文对应页、表、图和源数据工作表核实关键数值（`pv3 page`、`pv3 render --clip`、`pv3 sheet`、Read 查看图片；必要时自己写脚本复算）。每条 S 类问题至少独立打开一次原文或源数据，不得只凭记录判断。
+- 按上面「终审方法」中该类别的替代解释逐项检查；没有核完的替代解释不算已排除。
+- 问题不成立（读错、误解、替代解释成立）→ status=cleared，basis 写明原文实际是什么。属实但属于规范问题 → status=issue，category 填 M 类。替代解释全部排除、确为实质问题 → status=issue，category 填 S 类。
+- why 逐项写明替代解释的核查位置与结果，再写定类理由；只写事实，不写定性短语。
 
 写入格式：
 pv3 ledger update <<'EOF'

@@ -32,6 +32,9 @@ JUDGE_SETTINGS_FILE = os.environ.get("REVIEW_V3_JUDGE_SETTINGS_FILE", "/home/lib
 JUDGE_ENABLED = os.environ.get("REVIEW_V3_JUDGE", "1") != "0"
 MAX_CHUNKS_JUDGE = _int("REVIEW_V3_MAX_CHUNKS_JUDGE", 4)
 JUDGE_CHUNK_TURNS = _int("REVIEW_V3_JUDGE_CHUNK_TURNS", 20)
+# The judge's own time box from its start: it must open the paper and source
+# data for every substantive issue, which takes longer than confirming a record.
+JUDGE_SOFT_SECONDS = _int("REVIEW_V3_JUDGE_SOFT_SECONDS", 18 * 60)
 
 # Progress-driven budget. A session runs CHUNK_TURNS turns at a time and is
 # extended only while its ledger keeps closing items.

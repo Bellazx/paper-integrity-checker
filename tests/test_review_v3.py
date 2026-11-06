@@ -416,13 +416,16 @@ def test_api_entry_dispatches_to_v3_only_when_enabled(monkeypatch):
     import api.services.review as review_module
     seen = {}
 
-    async def fake_run(doi, report, input_dir, output_dir, resume=False):
-        seen["call"] = (doi, resume)
+    async def fake_run(doi, report, input_dir, output_dir, resume=False, deadline=None):
+        seen["call"] = (doi, resume, deadline)
         return {"result": "低风险"}
     monkeypatch.setattr(engine, "run_review", fake_run)
     monkeypatch.setenv("REVIEW_ENGINE", "v3")
     assert asyncio.run(review_module.run_review_single("10.1/x", "r", "i", "o", resume=True)) == {"result": "低风险"}
-    assert seen["call"] == ("10.1/x", True)
+    assert seen["call"] == ("10.1/x", True, None)
+    # The API's paper deadline reaches the engine unchanged.
+    asyncio.run(review_module.run_review_single("10.1/x", "r", "i", "o", resume=True, deadline=123.0))
+    assert seen["call"] == ("10.1/x", True, 123.0)
 
 
 def test_batch_manifest_review_and_resume(tmp_path, fake_cli, monkeypatch):
@@ -1230,3 +1233,14 @@ def test_figure_sentence_ignores_records_without_a_figure_number():
     assert "结果一致" not in engine._figure_sentence(unfinished, {"main_figures": [{}]})
     numbered = {"fig::2": {"id": "fig::2", "status": "cleared"}, **finals}
     assert "Fig. 2" in engine._figure_sentence(numbered, {}) and "overall" not in engine._figure_sentence(numbered, {})
+
+
+def test_judge_prompt_asks_for_refutation_with_the_category_checklist():
+    from review_v3 import prompts
+    text = prompts.judge({"doi": "10.1/x", "paper": {"title": "t"}},
+                         [{"id": "a", "category": "S1", "dimension": "data", "location": "p1", "issue_type": "dup"}], [])
+    assert "尝试推翻" in text and "换算网格或地板值" in text and "同一个量、同一统计量、同一汇总范围" in text
+    assert "没有核完的替代解释不算已排除" in text
+    assert engine.calibration_version() != engine._digest(
+        [p for p in config.RULES_DIR.glob("*.md") if p.name not in engine.REPORT_RULES]
+        + [Path(engine.__file__).with_name("categories.py")], f"judge:3:{config.JUDGE_MODEL}")
