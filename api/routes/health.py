@@ -1,6 +1,7 @@
 import asyncio
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 
 from api.config import DB_CONFIG
 from api.services.api_capacity import capacity_status
@@ -48,3 +49,14 @@ async def health_detailed():
         "tools": tools,
         "api_capacity": capacity_status(),
     }
+
+
+@router.get("/health/deep")
+async def health_deep():
+    """Checks the service as it runs: on-disk code imports, process not older
+    than the sources, database, disk, recent task failures. 503 when requests
+    cannot be served, so an uptime monitor fails over on it too."""
+    from api.services.deep_health import deep_status
+
+    report = await asyncio.to_thread(deep_status)
+    return JSONResponse(report, status_code=503 if report["status"] == "critical" else 200)

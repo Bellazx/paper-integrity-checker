@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the paper-api health watchdog every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+RandomizedDelaySec=20s
+Unit=paper-health-watchdog.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=Paper Integrity Checker API health watchdog (one run)
+After=network.target
+
+[Service]
+Type=oneshot
+User=library
+Group=library
+WorkingDirectory=/home/sjtu/paper-integrity-checker
+Environment=PAPER_INTEGRITY_ROOT=/home/sjtu/paper-integrity-checker
+# SMTP credentials and recipients (library-owned, mode 600, outside git).
+EnvironmentFile=/home/sjtu/paper-integrity-checker/data/ops/watchdog.env
+ExecStart=/usr/bin/bash -lc 'exec /home/sjtu/paper-integrity-checker/venv/bin/python scripts/ops/health_watchdog.py'
+TimeoutStartSec=420
