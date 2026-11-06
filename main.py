@@ -33,7 +33,7 @@ for _name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import INPUT_DIR, OUTPUT_DIR
-from core.pipeline import analyze_paper
+from core.pipeline import initial_pdf_skipped, analyze_paper
 from core.nature_adapter import is_nature_crawl, analyze_nature_paper
 from utils.db import get_existing_dois, insert_findings
 from utils.excel_metadata import find_batch_excel, load_batch_excel, merge_excel_metadata
@@ -131,7 +131,7 @@ def run_single(input_dir: str, output_dir: str, skip_refs: bool = False, author_
         log.info("Skipping DB insert (--no-db)")
     elif findings.get("doi_mismatch"):
         log.warning(_held_message(paper_name, findings["doi_mismatch"]))
-    elif not findings.get("pdf_generated", True) and not findings.get("pdf_skipped_low_risk", False):
+    elif not findings.get("pdf_generated", True) and not initial_pdf_skipped(findings):
         raise RuntimeError("Initial PDF generation failed; result was not inserted into DB")
     else:
         html_candidate = Path(input_dir) / "article.html"
@@ -349,7 +349,7 @@ def run_batch(input_root: str, output_root: str, skip_refs: bool = False, max_wo
             elif findings.get("doi_mismatch"):
                 held = findings["doi_mismatch"]
                 log.warning(_held_message(paper_dir.name, held))
-            elif not findings.get("pdf_generated", True) and not findings.get("pdf_skipped_low_risk", False):
+            elif not findings.get("pdf_generated", True) and not initial_pdf_skipped(findings):
                 raise RuntimeError("Initial PDF generation failed; result was not inserted into DB")
             else:
                 html_candidate = paper_dir / "article.html"

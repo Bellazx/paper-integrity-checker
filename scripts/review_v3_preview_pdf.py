@@ -43,7 +43,7 @@ def render(module, info: dict, out_dir: Path) -> Path:
         findings["paper"] = module._sanitize_paper_dict_for_render(findings.get("paper", {}))
         header = module._header_html(findings["paper"])
     else:
-        header = f"<h1>Paper Pecker论文预警报告（AI复核版）</h1><p><b>DOI：</b>{module._html_escape(doi)}</p>"
+        header = f"<h1>论文复核报告</h1><p><b>DOI：</b>{module._html_escape(doi)}</p>"
     risk = module._review_overview_html(findings, info)
     slug = module.doi_to_slug(doi) or "unknown"
     scratch = out_dir / ".evidence_scratch" / slug

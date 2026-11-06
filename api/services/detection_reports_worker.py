@@ -44,6 +44,7 @@ from api.services.detection_reports_db import (
 
 log = logging.getLogger(__name__)
 
+from core.pipeline import initial_pdf_skipped
 PUBLIC_BASE_URL = os.environ.get("PAPER_PUBLIC_BASE_URL", "http://202.120.57.100").rstrip("/")
 CHUSHEN_BASE_URL = os.environ.get(
     "PAPER_CHUSHEN_BASE_URL", f"{PUBLIC_BASE_URL}/chinese_reports"
@@ -76,7 +77,7 @@ def _paper_report_namespace(task_id: str, paper: PaperInfo) -> str:
 def _chushen_report_url(findings: dict, namespace: str = REPORT_NAMESPACE) -> str:
     """First-pass detection PDF URL — matches the filename main.py writes via
     modules.chinese_report_generator._make_filename(doi, title)."""
-    if findings.get("pdf_skipped_low_risk"):
+    if initial_pdf_skipped(findings):
         return ""
     from modules.chinese_report_generator import _make_filename
     paper = findings.get("paper", {})
@@ -193,9 +194,9 @@ async def _run_inner(
             if findings.get('error') or not findings.get('paper') or 'summary' not in findings:
                 raise RuntimeError('Detection did not produce a valid findings report')
 
-            # Low-risk papers intentionally skip PDF generation. High-risk papers
-            # still require a first-pass report because they proceed to review.
-            if not findings.get("pdf_generated", True) and not findings.get("pdf_skipped_low_risk", False):
+            # A high-risk screening has no PDF of its own: it goes on to review
+            # and the review report is delivered.
+            if not findings.get("pdf_generated", True) and not initial_pdf_skipped(findings):
                 raise RuntimeError("PDF generation failed; skipping detection_reports write")
 
             report_json = Path(paper.output_dir) / "report.json"

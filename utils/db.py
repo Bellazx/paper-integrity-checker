@@ -244,7 +244,8 @@ def insert_findings(
     # not expose this column yet.
     has_source_path = table_name in {"yujing_quanliang", "yujing_audit"}
 
-    report_url = "" if findings.get("pdf_skipped_low_risk") else _make_report_url(findings, chinese_reports_dir, namespace=namespace)
+    from core.pipeline import initial_pdf_skipped
+    report_url = "" if initial_pdf_skipped(findings) else _make_report_url(findings, chinese_reports_dir, namespace=namespace)
 
     row = {
         "title": meta["title"][:500],

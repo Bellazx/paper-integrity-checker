@@ -493,6 +493,7 @@ def test_shared_pipeline_persists_verified_risk_or_stops_before_report(tmp_path,
         return result
     monkeypatch.setattr(pipeline, "generate_chinese_pdf", generate)
     monkeypatch.setattr(pipeline, "screen_manuscript", content)
+    monkeypatch.setattr(pipeline, "extract_full_metadata", lambda p: {"authors_full": ["A"], "affiliations": ["U"]})
     output = tmp_path / "out"
     if fail:
         with pytest.raises(RuntimeError, match="未生成放行结论"):
@@ -508,7 +509,9 @@ def test_shared_pipeline_persists_verified_risk_or_stops_before_report(tmp_path,
         saved = json.loads((output / "report.json").read_text())
         assert saved["content_screening"]["status"] == "complete"
         assert saved["data_anomalies"][0]["test"] == "verified_manuscript_content_conflict"
-        assert reports
+        # A high-risk screening goes on to review; its own PDF is not rendered.
+        assert not reports and saved["pdf_skipped_high_risk"] and not saved["pdf_generated"]
+        assert saved["paper"]["authors_full"] == ["A"]
 
 
 def test_report_writer_failure_keeps_verified_content_evidence(tmp_path, monkeypatch):

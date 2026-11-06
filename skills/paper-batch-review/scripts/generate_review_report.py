@@ -538,8 +538,8 @@ def _header_html(paper: dict) -> str:
     stats_line = f'<p style="font-size:9.5pt; color:#333; margin-bottom:2pt;">{"　　".join(stats)}</p>' if stats else ""
 
     return f"""
-<h1 style="font-size:18pt; color:#1a1a1a; text-align:center; margin-bottom:4pt;">Paper Pecker论文预警报告（AI复核版）</h1>
-<p style="font-size:10.5pt; color:#555; text-align:center; margin-top:0; margin-bottom:16pt;">Paper Pecker Risk Alert Report — AI Review</p>
+<h1 style="font-size:18pt; color:#1a1a1a; text-align:center; margin-bottom:4pt;">论文复核报告</h1>
+<p style="font-size:10.5pt; color:#555; text-align:center; margin-top:0; margin-bottom:16pt;">Paper Review Report</p>
 <hr style="border:none; border-top:1px solid #ccc; margin:10pt 0;">
 <h2 style="font-size:13pt; color:#1a1a1a; margin-top:14pt; margin-bottom:6pt;">一、论文基本信息</h2>
 <p style="font-size:9.5pt; color:#333; margin-bottom:2pt;"><b>论文标题：</b>{title}</p>
@@ -3002,8 +3002,8 @@ def main():
         else:
             safe_doi = _html_escape(doi)
             header = f"""
-<h1 style="font-size:18pt; color:#1a1a1a; text-align:center; margin-bottom:4pt;">Paper Pecker论文预警报告（AI复核版）</h1>
-<p style="font-size:10.5pt; color:#555; text-align:center; margin-top:0; margin-bottom:16pt;">Paper Pecker Risk Alert Report — AI Review</p>
+<h1 style="font-size:18pt; color:#1a1a1a; text-align:center; margin-bottom:4pt;">论文复核报告</h1>
+<p style="font-size:10.5pt; color:#555; text-align:center; margin-top:0; margin-bottom:16pt;">Paper Review Report</p>
 <hr style="border:none; border-top:1px solid #ccc; margin:10pt 0;">
 <h2 style="font-size:13pt; color:#1a1a1a; margin-top:14pt; margin-bottom:6pt;">一、论文基本信息</h2>
 <p style="font-size:9.5pt; color:#333; margin-bottom:2pt;"><b>DOI：</b>{safe_doi}</p>

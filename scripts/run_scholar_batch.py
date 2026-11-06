@@ -34,7 +34,7 @@ REPORT_PYTHON = os.environ.get(
 )
 
 from api.services.review import run_review_single
-from core.pipeline import analyze_paper, find_pdf
+from core.pipeline import initial_pdf_skipped, analyze_paper, find_pdf
 from modules.chinese_report_generator import (
     _apply_explainability_dimension_downgrade,
     _apply_data_caps,
@@ -284,13 +284,17 @@ def run_initial(
                 chinese_reports_dir=str(chinese_reports),
                 doi_override=doi_map[paper_dir.name],
             )
-            if not findings.get("pdf_generated"):
+            skipped = initial_pdf_skipped(findings)
+            if not findings.get("pdf_generated") and not skipped:
                 raise RuntimeError("Initial PDF generation failed; result was not inserted into DB")
             row = _db_row(findings, scholar, college)
-            filename = _make_filename(row["doi"], findings["paper"].get("title", "unknown"))
-            pdf = chinese_reports / filename
-            if not pdf.is_file() or pdf.stat().st_size == 0:
-                raise RuntimeError("Initial PDF is missing or empty; result was not inserted into DB")
+            if skipped:
+                row["report_url"] = ""  # the review report is the one delivered
+            else:
+                filename = _make_filename(row["doi"], findings["paper"].get("title", "unknown"))
+                pdf = chinese_reports / filename
+                if not pdf.is_file() or pdf.stat().st_size == 0:
+                    raise RuntimeError("Initial PDF is missing or empty; result was not inserted into DB")
             _upsert_initial(row)
             return {
                 "dir": paper_dir.name,

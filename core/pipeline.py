@@ -248,6 +248,21 @@ def extract_title_from_text(pdf_path: str) -> str:
     return title
 
 
+class _SkipPdf(Exception):
+    """The initial PDF is deliberately not rendered."""
+
+
+def skip_initial_pdf(risk_level: str) -> bool:
+    """High-risk screenings get no PDF of their own: they always go on to
+    review and the review report is what is delivered (2026-11-06)."""
+    return str(risk_level or "").strip() == "高风险" and os.environ.get("PAPER_INITIAL_PDF_FOR_HIGH_RISK", "0") != "1"
+
+
+def initial_pdf_skipped(findings: dict) -> bool:
+    """True when screening finished without a PDF on purpose (low- or high-risk skip)."""
+    return bool(findings.get("pdf_skipped_low_risk") or findings.get("pdf_skipped_high_risk"))
+
+
 def extract_full_metadata(pdf_path: str) -> dict:
     """Use LLM to extract all authors and affiliations from first pages of PDF text."""
     from utils.llm_client import chat
@@ -692,8 +707,22 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
     # batch 重审后 yujing_quanliang.report_url 仍指向不存在的文件（404）。
     # 本次修复以 DB URL 健康度优先，恢复对低风险也走 PDF 生成路径。
     pdf_skipped_low_risk = False
-    log.info("Generating Chinese PDF report (forced for all risk levels)...")
+    # 2026-11-06: a high-risk screening always goes on to review, whose report
+    # is the one delivered; its own PDF is not rendered (PAPER_INITIAL_PDF_FOR_HIGH_RISK=1 restores it).
+    pdf_skipped_high_risk = skip_initial_pdf(overall_risk.get("level", ""))
+    if pdf_skipped_high_risk:
+        log.info("Initial screening is high risk: no initial PDF, the review report will be delivered")
+        try:
+            full_meta = extract_full_metadata(pdf_path)
+            findings["paper"]["authors_full"] = full_meta.get("authors_full", [])
+            findings["paper"]["affiliations"] = full_meta.get("affiliations", [])
+        except Exception as e:
+            log.warning("Author/affiliation extraction failed: %s", e)
+    else:
+        log.info("Generating Chinese PDF report...")
     try:
+        if pdf_skipped_high_risk:
+            raise _SkipPdf()
         # Fallback when caller didn't supply chinese_reports_dir:
         # With the new per-table layout (output_dir = <table>/init/<doi_slug>/),
         # the chinese_reports/ dir is two levels up at <table>/chinese_reports/.
@@ -725,6 +754,8 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
             log.info("Chinese PDF: %s", cn_path)
         else:
             log.error("Chinese PDF generation returned None, paper will not be inserted to DB")
+    except _SkipPdf:
+        pass
     except Exception as e:
         log.error("Failed to generate Chinese PDF: %s", e)
 
@@ -732,6 +763,7 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
     # self-insert paths) skip inserting records that would point at a missing PDF.
     findings["pdf_generated"] = cn_path is not None
     findings["pdf_skipped_low_risk"] = pdf_skipped_low_risk
+    findings["pdf_skipped_high_risk"] = pdf_skipped_high_risk
 
     json_path = Path(output_dir) / "report.json"
     with open(json_path, "w", encoding="utf-8") as f:
