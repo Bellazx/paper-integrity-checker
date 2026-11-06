@@ -8,7 +8,8 @@ User=library
 Group=library
 WorkingDirectory=/home/sjtu/paper-integrity-checker
 Environment=PAPER_INTEGRITY_ROOT=/home/sjtu/paper-integrity-checker
-# SMTP credentials and recipients (library-owned, mode 600, outside git).
-EnvironmentFile=/home/sjtu/paper-integrity-checker/data/ops/watchdog.env
-ExecStart=/usr/bin/bash -lc 'exec /home/sjtu/paper-integrity-checker/venv/bin/python scripts/ops/health_watchdog.py'
+# SMTP settings live in data/ops/watchdog.env (library-owned, mode 600, not in
+# git). It is sourced by the shell, not via EnvironmentFile=: PID 1 may not
+# read files under /home on this SELinux-enforcing host.
+ExecStart=/usr/bin/bash -c 'set -a; . /home/sjtu/paper-integrity-checker/data/ops/watchdog.env; set +a; exec /home/sjtu/paper-integrity-checker/venv/bin/python scripts/ops/health_watchdog.py'
 TimeoutStartSec=420

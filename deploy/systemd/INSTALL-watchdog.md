@@ -4,7 +4,7 @@ SMTP 账号与收件人已写在 `data/ops/watchdog.env`（library 属主，600�
 
 ```bash
 cd /home/sjtu/paper-integrity-checker
-sudo cp deploy/systemd/paper-health-watchdog.service deploy/systemd/paper-health-watchdog.timer /etc/systemd/system/
+sudo cp deploy/systemd/paper-health-watchdog.service deploy/systemd/paper-health-watchdog.timer /etc/systemd/system/   # 不用 EnvironmentFile=：PID 1 读不了 /home 下的文件（SELinux）
 sudo systemctl daemon-reload
 sudo systemctl enable --now paper-health-watchdog.timer
 systemctl list-timers paper-health-watchdog.timer      # 下次运行时间
