@@ -1,13 +1,14 @@
 #!/usr/bin/env python
-"""Health watchdog for paper-api: run every few minutes from a systemd timer.
+"""Health watchdog for paper-api: run every half hour from a systemd timer.
 
 Looks at three things and mails whoever is on ALERT_TO when one of them is
 new: the deep health report (/api/health/deep: on-disk code imports, stale
 process, database, disk, failed tasks), the service journal since the last
 run (tracebacks, HTTP 500s, codec errors), and whether the API answers at
 all. Each distinct problem is mailed once when it appears, reminded after
-REMIND_MINUTES if it persists, and reported once more when it clears. A
-daily summary goes out at the first run after DIGEST_HOUR.
+REMIND_MINUTES if it persists, and reported once more when it clears.
+Nothing is sent while everything is fine. A daily summary is optional:
+set DIGEST_HOUR to an hour (0-23) to receive one; the default -1 disables it.
 
 Configuration comes from the environment (systemd EnvironmentFile):
   SMTP_HOST, SMTP_PORT (465 = SSL, else STARTTLS), SMTP_USER, SMTP_PASSWORD,
@@ -15,7 +16,7 @@ Configuration comes from the environment (systemd EnvironmentFile):
   HEALTH_URL (default http://127.0.0.1:8001/api/health/deep)
   JOURNAL_UNIT (default paper-api.service)
   WATCHDOG_STATE (default <root>/data/ops/watchdog_state.json)
-  REMIND_MINUTES (default 120), DIGEST_HOUR (default 9)
+  REMIND_MINUTES (default 120), DIGEST_HOUR (default -1 = no daily summary)
 Options: --dry-run (print mails instead of sending), --test-mail.
 """
 from __future__ import annotations
@@ -41,7 +42,7 @@ JOURNAL_UNIT = os.environ.get("JOURNAL_UNIT", "paper-api.service")
 STATE_PATH = Path(os.environ.get("WATCHDOG_STATE", str(ROOT / "data" / "ops" / "watchdog_state.json")))
 LOG_PATH = ROOT / "data" / "output" / "ops_logs" / "watchdog.log"
 REMIND_SECONDS = int(os.environ.get("REMIND_MINUTES", "120")) * 60
-DIGEST_HOUR = int(os.environ.get("DIGEST_HOUR", "9"))
+DIGEST_HOUR = int(os.environ.get("DIGEST_HOUR", "-1"))
 SERVICE_NAME = "论文检测系统 paper-api"
 
 JOURNAL_PATTERNS = (
@@ -297,7 +298,7 @@ def send_mail(subject: str, body: str, dry_run: bool = False) -> bool:
 def run(dry_run: bool = False, now: float | None = None) -> int:
     now = now or time.time()
     state = load_state()
-    since = state.get("last_run") or (now - 600)
+    since = state.get("last_run") or (now - 1800)
     report, error = fetch_health()
     findings = health_findings(report, error) + journal_findings(read_journal(min(since, now - 60)))
     new, remind, cleared = reconcile(state, findings, now)
@@ -308,7 +309,7 @@ def run(dry_run: bool = False, now: float | None = None) -> int:
         subject, body = compose(new, remind, cleared, report, now)
         send_mail(subject, body, dry_run)
     today = datetime.fromtimestamp(now).strftime("%F")
-    if datetime.fromtimestamp(now).hour >= DIGEST_HOUR and state.get("last_digest_day") != today:
+    if DIGEST_HOUR >= 0 and datetime.fromtimestamp(now).hour >= DIGEST_HOUR and state.get("last_digest_day") != today:
         subject, body = compose_digest(state, report, now)
         if send_mail(subject, body, dry_run) or dry_run:
             state["last_digest_day"] = today

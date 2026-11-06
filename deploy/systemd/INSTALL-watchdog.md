@@ -20,5 +20,5 @@ venv/bin/python scripts/ops/health_watchdog.py --dry-run     # 只打印，不�
 venv/bin/python scripts/ops/health_watchdog.py --test-mail   # 发一封测试邮件
 ```
 
-告警规则：每个问题首次出现发一封；持续存在每 REMIND_MINUTES 提醒一次；恢复后发一封「已恢复」；每天 DIGEST_HOUR 后首次运行发一封 24 小时汇总。
+运行频率：每 30 分钟一次。没有问题和报错时不发任何邮件。每个问题首次出现发一封；持续存在每 REMIND_MINUTES（默认 120）分钟提醒一次；恢复后发一封「已恢复」。每日汇总默认关闭（DIGEST_HOUR=-1；设为 0–23 可开启）。
 状态文件 `data/ops/watchdog_state.json`，日志 `data/output/ops_logs/watchdog.log`。
