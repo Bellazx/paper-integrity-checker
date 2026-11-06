@@ -12,7 +12,7 @@ from api.models import PaperInfo
 from api.services import detection_reports_worker as worker, report
 from api.services.api_capacity import WorkLimiter
 from api.services.review_runtime import api_review_budget
-from review_v3 import engine
+from review_v3 import config, engine
 from review_v3.workbook_cache import read_sheet
 
 
@@ -114,8 +114,10 @@ def test_api_budget_keeps_late_phases_until_one_review_deadline(tmp_path):
     review = engine.Review('x', '', str(tmp_path), tmp_path, time.monotonic() + 200, None)
     token = api_review_budget.set(True)
     try:
-        for phase in ('investigate', 'complete', 'calibrate', 'judge', 'evidence'):
+        for phase in ('investigate', 'complete', 'judge', 'evidence'):
             assert review._hard_deadline(phase) == review.deadline
+        # Calibration alone stops early so the judge still gets its turn.
+        assert review._hard_deadline('calibrate') == review.deadline - config.JUDGE_RESERVE_SECONDS
     finally:
         api_review_budget.reset(token)
     assert engine._required_finding('image::visual_pass')
