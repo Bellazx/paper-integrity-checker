@@ -1297,4 +1297,5 @@ def test_phase_boxes_after_shell_fix():
     assert (config.INVESTIGATE_SOFT_SECONDS, config.CHALLENGE_SOFT_SECONDS, config.ARBITRATE_SOFT_SECONDS) == (600, 960, 1440)
     # later boxes and floors unchanged: calibration still gets its window after arbitration
     assert config.CALIBRATE_SOFT_SECONDS == 34 * 60 and config.EVIDENCE_SOFT_SECONDS == 38 * 60
-    assert config.ARBITRATE_SOFT_SECONDS < config.CALIBRATE_SOFT_SECONDS - config.PHASE_FLOOR_SECONDS["calibrate"]
+    # calibration keeps at least its floor after the arbitration box closes
+    assert config.ARBITRATE_SOFT_SECONDS + config.PHASE_FLOOR_SECONDS["calibrate"] <= config.CALIBRATE_SOFT_SECONDS
