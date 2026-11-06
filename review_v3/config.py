@@ -105,7 +105,12 @@ FIGURE_SHARD_SIZE = _int("REVIEW_V3_FIGURE_SHARD_SIZE", 2)
 MAX_SHARDS_PER_DIMENSION = _int("REVIEW_V3_MAX_SHARDS_PER_DIMENSION", 8)
 
 # Concurrency of model sessions within one process (all papers together).
-MAX_SESSIONS = _int("REVIEW_V3_MAX_SESSIONS", 48)
+# 48 was an unmeasured first-version default: on 2026-11-06 six concurrent
+# API papers hit it and 82 of 213 sessions queued (median 3 min, up to 5),
+# while the model endpoint showed no throttling. The host (192 cores, 2 TB,
+# ~200 MB per CLI session) is not the limit; the watchdog mails any 503/429
+# the endpoint returns, so the cap is set where it does not queue.
+MAX_SESSIONS = _int("REVIEW_V3_MAX_SESSIONS", 300)
 
 # Whole-paper wall clock (seconds). 0 disables.
 PAPER_TIMEOUT_SECONDS = _int("REVIEW_PAPER_TIMEOUT_SECONDS", 90 * 60)
