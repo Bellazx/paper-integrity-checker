@@ -1356,6 +1356,10 @@ def _validate_explainable_highrisk_detail(info: dict) -> None:
         r"(?:第\s*\d+\s*页|page\s*\d+|Fig(?:ure)?\.?\s*[A-Za-z0-9.-]+|"
         r"Table\s*[A-Za-z0-9.-]+|图\s*[A-Za-z0-9.-]+|表\s*[A-Za-z0-9.-]+|"
         r"公式?\s*[（(]?\d+|式\s*[（(]?\d+|sheet\s*['\"“”]?[^，,。;；\n]+|"
+        # Source-data locations as the v3 engine writes them in Chinese:
+        # a named worksheet, a column letter, a row or row range.
+        r"['\"“”‘’][^'\"“”‘’\n]{1,80}['\"“”‘’]\s*工作表|工作表\s*['\"“”‘’][^'\"“”‘’\n]{1,80}|"
+        r"\b[A-Z]{1,3}\s*列|第\s*\d+(?:\s*[–—-]\s*\d+)?\s*行|"
         r"参考文献\s*(?:第)?\s*\d+\s*(?:条|项|号)?|Reference\s*#?\s*\d+|"
         r"(?:\.xlsx?|\.xlsm|\.csv).{0,160}(?:R\d+:R\d+\s*C\d+:C\d+|"
         r"[A-Z]{1,3}\d+(?::[A-Z]{1,3}\d+)?))",
