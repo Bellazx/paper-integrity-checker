@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import hashlib
 import re
 import time
@@ -20,6 +21,7 @@ from modules.reference_checker import (
     CROSSREF_RATE_LIMIT_DELAY, REF_TITLE_SIMILARITY_THRESHOLD,
 )
 from modules.chinese_report_generator import generate_chinese_pdf
+from modules.initial_report_bundle import generate_initial_pdfs
 from utils.db import _find_sjtu_authors
 from core.pipeline import NumpyEncoder
 
@@ -514,7 +516,8 @@ def analyze_nature_paper(
     overall_risk = _compute_overall_risk(findings)
     findings["initial_risk_level"] = overall_risk.get("level", "")
     findings["initial_risk_score"] = overall_risk.get("score", 0)
-    pdf_skipped_low_risk = overall_risk.get("level") == "低风险"
+    pdf_skipped_low_risk = (overall_risk.get("level") == "低风险"
+                            and not os.environ.get("PAPER_INITIAL_REPORT_LANGUAGE"))
     if pdf_skipped_low_risk:
         log.info("Skipping Chinese PDF report for low-risk paper (score=%s)", overall_risk.get("score"))
     else:
@@ -541,7 +544,8 @@ def analyze_nature_paper(
             saved_authors = findings["paper"]["authors_full"][:]
             saved_affiliations = findings["paper"]["affiliations"][:]
             cn_path, _ = _retry(
-                lambda: generate_chinese_pdf(findings, cn_dir, first_pages_text),
+                lambda: generate_initial_pdfs(findings, cn_dir, first_pages_text,
+                                              chinese_renderer=generate_chinese_pdf),
                 label="Chinese PDF generation",
             )
             findings["paper"]["authors_full"] = saved_authors

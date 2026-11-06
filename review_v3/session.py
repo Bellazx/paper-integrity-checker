@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from review_v3 import config, ledger
+from review_v3 import config, ledger, visual_progress
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +75,8 @@ def settings_file(profile: str = "default") -> str:
         base = {}
     guard = f"{config.PYTHON} -I {config.PACKAGE_DIR / 'tools' / 'guard.py'}"
     base["hooks"] = {"PreToolUse": [{"matcher": "Bash|Read", "hooks": [{"type": "command", "command": guard}]}]}
+    read_hook = f"{config.PYTHON} -I {config.PACKAGE_DIR / 'tools' / 'visual_read_hook.py'}"
+    base["hooks"]["PostToolUse"] = [{"matcher": "Read", "hooks": [{"type": "command", "command": read_hook}]}]
     # Permissions come only from the CLI flags of each session.
     base.pop("permissions", None)
     path = runtime_cwd() / ("settings_v3.json" if profile == "default" else f"settings_v3_{profile}.json")
@@ -208,13 +210,14 @@ def _save_state(spec: SessionSpec, state: dict) -> None:
     os.replace(tmp, path)
 
 
-def _progress_key(spec: SessionSpec) -> tuple[int, int]:
+def _progress_key(spec: SessionSpec) -> tuple[int, int, int]:
     if not spec.ledger_path:
-        return (0, 0)
+        return (0, 0, 0)
     data = ledger.load(spec.ledger_path)
     counts = ledger.counts(data)
     updates = sum(1 for item in (data.get("items") or {}).values() if item.get("updated_at"))
-    return counts["closed"], updates
+    visual = visual_progress.progress_count(spec.workdir, spec.actor) if "image::visual_pass" in (data.get("items") or {}) else 0
+    return counts["closed"], updates, visual
 
 
 def _all_closed(spec: SessionSpec) -> bool:
@@ -414,7 +417,9 @@ async def run(spec: SessionSpec) -> SessionOutcome:
     state.setdefault("metrics", [])
     state.setdefault("started", False)
     outcome_text = state.get("text", "")
+    queued_at = time.monotonic()
     async with _gate():
+        state["queue_wait_seconds"] = round(time.monotonic() - queued_at, 3)
         while True:
             if spec.ledger_path and _all_closed(spec) and state["chunks"] > 0:
                 state["status"] = "done"
@@ -458,6 +463,7 @@ async def run(spec: SessionSpec) -> SessionOutcome:
             _save_state(spec, state)
             raw, attempt = {}, 0
             while True:
+                invoked_with_resume = resume
                 raw = await _invoke(spec, message, state["session_id"], resume,
                                     config.WRAPUP_TURNS if wrapping else spec.chunk_turns, wrapping,
                                     debug=bool(state.get("debug")))
@@ -488,7 +494,12 @@ async def run(spec: SessionSpec) -> SessionOutcome:
                       "wall": round(raw.get("_wall", 0), 1), "api_ms": raw.get("duration_api_ms"),
                       "cost": raw.get("total_cost_usd"), "error": raw.get("_error"),
                       "input_tokens": usage.get("input_tokens"), "cache_read": usage.get("cache_read_input_tokens"),
-                      "output_tokens": usage.get("output_tokens"), "closed": after[0]}
+                      "output_tokens": usage.get("output_tokens"), "closed": after[0], "visual_progress": after[2]}
+            metric.update(started_at=state["launched_at"], finished_at=time.time(), wrapping=wrapping,
+                          resumed=invoked_with_resume, closed_before=before[0], closed_delta=after[0] - before[0],
+                          transport_retries=attempt, api_ms_scope="cli_reported_not_per_chunk")
+            if spec.ledger_path:
+                metric["last_ledger_update_at"] = ledger.load(spec.ledger_path).get("updated_at")
             if raw.get("_exit_killed"):
                 metric["exit_killed"] = True
             if spec.tools:
@@ -539,6 +550,45 @@ def reset(spec_name: str, workdir: Path) -> None:
     path = workdir / "sessions" / f"{spec_name}.json"
     if path.exists():
         path.rename(path.with_name(f"{spec_name}.{int(time.time())}.done.json"))
+
+
+def continue_as(source: str, target: str, workdir: Path) -> dict:
+    """Hand off a finished session's context once, retaining its spent chunks.
+
+    The caller must have awaited the source. The source audit record remains
+    unchanged; the target keeps only its own metrics. Existing targets are
+    never reopened here, so process restarts cannot refund recovery budgets.
+    Unresponsive/failed sessions start fresh from the caller's ledger handoff.
+    """
+    target_spec = SessionSpec(target, workdir, "", "calibrator")
+    path = _state_path(target_spec)
+    if path.exists():
+        state = _load_state(target_spec)
+        # Older runs have no handoff metadata; retain their existing budget.
+        state.setdefault("continuation_mode", "existing")
+        state.setdefault("continuation_reason", "接续已保存的补评级进度")
+        state.setdefault("continuation_base_chunks", 0)
+        _save_state(target_spec, state)
+        return state
+    source_spec = SessionSpec(source, workdir, "", "calibrator")
+    previous = _load_state(source_spec)
+    metrics = previous.get("metrics") or []
+    before_last_two = metrics[-3].get("closed", 0) if len(metrics) > 2 else 0
+    no_progress_timeouts = (len(metrics) >= 2 and
+                           all(m.get("error") == "chunk timeout" for m in metrics[-2:]) and
+                           metrics[-1].get("closed", 0) <= before_last_two)
+    eligible = (previous.get("finished_at") and previous.get("session_id") and
+                previous.get("status") in ("done", "wrapped", "exhausted") and
+                not previous.get("restart") and not no_progress_timeouts)
+    state = {"continuation_source": source, "continuation_mode": "resume" if eligible else "restart",
+             "continuation_reason": ("保留前一会话上下文" if eligible else
+                                     "前一会话无可用上下文、执行失败或连续超时无进展"),
+             "continuation_base_chunks": int(previous.get("chunks", 0)) if eligible else 0,
+             "metrics": [], "no_progress": 0, "started": bool(eligible)}
+    if eligible:
+        state.update(session_id=previous["session_id"], chunks=int(previous.get("chunks", 0)))
+    _save_state(target_spec, state)
+    return state
 
 
 def reopen(spec_name: str, workdir: Path) -> int:

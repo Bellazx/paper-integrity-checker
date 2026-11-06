@@ -416,7 +416,7 @@ def test_api_entry_dispatches_to_v3_only_when_enabled(monkeypatch):
     import api.services.review as review_module
     seen = {}
 
-    async def fake_run(doi, report, input_dir, output_dir, resume=False):
+    async def fake_run(doi, report, input_dir, output_dir, resume=False, deadline=None, shared_api_budget=False):
         seen["call"] = (doi, resume)
         return {"result": "低风险"}
     monkeypatch.setattr(engine, "run_review", fake_run)

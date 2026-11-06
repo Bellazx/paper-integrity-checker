@@ -16,10 +16,12 @@ import hashlib
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 from api.config import (
-    API_MAX_CONCURRENT_TASKS, MAX_REVIEW_WORKERS, OUTPUT_DIR, REVIEW_DIR, TASKS_DIR,
+    API_MAX_CONCURRENT_TASKS, API_PAPER_DEADLINE_SECONDS, API_REPORT_RESERVE_SECONDS,
+    DETECT_TIMEOUT_SECONDS, MAX_REVIEW_WORKERS, OUTPUT_DIR, REVIEW_DIR, TASKS_DIR,
     sanitize_report_namespace,
 )
 from api.models import PaperInfo, TaskStatus
@@ -28,9 +30,10 @@ from modules.doi_utils import choose_authoritative_doi, normalize_doi
 from api.services.task_manager import TaskManager
 from api.services.detect import run_detection_single
 from api.services.review import run_review_single
-from api.services.report import generate_reports
+from api.services.report import generate_reports, generate_english_report
 from api.services.report_access import verify_public_pdf
 from api.services.api_capacity import api_work
+from api.services.review_runtime import deadline_after, time_left
 from api.services.submission_policy import blocking_write
 from api.services.submission_policy import api_dry_run
 from api.services.detection_reports_db import (
@@ -41,10 +44,10 @@ from api.services.detection_reports_db import (
     verify_review_write,
     update_english_reports,
 )
+from core.pipeline import initial_pdf_skipped
 
 log = logging.getLogger(__name__)
 
-from core.pipeline import initial_pdf_skipped
 PUBLIC_BASE_URL = os.environ.get("PAPER_PUBLIC_BASE_URL", "http://202.120.57.100").rstrip("/")
 CHUSHEN_BASE_URL = os.environ.get(
     "PAPER_CHUSHEN_BASE_URL", f"{PUBLIC_BASE_URL}/chinese_reports"
@@ -132,6 +135,34 @@ def _review_doi(paper: PaperInfo, review: dict | None = None) -> str:
     return ""
 
 
+async def _render_review_pair(paper: PaperInfo, review: dict, task_dir: Path, deadline):
+    """Both requested languages share one immutable review and run concurrently."""
+    namespace = review['_report_namespace']
+    jobs = {}
+    if paper.language in {"zh", "both"}:
+        jobs["zh"] = api_work.run_until(deadline,
+            generate_reports, [review], task_dir / "zh", table_name=REPORT_NAMESPACE,
+            write_db=False, report_namespace=namespace, deadline=deadline)
+    if paper.language in {"en", "both"}:
+        jobs["en"] = api_work.run_until(deadline,
+            generate_english_report, review, REVIEW_DIR / namespace, task_dir / "en",
+            kind="review", slug=_review_report_slug(paper, review), deadline=deadline)
+    started = time.monotonic()
+    timings = {}
+
+    async def timed(language, job):
+        begin = time.monotonic()
+        try:
+            return await job
+        finally:
+            timings[language] = round(time.monotonic() - begin, 3)
+
+    results = await asyncio.gather(*(timed(language, job) for language, job in jobs.items()), return_exceptions=True)
+    review['_report_metrics'] = {'languages': list(jobs), 'wall_seconds': round(time.monotonic() - started, 3),
+                                 'language_seconds': timings}
+    return dict(zip(jobs, results))
+
+
 async def run_detection_reports_pipeline(
     task_id: str,
     tm: TaskManager,
@@ -169,8 +200,12 @@ async def _run_inner(
     english_initial_urls: dict[tuple[str, str], str] = {}
     english_initial_errors: dict[tuple[str, str], str] = {}
     initial_results = {}
+    # Each paper's shared clock (API_PAPER_DEADLINE_SECONDS) starts with its
+    # own detection; review and report rendering use what is left of it.
+    paper_deadlines: dict[tuple[str, str], float | None] = {}
 
     for i, paper in enumerate(papers):
+        paper_deadlines[(paper.submission_no, paper.fold_name)] = deadline_after(API_PAPER_DEADLINE_SECONDS)
         try:
             paper_namespace = _paper_report_namespace(task_id, paper)
             saved = Path(paper.output_dir) / 'report.json'
@@ -181,7 +216,7 @@ async def _run_inner(
             if findings is None:
                 paper.initial_report_namespace = paper_namespace
                 tm.update_task(task_id, papers=papers)
-                findings = await api_work.run(
+                findings = await api_work.run_until(paper_deadlines[(paper.submission_no, paper.fold_name)],
                     run_detection_single,
                     input_dir=paper.input_dir,
                     output_dir=paper.output_dir,
@@ -190,6 +225,10 @@ async def _run_inner(
                     write_db=False,
                     doi=paper.doi,
                     report_namespace=paper_namespace,
+                    timeout=time_left(paper_deadlines[(paper.submission_no, paper.fold_name)],
+                                      DETECT_TIMEOUT_SECONDS),
+                    language=paper.language,
+                    deadline=paper_deadlines[(paper.submission_no, paper.fold_name)],
                 )
             if findings.get('error') or not findings.get('paper') or 'summary' not in findings:
                 raise RuntimeError('Detection did not produce a valid findings report')
@@ -224,6 +263,8 @@ async def _run_inner(
             chushen_url = _chushen_report_url(findings, report_namespace)
             if paper.initial_report_namespace:
                 chushen_url = _chushen_report_url(findings, paper.initial_report_namespace)
+            if paper.language == "en":
+                chushen_url = ""
             if not api_dry_run():
                 await verify_public_pdf(chushen_url)
             initial_results[(paper.submission_no, paper.fold_name)] = chushen_result
@@ -231,14 +272,27 @@ async def _run_inner(
             # Keep the established Chinese report and generate an English sibling
             # when requested.  This is deliberately outside main.py so the legacy
             # detection CLI remains unchanged for batch/offline callers.
-            if paper.language in {"en", "both"}:
+            if paper.language in {"en", "both"} and not initial_pdf_skipped(findings):
                 try:
-                    from modules.english_report_generator import generate_english_initial_pdf
-
-                    english_dir = OUTPUT_DIR / "english_reports" / sanitize_report_namespace(paper_namespace)
-                    await api_work.run(asyncio.to_thread, generate_english_initial_pdf, findings, english_dir)
+                    from modules.english_report_generator import initial_report_filename
+                    english_namespace = paper_namespace
+                    english_dir = OUTPUT_DIR / "english_reports" / sanitize_report_namespace(english_namespace)
+                    # New detection children already render both languages in
+                    # parallel. Older checkpoints need only the missing sibling.
+                    saved_english = findings.get('_english_initial_pdf')
+                    original_namespace = paper.initial_report_namespace or paper_namespace
+                    original_path = (OUTPUT_DIR / 'english_reports' / sanitize_report_namespace(original_namespace)
+                                     / initial_report_filename(findings))
+                    if (saved_english and Path(saved_english).resolve() == original_path.resolve()
+                            and original_path.is_file()):
+                        english_namespace = original_namespace
+                    else:
+                        await api_work.run_until(paper_deadlines[(paper.submission_no, paper.fold_name)],
+                            generate_english_report, findings, english_dir,
+                            TASKS_DIR / task_id / 'initial' / str(i), kind="initial",
+                            deadline=paper_deadlines[(paper.submission_no, paper.fold_name)])
                     key = (paper.submission_no, paper.fold_name)
-                    english_initial_urls[key] = _english_initial_report_url(findings, paper_namespace)
+                    english_initial_urls[key] = _english_initial_report_url(findings, english_namespace)
                     if not api_dry_run():
                         await verify_public_pdf(english_initial_urls[key])
                 except Exception as e:
@@ -294,6 +348,7 @@ async def _run_inner(
     review_failures: dict[tuple[str, str], dict] = {}
     review_persisted_keys: set[tuple[str, str]] = set()
     persistence_failures: dict[tuple[str, str], str] = {}
+    rendered_by_key = {}
     if high_risk_papers:
         tm.update_task(
             task_id,
@@ -309,6 +364,7 @@ async def _run_inner(
             nonlocal review_done
             async with review_sem:
                 try:
+                    paper_deadline = paper_deadlines.get((paper.submission_no, paper.fold_name))
                     review = await api_work.run(
                         run_review_single,
                         doi=paper.doi,
@@ -316,6 +372,9 @@ async def _run_inner(
                         input_dir=paper.input_dir,
                         output_dir=paper.output_dir,
                         resume=True,
+                        deadline=(paper_deadline - API_REPORT_RESERVE_SECONDS
+                                  if paper_deadline is not None else None),
+                        shared_api_budget=True,
                     )
                     review.setdefault("trigger", "auto_detection")
                     review["doi"] = _review_doi(paper, review)
@@ -344,6 +403,11 @@ async def _run_inner(
                     log.error("Review did not produce a substantive result for %s: %s", paper.doi, reason)
                 else:
                     review_by_key[key] = review
+                    # Render as soon as this paper finishes; a slower paper in
+                    # the same batch must not consume this one's report budget.
+                    rendered_by_key[key] = await _render_review_pair(
+                        paper, review, TASKS_DIR / task_id / 'reports' / str(high_risk_papers.index(paper)),
+                        paper_deadlines.get(key))
                     if not api_dry_run():
                         try:
                             matched = await blocking_write(
@@ -378,6 +442,7 @@ async def _run_inner(
     generated_paths: set[str] = set()
     english_review_urls: dict[tuple[str, str], str] = {}
     english_review_errors: dict[tuple[str, str], str] = {}
+    english_persisted_keys = set()
     if review_results:
         tm.update_task(
             task_id,
@@ -389,26 +454,6 @@ async def _run_inner(
         task_dir = TASKS_DIR / task_id
         task_dir.mkdir(parents=True, exist_ok=True)
         (task_dir / 'review_results.json').write_text(json.dumps(review_results, ensure_ascii=False, indent=2))
-        report_paths = []
-        for index, review in enumerate(review_results):
-            try:
-                paths = await api_work.run(
-                    generate_reports,
-                    [review], task_dir / 'reports' / str(index),
-                    table_name=REPORT_NAMESPACE, write_db=False,
-                    report_namespace=review['_report_namespace'],
-                )
-                report_paths.extend(paths)
-            except Exception as exc:
-                log.exception('Report rendering failed for %s: %s', review.get('doi'), exc)
-                for key, candidate in review_by_key.items():
-                    if candidate is review:
-                        persistence_failures[key] = f'Report generation failed: {exc}'
-
-        # Write 复审 result per high-risk paper (status -> 2). A task is only
-        # allowed to become completed after this DB write is confirmed; otherwise
-        # the frontend could stop polling while review_report_url is still empty.
-        generated_paths = set(report_paths)
         for paper in high_risk_papers:
             paper_namespace = _paper_report_namespace(task_id, paper)
             key = (paper.submission_no, paper.fold_name)
@@ -417,35 +462,42 @@ async def _run_inner(
                 continue
             review_result = review.get("result", "高风险")
             doi_for_review = _review_doi(paper, review)
-            expected_path = str(REVIEW_DIR / paper_namespace / f"review_{_review_report_slug(paper, review)}.pdf")
-            if expected_path not in generated_paths:
-                reason = persistence_failures.get(key) or f"review PDF was not generated: {expected_path}"
-                paper.status = "persist_error"
-                paper.error = reason
+            rendered = rendered_by_key.get(key, {})
+            required = {"zh", "en"} if paper.language == "both" else {paper.language}
+            errors = []
+            for language in required:
+                value = rendered.get(language)
+                if isinstance(value, BaseException) or not value:
+                    reason = f"{language} report generation failed: {value or 'no PDF'}"
+                    errors.append(reason)
+                    if language == "en":
+                        english_review_errors[key] = reason
+                elif language == "zh":
+                    expected = str(REVIEW_DIR / paper_namespace / f"review_{_review_report_slug(paper, review)}.pdf")
+                    if expected not in value:
+                        errors.append(f"Missing Chinese PDF: {expected}")
+                    else:
+                        generated_paths.update(value)
+                else:
+                    english_review_urls[key] = _english_review_report_url(paper, review, paper_namespace)
+                    generated_paths.add(str(value))
+            if errors:
+                reason = "; ".join(errors)
+                paper.status, paper.error = "persist_error", reason
                 persistence_failures[key] = reason
-                log.error("Skipping detection_reports 复审 write for %s: %s", doi_for_review, reason)
                 continue
             try:
-                key = (paper.submission_no, paper.fold_name)
-                if paper.language in {"en", "both"}:
-                    try:
-                        from modules.english_report_generator import generate_english_review_pdf
-
-                        await api_work.run(
-                            asyncio.to_thread,
-                            generate_english_review_pdf,
-                            review,
-                            REVIEW_DIR / paper_namespace,
-                            _review_report_slug(paper, review),
-                        )
-                        english_review_urls[key] = _english_review_report_url(paper, review, paper_namespace)
-                        if not api_dry_run():
-                            await verify_public_pdf(english_review_urls[key])
-                    except Exception as e:
-                        english_review_urls.pop(key, None)
-                        english_review_errors[key] = str(e)
-                        log.exception("English review report failed for %s", doi_for_review)
-                review_url = _review_report_url_for_paper(paper, review, paper_namespace)
+                if key in english_review_urls and not api_dry_run():
+                    await verify_public_pdf(english_review_urls[key])
+                    # In English-only mode the Chinese URL is intentionally
+                    # empty. Persist/verify the requested URL before status=2
+                    # can make a frontend stop polling.
+                    await blocking_write(update_english_reports, paper.submission_no,
+                                         paper.fold_name, task_id, english_initial_urls.get(key),
+                                         english_review_urls[key])
+                    english_persisted_keys.add(key)
+                review_url = (_review_report_url_for_paper(paper, review, paper_namespace)
+                              if paper.language in {"zh", "both"} else "")
                 if not api_dry_run():
                     await verify_public_pdf(review_url)
                     matched = await blocking_write(
@@ -489,6 +541,8 @@ async def _run_inner(
     if not api_dry_run():
         for paper in papers:
             key = (paper.submission_no, paper.fold_name)
+            if key in english_persisted_keys:
+                continue
             initial_url, review_url = english_initial_urls.get(key), english_review_urls.get(key)
             if initial_url or review_url:
                 try:
@@ -556,9 +610,11 @@ async def _run_inner(
             "fold_name": p.fold_name or None,
             "doi": p.doi,
             "chushen_result": initial_results.get(key, "低风险"),
-            "chushen_report_url": _chushen_report_url_from_paper(p, p.initial_report_namespace or report_namespace),
+            "chushen_report_url": (_chushen_report_url_from_paper(p, p.initial_report_namespace or report_namespace)
+                                    if p.language in {"zh", "both"} else None),
             "review_result": raw_review.get("result") if raw_review else None,
-            "review_report_url": _review_report_url_for_paper(p, review, _paper_report_namespace(task_id, p)) if review else None,
+            "review_report_url": (_review_report_url_for_paper(p, review, _paper_report_namespace(task_id, p))
+                                  if review and p.language in {"zh", "both"} else None),
             "english_chushen_report_url": english_initial_urls.get(key),
             "english_review_report_url": english_review_urls.get(key),
             "english_report_error": english_initial_errors.get(key) or english_review_errors.get(key),

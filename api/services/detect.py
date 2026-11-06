@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import time
 from pathlib import Path
 from api.services.report import _kill_process_group
 from api.services.submission_policy import blocking_write
@@ -11,9 +13,9 @@ from api.config import (
     PYTHON, MAIN_PY, DEFAULT_TABLE, DETECT_TIMEOUT_SECONDS,
     DB_CONFIG, OUTPUT_DIR, sanitize_report_namespace,
 )
+from core.pipeline import initial_pdf_skipped
 
 log = logging.getLogger(__name__)
-from core.pipeline import initial_pdf_skipped
 
 
 def _output_signature(path: Path):
@@ -44,6 +46,9 @@ async def run_detection_single(
     write_db: bool = True,
     doi: str = "",
     report_namespace: str | None = None,
+    timeout: float | None = None,
+    language: str | None = None,
+    deadline: float | None = None,
 ) -> dict:
     # no_db: skip ALL DB writes from the detection subprocess + skip the custom-table
     # insert below. write_db=False (detection_reports flow) forces no_db regardless of
@@ -72,22 +77,35 @@ async def run_detection_single(
         cmd.append("--no-db")
     cmd.append("--force")
 
+    # A caller's paper deadline can only shorten the detection limit.
+    limit = min(DETECT_TIMEOUT_SECONDS, timeout) if timeout else DETECT_TIMEOUT_SECONDS
+    if deadline is not None:
+        from api.services.review_runtime import time_left
+        limit = time_left(deadline, limit)
+    env = dict(os.environ)
+    if language is not None:
+        if language not in {"zh", "en", "both"}:
+            raise ValueError(f"Unsupported report language: {language}")
+        env.update(PAPER_INITIAL_REPORT_LANGUAGE=language,
+                   PAPER_ENGLISH_REPORT_DIR=str(OUTPUT_DIR / "english_reports" / namespace),
+                   PAPER_LLM_DEADLINE=str(time.monotonic() + limit - 15))
     log.info("Detection cmd: %s", " ".join(cmd))
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=str(MAIN_PY.parent),
+        env=env,
         start_new_session=True,
     )
 
     try:
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=DETECT_TIMEOUT_SECONDS
+            proc.communicate(), timeout=limit
         )
     except TimeoutError:
         await _kill_process_group(proc)
-        raise TimeoutError(f"Detection timed out after {DETECT_TIMEOUT_SECONDS}s")
+        raise TimeoutError(f"Detection timed out after {limit:.0f}s")
     except asyncio.CancelledError:
         await _kill_process_group(proc)
         raise

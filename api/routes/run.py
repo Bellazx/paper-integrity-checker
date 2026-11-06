@@ -14,7 +14,8 @@ from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import StreamingResponse
 
 from api.config import (
-    DEFAULT_TABLE, FORBIDDEN_EXTENSIONS, MAX_BATCH_PAPERS,
+    API_PAPER_DEADLINE_SECONDS, API_REPORT_RESERVE_SECONDS, DEFAULT_TABLE, DETECT_TIMEOUT_SECONDS,
+    FORBIDDEN_EXTENSIONS, MAX_BATCH_PAPERS,
     MAX_REVIEW_WORKERS, MAX_RUN_CONCURRENT_STREAMS,
     MAX_UPLOAD_SIZE_BYTES, MAX_UPLOAD_SIZE_MB, RUNTIME_TMP_DIR,
     validate_table_name,
@@ -22,6 +23,7 @@ from api.config import (
 from api.services.detect import run_detection_single
 from api.services.review import run_review_single
 from api.services.report import generate_reports
+from api.services.review_runtime import deadline_after, time_left
 from api.services.zip_handler import apply_doi_override, extract_single, extract_batch, is_unsafe_archive_path
 from modules.doi_utils import choose_authoritative_doi, normalize_doi
 
@@ -222,10 +224,14 @@ async def _run_stream(
         detect_done = 0
         detect_total = len(papers)
         detect_limit = min(max(1, max_workers), 2)
+        # Each paper's shared clock (API_PAPER_DEADLINE_SECONDS) starts with its
+        # own detection; review and report rendering use what is left of it.
+        paper_deadlines: dict[int, float | None] = {}
 
         async def _detect_worker(paper, emit):
             nonlocal detect_errors, detect_done
             emit(_event("detecting", f"检测中: {paper.doi_slug}"))
+            paper_deadlines[id(paper)] = deadline_after(API_PAPER_DEADLINE_SECONDS)
             try:
                 findings = await run_detection_single(
                     input_dir=paper.input_dir,
@@ -234,6 +240,7 @@ async def _run_stream(
                     table_name=table_name,
                     doi=paper.doi,
                     report_namespace=report_namespace,
+                    timeout=time_left(paper_deadlines[id(paper)], DETECT_TIMEOUT_SECONDS),
                 )
 
                 report_json = Path(paper.output_dir) / "report.json"
@@ -289,11 +296,15 @@ async def _run_stream(
                 nonlocal review_done
                 emit(_event("reviewing", f"AI复核中: {paper.doi or paper.doi_slug}"))
                 try:
+                    paper_deadline = paper_deadlines.get(id(paper))
                     review = await run_review_single(
                         doi=paper.doi,
                         report_json_path=paper.report_json,
                         input_dir=paper.input_dir,
                         output_dir=paper.output_dir,
+                        deadline=(paper_deadline - API_REPORT_RESERVE_SECONDS
+                                  if paper_deadline is not None else None),
+                        shared_api_budget=True,
                     )
                     review.setdefault("trigger", "auto_detection")
                     review["_input_dir"] = paper.input_dir
@@ -331,8 +342,13 @@ async def _run_stream(
         if review_results:
             yield _event("generating_report", "生成复核报告...")
             try:
+                # One rendering call covers every reviewed paper, so it runs
+                # until the latest of their deadlines.
+                reviewed = [paper_deadlines.get(id(p)) for p in high_risk_papers]
+                report_deadline = None if not reviewed or None in reviewed else max(reviewed)
                 report_paths = await generate_reports(review_results, tmp_dir, table_name,
-                                                      report_namespace=report_namespace)
+                                                      report_namespace=report_namespace,
+                                                      deadline=report_deadline)
                 report_count = len(report_paths)
                 yield _event("generating_report", f"生成 {report_count} 份复核报告")
             except Exception as e:

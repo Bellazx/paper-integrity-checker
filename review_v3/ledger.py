@@ -226,6 +226,12 @@ def update(path: Path | str, entries: list[dict], actor: str,
             if warnings is not None:
                 warnings.extend(notes)
             known = items.get(str(entry.get("id") or "").strip()) or {}
+            # "new:" identifies where a finding originated, not whether this
+            # update creates it. Rechecks may omit its already validated
+            # dimension, including when clearing an existing finding. An
+            # explicitly supplied invalid dimension must still be rejected.
+            if "dimension" not in entry and known.get("dimension") in DIMENSIONS:
+                entry["dimension"] = known["dimension"]
             # A re-check (calibration, challenge) may restate only what it
             # changes; the rest of the issue comes from the recorded finding.
             if entry.get("status") == "issue" and isinstance(known.get("first"), dict):
@@ -239,6 +245,11 @@ def update(path: Path | str, entries: list[dict], actor: str,
                 entry["location"] = str(known["title"]).split("：")[0][:120]
             entry_errors = _validate_entry(entry, items, allow_new, bool(data.get("require_category")),
                                            bool(data.get("require_crop")))
+            if entry.get("id") == "image::visual_pass" and entry.get("status") in ("cleared", "not_applicable", "issue"):
+                from review_v3 import visual_progress
+                note = visual_progress.pending_note(path.parent.parent)
+                if note:
+                    entry_errors.append(note + "；先用 pv3 visual update 逐页记录。具体问题请用 new: 条目单独登记。")
             if entry_errors:
                 errors.extend(entry_errors)
                 continue

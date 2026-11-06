@@ -10,6 +10,7 @@ The returned dict has the same contract as api.services.review.run_review_single
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -20,7 +21,7 @@ import time
 import uuid
 from pathlib import Path
 
-from review_v3 import autocrop, categories, checklist, config, dossier as dossier_mod, ledger, memory, prompts, session
+from review_v3 import autocrop, categories, checklist, config, dossier as dossier_mod, ledger, memory, prompts, session, visual_progress
 
 log = logging.getLogger(__name__)
 
@@ -123,9 +124,16 @@ class Review:
         self.cal_worker: asyncio.Future | None = None
         self.cal_closing = False
         self.cal_status = "not run"
+        self.calibration_metrics = _read_json(run_dir / "calibration.json", {}) or {}
+        self.calibration_metrics.setdefault("passes", [])
         self.settled_shards = 0
         self._complete_gate: asyncio.Semaphore | None = None
+        self.capture_tasks: dict[str, asyncio.Task] = {}
+        self.capture_source_version = visual_progress.source_version(run_dir)
+        self.capture_gate = asyncio.Semaphore(max(1, config.CAPTURE_PARALLEL))
+        self.capture_watcher: asyncio.Task | None = None
         origin = started if started is not None else time.monotonic()
+        self.started = origin
         # Phase time boxes; the whole-paper deadline stays the hard limit.
         self.soft = {"investigate": origin + config.INVESTIGATE_SOFT_SECONDS,
                      "challenge": origin + config.CHALLENGE_SOFT_SECONDS,
@@ -140,6 +148,8 @@ class Review:
         started = time.monotonic()
         self.dossier = await asyncio.to_thread(dossier_mod.build, self.run_dir, self.doi, self.input_dir,
                                                self.report_json, self.evidence)
+        await asyncio.to_thread(visual_progress.initialize, self.run_dir, self.dossier)
+        self.capture_source_version = visual_progress.source_version(self.run_dir)
         shards_path = self.run_dir / "shards.json"
         self.shards = _read_json(shards_path) or checklist.build_shards(self.evidence, self.dossier)
         _write_json(shards_path, self.shards)
@@ -155,6 +165,8 @@ class Review:
             self.background = [asyncio.ensure_future(self._prerun_forensic(mode))
                                for mode in ("scan-digits", "scan-decimal-tails")]
         self.background.append(asyncio.ensure_future(self._prerun_refcheck()))
+        self.capture_watcher = asyncio.create_task(self._watch_capture())
+        self.background.append(self.capture_watcher)
 
     async def _prerun_refcheck(self) -> None:
         from review_v3 import refcheck
@@ -228,6 +240,11 @@ class Review:
         early enough for grading, and grading early enough for writing."""
         if self.deadline is None:
             return None
+        from api.services.review_runtime import api_review_budget
+        if api_review_budget.get():
+            # The API already reserved report time. Do not deduct another
+            # 15/6 minutes and discard productive follow-ups or screenshots.
+            return self.deadline
         if phase in ("calibrate", "judge", "evidence"):
             return self.deadline - config.GRADING_RESERVE_SECONDS
         return self.deadline - config.FINISH_RESERVE_SECONDS
@@ -245,10 +262,13 @@ class Review:
               phase: str) -> session.SessionSpec:
         def open_ids(_state):
             return [item["id"] for item in ledger.open_items(ledger.load(ledger_path))]
+        visual = "image::visual_pass" in (ledger.load(ledger_path).get("items") or {})
+        visual_note = prompts.visual_resume() if visual else ""
+        prompt += visual_note
         return session.SessionSpec(
             name=name, workdir=self.run_dir, prompt=prompt, actor=actor, ledger_path=ledger_path,
             max_chunks=max_chunks, deadline=self._hard_deadline(phase), soft_deadline=self._phase_deadline(phase),
-            continue_prompt=lambda state: prompts.investigator_continue(state, open_ids(state)),
+            continue_prompt=lambda state: prompts.investigator_continue(state, open_ids(state)) + visual_note,
             restart_prompt=lambda state: prompt + prompts.restart_note(),
             wrapup_prompt=lambda state: prompts.wrapup(open_ids(state)),
             extra_env=self.extra_env, read_dirs=self.read_dirs,
@@ -272,6 +292,7 @@ class Review:
         prompt = prompts.investigator(shard, self.dossier, self.hints.get(shard["id"], ""))
         outcome = await session.run(self._spec(f"inv_{shard['id']}", prompt, path, config.MAX_CHUNKS_INVESTIGATE,
                                                f"investigator:{shard['id']}", "investigate"))
+        self.offer_capture((ledger.load(path).get("items") or {}).values())
         self._close_leftovers(path, outcome, "investigator")
         return outcome
 
@@ -330,9 +351,11 @@ class Review:
                 if first and (first.get("status") == "issue") != (record.get("status") == "issue"):
                     memory.record_lesson(self.doi, item.get("shard", ""), item, first, record)
         out["arbitrate_seconds"] = round(time.monotonic() - settled, 1)
+        self.offer_capture(finals.values())
         completed = time.monotonic()
         self.shard_finals[shard["id"]] = await self.complete(finals, scope=shard["id"])
         out["complete_seconds"] = round(time.monotonic() - completed, 1)
+        self.offer_capture(self.shard_finals[shard["id"]].values())
         self.offer_for_calibration(self.shard_finals[shard["id"]].values())
         self.settled_shards += 1
         if self.settled_shards >= max(1, math.ceil(config.CALIBRATE_START_FRACTION * len(self.shards))):
@@ -468,9 +491,33 @@ class Review:
                 return prompts.calibrator_added(items, open_ids())
             return prompts.calibrator_continue(open_ids())
         spec.continue_prompt = next_message
+        def restart_message(_state):
+            records = list((ledger.load(path).get("items") or {}).values())
+            pending = [r for r in records if r.get("status") == "open"]
+            items = [{"id": r["id"], **(r.get("first") or {})} for r in pending]
+            return (prompts.calibrator(self.dossier, items) + prompts.calibrator_recovery(
+                [r for r in records if _categorized(r)], [r["id"] for r in pending], "原会话不可用，从已保存台账接续"))
+        spec.restart_prompt = restart_message
         spec.wrapup_prompt = lambda state: prompts.calibrator_continue(open_ids(), wrapup=True)
-        outcome = await session.run(spec)
+        outcome = await self._run_calibration(spec, "main")
         self.cal_status = outcome.status
+
+    async def _run_calibration(self, spec: session.SessionSpec, stage: str) -> session.SessionOutcome:
+        started = time.monotonic()
+        status = "interrupted"
+        try:
+            outcome = await session.run(spec)
+            status = outcome.status
+            return outcome
+        finally:
+            records = (ledger.load(spec.ledger_path).get("items") or {}).values()
+            pending = [r["id"] for r in records if not _categorized(r)]
+            self.calibration_metrics["passes"].append({
+                "stage": stage, "session": spec.name, "status": status,
+                "wall_seconds": round(time.monotonic() - started, 3), "finished_at": time.time(),
+                "pending_ids": pending})
+            self.calibration_metrics.update(status="incomplete" if pending else "done", pending_ids=pending)
+            _write_json(self.run_dir / "calibration.json", self.calibration_metrics)
 
     async def calibrate(self, finals: dict) -> dict:
         """Second look at the severity of every confirmed issue (both directions).
@@ -488,11 +535,20 @@ class Review:
             self.cal_wake.set()
             await self.cal_worker
         if not issues:
+            self.cal_status = "not_needed"
+            self.calibration_metrics.update(status=self.cal_status, pending_ids=[])
+            _write_json(self.run_dir / "calibration.json", self.calibration_metrics)
             return finals
         decided = ledger.load(self.ledger_path("cal", "all")).get("items") or {}
+        # A restart may already have a partially or fully saved recovery.
+        for item_id, record in (ledger.load(self.ledger_path("cal", "rest")).get("items") or {}).items():
+            if _categorized(record):
+                decided[item_id] = record
         left = [r["id"] for r in issues if not _categorized(decided.get(r["id"]) or {})]
-        if left:
-            # One short follow-up for what the first session did not reach.
+        hard_deadline = self._hard_deadline("evidence")
+        if left and (hard_deadline is None or time.monotonic() < hard_deadline):
+            # One bounded recovery, carrying useful session context and only
+            # the remaining work. Never reset its budget on process resume.
             rest_path = self.ledger_path("cal", "rest")
             rest = [r for r in issues if r["id"] in left]
             created = ledger.create(rest_path, {"shard": "calibrate_rest", "role": "calibrator", "allow_new": False,
@@ -501,21 +557,36 @@ class Review:
                                       "first": _compact(r)} for r in rest])
             if created.get("added"):
                 session.reset("cal_rest", self.run_dir)
-            rest_spec = self._spec("cal_rest", prompts.calibrator(self.dossier, rest), rest_path, 2, "calibrator", "evidence")
-            rest_spec.continue_prompt = lambda state: prompts.calibrator_continue(
-                [item["id"] for item in ledger.open_items(ledger.load(rest_path))])
+            carry = session.continue_as("cal_all", "cal_rest", self.run_dir)
+            def recovery_prompt(fresh=False):
+                data = ledger.load(rest_path)
+                pending = ledger.open_items(data)
+                ids = [item["id"] for item in pending]
+                saved = {**decided, **{k: r for k, r in (data.get("items") or {}).items() if _categorized(r)}}
+                completed = [r for r in saved.values() if _categorized(r)]
+                context = prompts.calibrator_recovery(completed, ids, carry["continuation_reason"])
+                return (prompts.calibrator(self.dossier, [r for r in rest if r["id"] in ids]) if fresh else "") + context
+
+            rest_spec = self._spec("cal_rest", recovery_prompt(fresh=True), rest_path,
+                                  int(carry.get("continuation_base_chunks", 0)) + 2, "calibrator", "evidence")
+            rest_spec.continue_prompt = lambda state: recovery_prompt()
+            rest_spec.restart_prompt = lambda state: recovery_prompt(fresh=True)
             rest_spec.wrapup_prompt = lambda state: prompts.calibrator_continue(
                 [item["id"] for item in ledger.open_items(ledger.load(rest_path))], wrapup=True)
-            await session.run(rest_spec)
+            self.calibration_metrics["recovery_mode"] = carry["continuation_mode"]
+            await self._run_calibration(rest_spec, "recovery")
             for item_id, record in (ledger.load(rest_path).get("items") or {}).items():
                 if _categorized(record):
                     decided[item_id] = record
             left = [r["id"] for r in issues if not _categorized(decided.get(r["id"]) or {})]
-            if left:
-                log.warning("DOI=%s calibration left %d issue(s) uncategorized: %s", self.doi, len(left), left[:8])
+        self.cal_status = "incomplete" if left else "done"
+        self.calibration_metrics.update(status=self.cal_status, pending_ids=left)
+        _write_json(self.run_dir / "calibration.json", self.calibration_metrics)
+        if left:
+            log.warning("DOI=%s calibration left %d issue(s) uncategorized: %s", self.doi, len(left), left[:8])
         out = dict(finals)
         for item_id, record in decided.items():
-            if record.get("status") in ("issue", "cleared") and item_id in out:
+            if _categorized(record) and item_id in out:
                 before = out[item_id]
                 if record.get("status") == "cleared":
                     updated = {**before, **_compact(record)}
@@ -546,6 +617,7 @@ class Review:
         small batches in parallel, each with its own time box. A paper is
         never published low-risk with such items open, so finishing them is
         what keeps a review from ending in an error."""
+        finals = _sync_visual_progress(self.run_dir, finals)
         by_id = {item["id"]: (shard, item) for shard in self.shards for item in shard["items"]}
         for round_no in range(1, config.COMPLETE_ROUNDS + 1):
             pending = [r for r in finals.values()
@@ -595,9 +667,14 @@ class Review:
             closed = 0
             for items in results:
                 for item_id, record in items.items():
-                    if item_id in finals and record.get("status") in ("issue", "cleared", "not_applicable"):
-                        finals[item_id] = {**finals[item_id], **_compact(record)}
-                        closed += 1
+                    if record.get("status") in ("issue", "cleared", "not_applicable"):
+                        if item_id in finals:
+                            finals[item_id] = {**finals[item_id], **_compact(record)}
+                            closed += 1
+                        elif item_id.startswith("new:") and record.get("status") == "issue":
+                            finals[item_id] = {"id": item_id, "title": record.get("title") or item_id,
+                                               **_compact(record)}
+            finals = _sync_visual_progress(self.run_dir, finals)
             log.info("DOI=%s completion round %d: %d/%d must-check item(s) closed", self.doi, round_no, closed, len(pending))
         return finals
 
@@ -664,61 +741,138 @@ class Review:
                     flagged.add(item_id)
         return flagged
 
-    async def capture(self, finals: dict) -> dict:
-        """Every risk issue in the report carries local screenshots of the
-        cited values, one for each carrier it cites: the paper's page and the
-        source-data cells when the issue sets them against each other. Issues
-        missing a carrier get a short capture session, then a code fallback."""
-        need = [r for r in finals.values() if _is_issue(r, "substantive") and _missing_carriers(r, self.input_dir)]
-        if not need:
-            return finals
-        # One short session per issue, a few at a time: a single session for
-        # every issue ran out of turns or time on most papers.
-        gate = asyncio.Semaphore(config.CAPTURE_PARALLEL)
+    async def _watch_capture(self) -> None:
+        """Notice durable findings while model sessions are still running.
 
-        async def one(number: int, record: dict) -> dict:
-            name = f"evd_{number}"
-            path = self.ledger_path("evd", str(number))
-            created = ledger.create(path, {"shard": name, "role": "evidence", "allow_new": False, "require_crop": True},
-                                    [{"id": record["id"], "title": record.get("title") or record["id"],
-                                      "dimension": record.get("dimension"), "first": _compact(record)}])
-            if created.get("added"):
-                session.reset(name, self.run_dir)
-            item = {**record, "missing": sorted(_missing_carriers(record, self.input_dir))}
-            spec = self._spec(name, prompts.evidence(self.dossier, [item]), path,
-                              config.MAX_CHUNKS_EVIDENCE, "evidence", "evidence")
-            async with gate:
-                await session.run(spec)
-            return ledger.load(path).get("items") or {}
+        Only changed investigation ledgers are read. Evidence sessions never
+        feed this queue, and each finding version is offered at most once.
+        """
+        seen = {}
+        while True:
+            for path in sorted((self.run_dir / "ledgers").glob("*.json")):
+                if path.name.count(".") > 1 or not path.name.startswith(("inv_", "chk_", "arb", "fin")):
+                    continue
+                try:
+                    stamp = path.stat().st_mtime_ns
+                    if seen.get(path) == stamp:
+                        continue
+                    records = (ledger.load(path).get("items") or {}).values()
+                    self.offer_capture(records)
+                    seen[path] = stamp
+                except (OSError, ValueError) as exc:
+                    log.warning("DOI=%s screenshot queue could not read %s: %s", self.doi, path.name, exc)
+            await asyncio.sleep(2)
 
-        results = await asyncio.gather(*(one(n, r) for n, r in enumerate(need, start=1)))
-        out = dict(finals)
-        for items in results:
-            for item_id, record in items.items():
-                crops = [ev for ev in record.get("evidence") or [] if ledger.is_evidence(ev)]
-                if record.get("status") == "issue" and crops and item_id in out:
-                    out[item_id] = {**out[item_id], "evidence": _merged_evidence(out[item_id], crops)}
-        missing = []
-        for r in need:
-            gaps = _missing_carriers(out[r["id"]], self.input_dir)
-            if not gaps:
+    def offer_capture(self, records) -> None:
+        for record in records:
+            if not _is_issue(record, "substantive"):
                 continue
-            # Fallback made in code for each carrier still without a screenshot:
-            # the cited figure or table with its caption, the cited workbook cells.
-            shots = []
+            key = _capture_key(record, self.capture_source_version)
+            if key in self.capture_tasks:
+                continue
+            deadline = self._hard_deadline("evidence")
+            if deadline is not None and time.monotonic() >= deadline:
+                continue
+            task = asyncio.create_task(self._capture_one(copy.deepcopy(record), key))
+            self.capture_tasks[key] = task
+            self.background.append(task)
+
+    async def _capture_one(self, record: dict, key: str) -> None:
+        """Save evidence only; this worker cannot change a verdict.
+
+        Stable names include the issue and source-location version. Separate
+        checkpoints prevent concurrent workers from replacing each other's
+        results, and interrupted sessions retain their own evidence ledger.
+        """
+        checkpoint = self.run_dir / "captures" / f"{key}.json"
+        path = self.ledger_path("evd", key)
+        original = copy.deepcopy(record)
+
+        def save():
+            _write_json(checkpoint, {"key": key, "id": original["id"],
+                                    "evidence": _merged_evidence(record, [])})
+
+        def collect():
+            data = ledger.load(path)
+            if data.get("capture_key") == key:
+                saved = (data.get("items") or {}).get(original["id"], {})
+                record["evidence"] = _merged_evidence(record, saved.get("evidence") or [])
+
+        async def automatic(precise: bool):
+            # Persist each carrier independently: a workbook error must not
+            # discard an already cropped PDF, or prevent the model fallback.
+            for carrier in sorted(_missing_carriers(record, self.input_dir)):
+                deadline = self._hard_deadline("evidence")
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
+                try:
+                    if carrier == "pdf":
+                        if precise and not autocrop._labels(str(record.get("location") or "")):
+                            continue
+                        shots = await asyncio.to_thread(autocrop.crop_for, record, self.dossier,
+                                                        self.run_dir / "captures" / key, precise=precise)
+                    else:
+                        shots = await asyncio.to_thread(autocrop.cells_for, record, self.input_dir)
+                    record["evidence"] = _merged_evidence(record, shots)
+                    save()
+                except Exception as exc:
+                    log.warning("DOI=%s automatic %s screenshot failed for %s: %s", self.doi, carrier, record["id"], exc)
+
+        async with self.capture_gate:
+            deadline = self._hard_deadline("evidence")
+            if deadline is not None and time.monotonic() >= deadline:
+                return
+            started = time.monotonic()
+            self.timeline.setdefault("capture_first_started", started - self.started)
             try:
-                if "pdf" in gaps:
-                    shots += autocrop.crop_for(out[r["id"]], self.dossier, self.run_dir)
-                if "workbook" in gaps:
-                    shots += autocrop.cells_for(out[r["id"]], self.input_dir)
-            except Exception as exc:  # a broken PDF or workbook must not stop the report
-                log.warning("DOI=%s automatic screenshot failed for %s: %s", self.doi, r["id"], exc)
-            if shots:
-                out[r["id"]] = {**out[r["id"]], "evidence": _merged_evidence(out[r["id"]], shots)}
-            if not any(ledger.is_evidence(ev) for ev in out[r["id"]].get("evidence") or []):
-                missing.append(r["id"])
-        log.info("DOI=%s evidence capture done; still without screenshot: %s", self.doi, missing)
-        return out
+                cached = _read_json(checkpoint, {}) or {}
+                if cached.get("key") == key:
+                    record["evidence"] = _merged_evidence(record, cached.get("evidence") or [])
+                collect()
+                save()
+                await automatic(precise=True)
+                gaps = _missing_carriers(record, self.input_dir)
+                if not gaps:
+                    return
+                if deadline is not None and time.monotonic() >= deadline:
+                    return
+                name = f"evd_{key}"
+                ledger.create(path, {"shard": name, "role": "evidence", "allow_new": False,
+                                     "require_crop": True, "capture_key": key},
+                              [{"id": record["id"], "title": record.get("title") or record["id"],
+                                "dimension": record.get("dimension"), "first": _compact(record)}])
+                spec = self._spec(name, prompts.evidence(self.dossier, [{**record, "missing": sorted(gaps)}]),
+                                  path, config.MAX_CHUNKS_EVIDENCE, "evidence", "evidence")
+                try:
+                    await session.run(spec)  # also participates in the global model-session gate
+                except Exception as exc:
+                    log.warning("DOI=%s model screenshot failed for %s: %s", self.doi, record["id"], exc)
+                collect()
+                save()
+                await automatic(precise=False)
+            except Exception as exc:
+                # An attachment failure must not abort investigation or grading.
+                log.warning("DOI=%s screenshot failed for %s: %s", self.doi, record["id"], exc)
+            finally:
+                # session.run kills/reaps its child before cancellation escapes.
+                collect()
+                save()
+                self.timeline["capture_worker_seconds"] = self.timeline.get("capture_worker_seconds", 0) + time.monotonic() - started
+
+    async def capture(self, finals: dict) -> dict:
+        """Join only screenshots still relevant after the final judgement."""
+        if self.capture_watcher is not None:
+            self.capture_watcher.cancel()
+            await asyncio.gather(self.capture_watcher, return_exceptions=True)
+        wanted = {_capture_key(r, self.capture_source_version) for r in finals.values() if _is_issue(r, "substantive")}
+        obsolete = [task for key, task in self.capture_tasks.items() if key not in wanted]
+        for task in obsolete:
+            task.cancel()
+        await asyncio.gather(*obsolete, return_exceptions=True)
+        self.offer_capture(finals.values())
+        tasks = [task for key, task in self.capture_tasks.items() if key in wanted]
+        await asyncio.gather(*tasks)
+        return _recover_capture(self.run_dir, finals)
 
     # -- verdict and writing
     @staticmethod
@@ -873,7 +1027,7 @@ def _capped(entries: list[dict], outcome: str) -> list[dict]:
 
 # A location that cites the paper itself, and text that cites the submitted
 # workbook. "Fig.1 sheet" names a worksheet, not a printed figure.
-PAPER_CITED = re.compile(r"第\s*\d+\s*页|\bp(?:age)?\.?\s*\d+\b|正文|摘要|补充材料|图注|Supplementary|Extended\s+Data", re.I)
+PAPER_CITED = re.compile(r"第\s*\d+(?:\s*[-—–至到]\s*\d+)?\s*页|\bp(?:ages?|p)?\.?\s*\d+\b|正文|主文|主图|原文|摘要|补充材料|图注|Supplementary|Extended\s+Data", re.I)
 WORKBOOK_CITED = re.compile(r"源数据|source[\s_-]*data|\.xls[xm]\b|工作表|\bsheet\b", re.I)
 # In the finding only a pointer into the workbook counts; "源数据未提供" does not.
 WORKBOOK_POINTED = re.compile(r"\.xls[xm]\b|工作表|\bsheet\b|源数据[^。；;]{0,40}第\s*\d+\s*行", re.I)
@@ -910,6 +1064,63 @@ def _merged_evidence(record: dict, new: list[dict]) -> list[dict]:
         if key not in seen:
             seen.add(key)
             out.append(ev)
+    return out
+
+
+def _sync_visual_progress(run_dir: Path, finals: dict) -> dict:
+    data = visual_progress.load(run_dir)
+    record = finals.get("image::visual_pass")
+    if not data or not record:
+        return finals
+    out = copy.deepcopy(finals)
+    note = visual_progress.pending_note(run_dir)
+    if note:
+        key = "image::visual_remaining" if record.get("status") == "issue" else "image::visual_pass"
+        out[key] = {"id": key, "dimension": "image", "kind": "visual_pass", "status": "unresolved",
+                    "title": "逐页浏览论文主图与关键补充图", "note": note}
+    elif record.get("status") in ("open", "unresolved") and data.get("pages"):
+        out["image::visual_pass"] = {**record, "status": "cleared",
+            "basis": f"已完成 {len(data['pages'])} 页浏览并逐页记录观察；发现的问题见对应独立条目。"}
+        out["image::visual_pass"].pop("note", None)
+    return out
+
+
+def _evidence_gaps(finals: dict, input_dir: str) -> list[dict]:
+    return [{"id": r["id"], "missing": sorted(gaps)} for r in finals.values()
+            if _is_issue(r, "substantive") and (gaps := _missing_carriers(r, input_dir))]
+
+
+def _capture_key(record: dict, source_version: str = "") -> str:
+    # Grades and wording of their justification can change without relocating
+    # evidence. Changes to the finding or location require fresh attachments.
+    payload = [source_version, *[record.get(k) for k in ("id", "location", "finding", "issue_type")]]
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()[:24]
+
+
+def _recover_capture(run_dir: Path, finals: dict) -> dict:
+    out = copy.deepcopy(finals)
+    source_version = visual_progress.source_version(run_dir)
+    candidates = []
+    for path in (run_dir / "captures").glob("*.json"):
+        saved = _read_json(path, {}) or {}
+        candidates.append((saved.get("id"), saved.get("key"), saved.get("evidence") or []))
+    # Older runs have a combined checkpoint and unversioned evidence ledgers.
+    for item_id, crops in (_read_json(run_dir / "capture_checkpoint.json", {}) or {}).items():
+        candidates.append((item_id, None, crops))
+    for path in (run_dir / "ledgers").glob("evd_*.json"):
+        if path.name.count(".") > 1:
+            continue
+        data = ledger.load(path)
+        for item_id, record in (data.get("items") or {}).items():
+            candidates.append((item_id, data.get("capture_key"), record.get("evidence") or []))
+    for item_id, key, crops in candidates:
+        record = out.get(item_id)
+        if not record or not _is_issue(record) or (key is not None and key != _capture_key(record, source_version)):
+            continue
+        # Reject missing files when recovering interrupted render operations.
+        crops = [ev for ev in crops if isinstance(ev, dict) and
+                 (ledger.is_excel(ev) or (ev.get("path") and Path(ev["path"]).is_file()))]
+        record["evidence"] = _merged_evidence(record, crops)
     return out
 
 
@@ -1502,7 +1713,7 @@ SYNTHETIC_PREFIXES = ("fig::", "image::", "ref::", "design::", "stats::", "claim
 
 
 def _required_finding(item_id: str) -> bool:
-    return not str(item_id).startswith(SYNTHETIC_PREFIXES)
+    return item_id == "image::visual_pass" or not str(item_id).startswith(SYNTHETIC_PREFIXES)
 
 
 def _run_dir(output_dir: str, doi: str, report_json: str, input_dir: str, resume: bool) -> Path:
@@ -1541,6 +1752,7 @@ async def _review(doi: str, report_json: str, input_dir: str, output_dir: str, r
     state = _read_json(state_path, {}) or {}
     final_path = run_dir / "final.json"
 
+    evidence_started = time.monotonic()
     evidence_path = state.get("evidence_path")
     if not evidence_path or not Path(evidence_path).is_file() or (_read_json(Path(evidence_path), {}) or {}).get("_fallback_reason"):
         evidence_path = await _evidence(doi, report_json, input_dir, output_dir)
@@ -1570,6 +1782,7 @@ async def _review(doi: str, report_json: str, input_dir: str, output_dir: str, r
                 return checked
 
     review = Review(doi, report_json, input_dir, run_dir, deadline, started)
+    review.timeline["evidence_prepare"] = time.monotonic() - evidence_started
     try:
         return await _review_phases(review, doi, evidence, evidence_path, state, state_path, final_path, started)
     finally:
@@ -1616,10 +1829,19 @@ async def _review_phases(review: "Review", doi: str, evidence: dict, evidence_pa
         _, disputes = review.merge()
     review.timeline["arbitration"] = 0.0
 
+    phase_started = time.monotonic()
+    review.offer_capture(finals.values())
     finals = await review.calibrate(finals)
+    review.offer_capture(finals.values())
+    review.timeline["calibration"] = time.monotonic() - phase_started
+    phase_started = time.monotonic()
     finals = await review.judge(finals)
+    review.timeline["judge"] = time.monotonic() - phase_started
+    phase_started = time.monotonic()
     finals = await review.capture(finals)
+    review.timeline["capture"] = time.monotonic() - phase_started
     review.timeline["calibrate"] = time.monotonic() - started - review.timeline["shards"] - review.timeline.get("arbitration", 0)
+    finals = _sync_visual_progress(run_dir, finals)
     verdicts = review.verdicts(finals)
     unresolved = [r for r in finals.values() if r.get("status") == "unresolved"]
     # Must-check findings still open after the completion pass do not stop
@@ -1641,8 +1863,11 @@ async def _review_phases(review: "Review", doi: str, evidence: dict, evidence_pa
         failed["_coverage_gaps"] = gaps
         return failed
     result["_engine"] = "v3"
+    result["_visual_progress"] = visual_progress.summary(run_dir)
+    result["_evidence_gaps"] = _evidence_gaps(finals, review.input_dir)
     result["_review_metrics"] = {"timeline": {k: round(v, 1) for k, v in review.timeline.items()},
-                                 "shards": pipeline, "disputes": len(disputes), "unresolved": len(unresolved)}
+                                 "shards": pipeline, "disputes": len(disputes), "unresolved": len(unresolved),
+                                 "calibration": review.calibration_metrics}
     result.setdefault("_report_json", review.report_json)
     result.setdefault("_input_dir", review.input_dir)
     _write_json(final_path, result)
@@ -1683,7 +1908,8 @@ def _recorded_findings(review: "Review", run_dir: Path) -> dict:
                 if _admits_minor(updated):
                     updated["severity"] = "minor"
                 finals[item_id] = updated
-    return finals
+    return _sync_visual_progress(run_dir, _recover_capture(run_dir, finals))
+
 
 
 def _deadline_report(doi: str, report_json: str, input_dir: str, run_dir: Path) -> dict:
@@ -1698,6 +1924,7 @@ def _deadline_report(doi: str, report_json: str, input_dir: str, run_dir: Path) 
     review.dossier = _read_json(run_dir / "dossier" / "index.json", {}) or {}
     review.shards = _read_json(run_dir / "shards.json", []) or []
     finals = _recorded_findings(review, run_dir)
+    finals = _sync_visual_progress(run_dir, finals)
     verdicts = review.verdicts(finals)
     facts, bound = review.facts(finals)
     result = _template_report(doi, facts, verdicts, finals, evidence)
@@ -1705,6 +1932,8 @@ def _deadline_report(doi: str, report_json: str, input_dir: str, run_dir: Path) 
     checked, gaps = _validate_with_audit(result, doi, facts, verdicts, finals, evidence)
     unfinished = sum(1 for r in finals.values() if r.get("status") in ("open", "unresolved"))
     _write_json(run_dir / "finals.json", {"verdicts": verdicts, "finals": finals, "deadline_report": True})
+    checked["_visual_progress"] = visual_progress.summary(run_dir)
+    checked["_evidence_gaps"] = _evidence_gaps(finals, input_dir)
     checked.update(_engine="v3", _report_source="deadline", _unfinished_items=unfinished, _coverage_gaps=gaps,
                    _review_workdir=str(run_dir), _report_json=report_json, _input_dir=input_dir)
     _write_json(run_dir / "final.json", checked)
@@ -1713,10 +1942,14 @@ def _deadline_report(doi: str, report_json: str, input_dir: str, run_dir: Path) 
     return checked
 
 
-async def run_review(doi: str, report_json_path: str, input_dir: str, output_dir: str, resume: bool = False) -> dict:
-    """Drop-in replacement for api.services.review.run_review_single."""
+async def run_review(doi: str, report_json_path: str, input_dir: str, output_dir: str, resume: bool = False,
+                     deadline: float | None = None, shared_api_budget: bool = False) -> dict:
+    """Drop-in replacement for api.services.review.run_review_single.
+
+    ``deadline`` (time.monotonic) can only shorten PAPER_TIMEOUT_SECONDS.
+    """
     from api.services.review_lock import exclusive_review
-    from api.services.review_runtime import paper_deadline
+    from api.services.review_runtime import paper_deadline, api_review_budget
     from modules.doi_utils import normalize_doi
     doi = normalize_doi(doi) or doi
     # Sessions run in their own working directory; every path must be absolute.
@@ -1725,8 +1958,12 @@ async def run_review(doi: str, report_json_path: str, input_dir: str, output_dir
     report_json_path = str(Path(report_json_path).resolve()) if report_json_path else report_json_path
     run_dir = _run_dir(output_dir, doi, report_json_path, input_dir, resume)
     timeout = config.PAPER_TIMEOUT_SECONDS or None
-    deadline = time.monotonic() + timeout if timeout else None
+    if deadline is not None:
+        left = max(0.0, deadline - time.monotonic())
+        timeout = min(timeout, left) if timeout else left
+    deadline = time.monotonic() + timeout if timeout is not None else None
     token = paper_deadline.set(deadline)
+    api_token = api_review_budget.set(shared_api_budget)
     started = time.monotonic()
     try:
         with exclusive_review(run_dir.parent / "review.lock"):
@@ -1742,6 +1979,7 @@ async def run_review(doi: str, report_json_path: str, input_dir: str, output_dir
                     result = _fallback(doi, f"Whole-paper deadline exceeded ({timeout}s); report assembly failed: {exc}")
                     result["_retry_exhausted"] = True
     finally:
+        api_review_budget.reset(api_token)
         paper_deadline.reset(token)
         log.info("DOI=%s v3 review wall_seconds=%.1f run=%s", doi, time.monotonic() - started, run_dir)
     result.setdefault("_input_dir", input_dir)

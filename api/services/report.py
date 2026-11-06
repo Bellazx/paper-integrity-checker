@@ -6,15 +6,49 @@ import json
 import logging
 import os
 import signal
+import time
 from pathlib import Path
 
 from api.config import (
     BASE_DIR, PYTHON, REVIEW_REPORT_SCRIPT, REVIEW_DIR,
     DEFAULT_TABLE, REPORT_TIMEOUT_SECONDS, sanitize_report_namespace,
 )
+from api.services.review_runtime import time_left
 from modules.chinese_report_generator import doi_to_slug
 
 log = logging.getLogger(__name__)
+
+
+async def generate_english_report(value: dict, output_dir: Path, task_dir: Path,
+                                  *, kind: str, slug: str = "", deadline: float | None = None) -> str:
+    """A cancellable sibling of the Chinese renderer with the same hard budget."""
+    timeout = time_left(deadline, REPORT_TIMEOUT_SECONDS)
+    task_dir.mkdir(parents=True, exist_ok=True)
+    source = task_dir / f"english_{kind}.json"
+    source.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+    proc = await asyncio.create_subprocess_exec(
+        str(PYTHON), str(BASE_DIR / "scripts" / "generate_english_report.py"),
+        "--kind", kind, "--input", str(source), "--output", str(output_dir), "--slug", slug,
+        cwd=str(BASE_DIR), start_new_session=True,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        env={**os.environ, "PAPER_INTEGRITY_ROOT": str(BASE_DIR),
+             "PAPER_LLM_DEADLINE": str(time.monotonic() + timeout - min(15, timeout / 10)),
+             "REVIEW_COVERAGE_GAP_POLICY": "strict"},
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except (TimeoutError, asyncio.CancelledError):
+        await _kill_process_group(proc)
+        raise
+    if proc.returncode:
+        raise RuntimeError(f"English report failed (rc={proc.returncode}): {stderr.decode(errors='replace')[-800:]}")
+    paths = _rendered_pdf_names(stdout.decode(errors="replace"))
+    if len(paths) != 1:
+        raise RuntimeError("English renderer did not confirm a fresh PDF")
+    path = Path(paths.pop())
+    if path.parent.resolve() != output_dir.resolve() or not path.is_file():
+        raise RuntimeError("English renderer returned an invalid PDF path")
+    return str(path)
 
 
 def _is_review_error(result: dict) -> bool:
@@ -72,12 +106,18 @@ async def generate_reports(
     table_name: str = DEFAULT_TABLE,
     write_db: bool = True,
     report_namespace: str | None = None,
+    deadline: float | None = None,
 ) -> list[str]:
-    """Retry transient rendering failures without repeating detection/review."""
+    """Retry transient rendering failures without repeating detection/review.
+
+    ``deadline`` (time.monotonic) is the paper's deadline: each attempt is
+    shortened to the time left, and no retry starts once it has passed.
+    """
     for attempt in range(2):
         try:
             return await _generate_reports_once(
                 review_results, task_dir, table_name, write_db, report_namespace,
+                timeout=time_left(deadline, REPORT_TIMEOUT_SECONDS),
             )
         except (RuntimeError, TimeoutError, OSError) as exc:
             message = str(exc).lower()
@@ -88,7 +128,7 @@ async def generate_reports(
                     'worker killed', 'out of memory',
                 )
             )
-            if attempt or not transient:
+            if attempt or not transient or (deadline is not None and time.monotonic() >= deadline):
                 raise
             log.warning('Transient report failure; retrying rendering only: %s', exc)
             await asyncio.sleep(2)
@@ -100,6 +140,7 @@ async def _generate_reports_once(
     table_name: str = DEFAULT_TABLE,
     write_db: bool = True,
     report_namespace: str | None = None,
+    timeout: float = REPORT_TIMEOUT_SECONDS,
 ) -> list[str]:
     errored = [
         (r.get("doi") or "<unknown>", r.get("reason") or "review process failed")
@@ -162,11 +203,11 @@ async def _generate_reports_once(
 
     try:
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=REPORT_TIMEOUT_SECONDS
+            proc.communicate(), timeout=timeout
         )
     except TimeoutError:
         await _kill_process_group(proc)
-        raise TimeoutError(f"Report generation timed out after {REPORT_TIMEOUT_SECONDS}s")
+        raise TimeoutError(f"Report generation timed out after {timeout:.0f}s")
     except asyncio.CancelledError:
         await _kill_process_group(proc)
         raise

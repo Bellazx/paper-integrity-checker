@@ -3567,17 +3567,23 @@ async def run_review_single(
     input_dir: str,
     output_dir: str,
     resume: bool = False,
+    deadline: float | None = None,
+    shared_api_budget: bool = False,
 ) -> dict:
     """Run review and expose the exact evidence artifact to PDF generation.
 
     The review stages already build a deterministic evidence bundle.  Returning
     its path prevents the report renderer from rebuilding large workbooks a
     second time, which was the source of recurring coverage timeouts.
+
+    ``deadline`` (time.monotonic) can only shorten the configured whole-paper
+    limit; the API passes the paper's shared deadline here.
     """
     if os.environ.get("REVIEW_ENGINE", "v2").strip().lower() == "v3":
         # Shared engine for API and batch review; see review_v3/DESIGN.md.
         from review_v3.engine import run_review
-        return await run_review(doi, report_json_path, input_dir, output_dir, resume=resume)
+        return await run_review(doi, report_json_path, input_dir, output_dir, resume=resume,
+                                deadline=deadline, shared_api_budget=shared_api_budget)
     from api.services.review_lock import exclusive_review
     artifacts_dir = _review_artifacts_dir(output_dir)
     lock_path = _review_state_path(doi, report_json_path, input_dir, artifacts_dir).with_suffix(".lock")
@@ -3596,7 +3602,11 @@ async def run_review_single(
             configured = os.environ.get(
                 "REVIEW_PAPER_TIMEOUT_SECONDS", str(REVIEW_TIMEOUT_SECONDS)
             ).strip().lower()
-            deadline = None if configured in {"0", "none", "unlimited"} else max(1, int(configured))
+            limit = None if configured in {"0", "none", "unlimited"} else max(1, int(configured))
+            if deadline is not None:
+                left = max(1, int(deadline - time.monotonic()))
+                limit = min(limit, left) if limit else left
+            deadline = limit
             paper_deadline.set(time.monotonic() + deadline if deadline else None)
             try:
                 result = await asyncio.wait_for(_run_review_single_impl(

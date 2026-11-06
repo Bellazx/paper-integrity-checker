@@ -5,12 +5,16 @@ import json
 import logging
 from pathlib import Path
 
-from api.config import MAX_CONCURRENT_TASKS, MAX_REVIEW_WORKERS, TASKS_DIR
+from api.config import (
+    API_PAPER_DEADLINE_SECONDS, API_REPORT_RESERVE_SECONDS, DETECT_TIMEOUT_SECONDS,
+    MAX_CONCURRENT_TASKS, MAX_REVIEW_WORKERS, TASKS_DIR,
+)
 from api.models import PaperInfo, TaskRecord, TaskStatus
 from api.services.task_manager import TaskManager
 from api.services.detect import run_detection_single
 from api.services.review import run_review_single
 from api.services.report import generate_reports
+from api.services.review_runtime import deadline_after, time_left
 from modules.doi_utils import choose_authoritative_doi, normalize_doi
 
 log = logging.getLogger(__name__)
@@ -59,10 +63,14 @@ async def _run_pipeline_inner(
     high_risk_papers = []
     detect_sem = asyncio.Semaphore(detect_workers)
     detect_done = 0
+    # Each paper's shared clock (API_PAPER_DEADLINE_SECONDS) starts with its
+    # own detection; review and report rendering use what is left of it.
+    paper_deadlines: dict[int, float | None] = {}
 
     async def _detect_one(paper):
         nonlocal detect_done
         async with detect_sem:
+            paper_deadlines[id(paper)] = deadline_after(API_PAPER_DEADLINE_SECONDS)
             try:
                 saved = Path(paper.output_dir) / 'report.json'
                 findings = None
@@ -77,6 +85,7 @@ async def _run_pipeline_inner(
                         table_name=table_name,
                         doi=paper.doi,
                         report_namespace=report_namespace,
+                        timeout=time_left(paper_deadlines[id(paper)], DETECT_TIMEOUT_SECONDS),
                     )
                 if findings.get('error') or not findings.get('paper') or 'summary' not in findings:
                     raise RuntimeError('Detection did not produce valid findings')
@@ -145,12 +154,16 @@ async def _run_pipeline_inner(
             nonlocal review_done
             async with review_sem:
                 try:
+                    paper_deadline = paper_deadlines.get(id(paper))
                     review = await run_review_single(
                         doi=paper.doi,
                         report_json_path=paper.report_json,
                         input_dir=paper.input_dir,
                         output_dir=paper.output_dir,
                         resume=True,
+                        deadline=(paper_deadline - API_REPORT_RESERVE_SECONDS
+                                  if paper_deadline is not None else None),
+                        shared_api_budget=True,
                     )
                     review.setdefault("trigger", "auto_detection")
                     review["_input_dir"] = paper.input_dir
@@ -197,8 +210,13 @@ async def _run_pipeline_inner(
 
         task_dir = TASKS_DIR / task_id
         try:
+            # One rendering call covers every reviewed paper of the task, so
+            # it runs until the latest of their deadlines.
+            reviewed = [paper_deadlines.get(id(p)) for p in high_risk_papers]
+            report_deadline = None if not reviewed or None in reviewed else max(reviewed)
             report_paths = await generate_reports(review_results, task_dir, table_name,
-                                                  report_namespace=report_namespace)
+                                                  report_namespace=report_namespace,
+                                                  deadline=report_deadline)
         except Exception as exc:
             log.error("Report generation failed: %s", exc)
             tm.update_task(task_id, status=TaskStatus.FAILED,

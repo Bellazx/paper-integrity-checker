@@ -134,13 +134,15 @@ def _save(pdf, doc: dict, page_no: int, rect, out_dir: Path) -> str:
     return str(path)
 
 
-def crop_for(record: dict, dossier: dict, run_dir: Path) -> list[dict]:
+def crop_for(record: dict, dossier: dict, run_dir: Path, *, precise: bool = False) -> list[dict]:
     """Up to two screenshots of the figures or tables the issue cites (or of the
     cited value on the cited page), or [] when none can be located."""
     import fitz
     location = str(record.get("location") or "")
     pages = [int(next(g for g in m.groups() if g)) for m in PAGE.finditer(location)]
     labels = _labels(location)
+    if precise and (not labels or len(labels) > 2):
+        return []
     values = NUMBER.findall(str(record.get("finding") or ""))[:6]
     out_dir = Path(run_dir) / "dossier" / "renders"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -154,7 +156,9 @@ def crop_for(record: dict, dossier: dict, run_dir: Path) -> list[dict]:
                     page = pdf[page_no - 1]
                     caption = _caption_rect(page, kind, number)
                     rect = caption and (_table_rect(page, caption) if kind == "table" else _figure_rect(page, caption))
-                    if caption and not rect and kind == "figure" and page_no > 1:
+                    if precise and rect and rect.y1 < caption[3]:
+                        rect = None  # a clipped caption still needs a model-guided crop
+                    if caption and not rect and kind == "figure" and page_no > 1 and not precise:
                         # Caption at the top of a page: the figure fills the page before.
                         page_no -= 1
                         rect = _previous_page_figure(pdf[page_no - 1])
@@ -167,7 +171,7 @@ def crop_for(record: dict, dossier: dict, run_dir: Path) -> list[dict]:
                 break
         if len(shots) >= 2:
             return shots
-    if not shots and pages:
+    if not shots and pages and not precise:
         for doc in _docs(dossier, bool(SUPPLEMENT.search(location))):
             with fitz.open(doc["path"]) as pdf:
                 for page_no in (p for p in pages if 1 <= p <= pdf.page_count):
@@ -176,6 +180,8 @@ def crop_for(record: dict, dossier: dict, run_dir: Path) -> list[dict]:
                         shots.append({"path": _save(pdf, doc, page_no, rect, out_dir),
                                       "caption": f"第{page_no}页 相关段落（原文截图）"})
                         return shots
+    if precise and len(shots) != len(labels):
+        return []  # one located carrier cannot stand in for all cited figures
     return shots
 
 

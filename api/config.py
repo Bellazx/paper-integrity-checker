@@ -90,6 +90,13 @@ DETECT_TIMEOUT_SECONDS = 30 * 60
 # deployments; the review code still kills and reaps the child on timeout.
 REVIEW_TIMEOUT_SECONDS = int(os.environ.get("REVIEW_TIMEOUT_SECONDS", str(90 * 60)))
 REPORT_TIMEOUT_SECONDS = 15 * 60
+# One paper submitted through the API, from the start of its detection to its
+# published report, takes at most this long. Detection, review and report
+# rendering share the clock; the stage limits above still apply within it.
+# 0 disables the shared limit.
+API_PAPER_DEADLINE_SECONDS = int(os.environ.get("API_PAPER_DEADLINE_SECONDS", str(75 * 60)))
+# Review stops this long before the paper deadline so the report can render.
+API_REPORT_RESERVE_SECONDS = int(os.environ.get("API_REPORT_RESERVE_SECONDS", str(5 * 60)))
 
 DB_CONFIG = {
     "login_timeout": 10,

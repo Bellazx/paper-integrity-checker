@@ -102,6 +102,22 @@ def test_timeouts_do_not_accumulate_across_successful_calls(create):
     assert all(call.kwargs["model"] == PRIMARY_MODEL for call in create.call_args_list)
 
 
+def test_report_deadline_caps_each_request_and_prevents_retry(create, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(llm_client.time, 'monotonic', lambda: now[0])
+    monkeypatch.setenv('PAPER_LLM_DEADLINE', '104')
+
+    def timeout(**kwargs):
+        assert kwargs['timeout'] == 4
+        now[0] = 104
+        raise TimeoutError()
+
+    create.side_effect = timeout
+    with pytest.raises(TimeoutError, match='budget exhausted'):
+        llm_client.chat('paper')
+    assert create.call_count == 1
+
+
 def test_configured_primary_is_already_fallback(create, monkeypatch):
     monkeypatch.setattr(llm_client, "MINIMAX_MODEL", FALLBACK_MODEL)
     create.side_effect = TimeoutError()

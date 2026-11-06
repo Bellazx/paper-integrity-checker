@@ -14,13 +14,14 @@ import os
 import re
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from review_v3 import config, ledger, memory  # noqa: E402
+from review_v3 import config, ledger, memory, visual_progress  # noqa: E402
 
 LIMIT = config.TOOL_OUTPUT_CHARS
 
@@ -193,16 +194,27 @@ def cmd_render(args):
     doc = _doc(index, args.doc)
     clip = [float(v) for v in args.clip.split(",")] if args.clip else None
     tag = "full" if not clip else "c" + "_".join(str(int(v)) for v in clip)
-    out = _render_out(f"{doc['id']}_p{args.page:03d}_{tag}_d{args.dpi}.png")
-    with fitz.open(doc["path"]) as pdf:
-        if not 1 <= args.page <= pdf.page_count:
-            sys.exit(f"页码超出范围 1..{pdf.page_count}")
-        page = pdf[args.page - 1]
-        rect = page.rect
-        if not out.exists():
-            pix = page.get_pixmap(dpi=args.dpi, clip=fitz.Rect(*clip) if clip else None)
-            pix.save(str(out))
-    size = _downscale(out, args.max_side)
+    manifest = visual_progress.load(_workdir())
+    source_hash = (manifest.get("documents") or {}).get(doc["id"], "")
+    prefix = source_hash[:12] + "/" if source_hash else ""
+    out = _render_out(f"{prefix}m{args.max_side}/{doc['id']}_p{args.page:03d}_{tag}_d{args.dpi}.png")
+    with ledger._locked(out):
+        with fitz.open(doc["path"]) as pdf:
+            if not 1 <= args.page <= pdf.page_count:
+                sys.exit(f"页码超出范围 1..{pdf.page_count}")
+            page = pdf[args.page - 1]
+            rect = page.rect
+            if not out.exists():
+                pix = page.get_pixmap(dpi=args.dpi, clip=fitz.Rect(*clip) if clip else None)
+                tmp = out.with_name(f".{out.stem}.{uuid.uuid4().hex}.png")
+                try:
+                    pix.save(str(tmp))
+                    _downscale(tmp, args.max_side)
+                    os.replace(tmp, out)
+                finally:
+                    tmp.unlink(missing_ok=True)
+        size = _downscale(out, args.max_side)
+    visual_progress.register_render(_workdir(), doc["id"], args.page, out, full=clip is None)
     print(f"{out}  ({size[0]}×{size[1]} px；页面 {rect.width:.0f}×{rect.height:.0f} pt"
           f"{'，裁剪 ' + args.clip if clip else ''}）。用 Read 查看该 PNG。")
     print(f"作为证据截图时可在台账 evidence 中写 {{\"path\": \"{out}\", \"caption\": \"…\"}}")
@@ -230,16 +242,22 @@ def cmd_view(args):
         sys.exit(f"文件不存在 {src}")
     digest = hashlib.sha1(f"{src}|{args.box}|{args.max_side}".encode()).hexdigest()[:10]
     out = _render_out(f"view_{src.stem[:40]}_{digest}.png")
-    with Image.open(src) as im:
-        original = im.size
-        if args.box:
-            box = tuple(int(float(v)) for v in args.box.split(","))
-            im = im.crop(box)
-        im = im.convert("RGB")
-        if max(im.size) > args.max_side:
-            im.thumbnail((args.max_side, args.max_side))
-        im.save(out)
-        size = im.size
+    with ledger._locked(out):
+        with Image.open(src) as im:
+            original = im.size
+            if args.box:
+                box = tuple(int(float(v)) for v in args.box.split(","))
+                im = im.crop(box)
+            im = im.convert("RGB")
+            if max(im.size) > args.max_side:
+                im.thumbnail((args.max_side, args.max_side))
+            tmp = out.with_name(f".{out.stem}.{uuid.uuid4().hex}.png")
+            try:
+                im.save(tmp)
+                os.replace(tmp, out)
+            finally:
+                tmp.unlink(missing_ok=True)
+            size = im.size
     print(f"{out}  ({size[0]}×{size[1]} px；原图 {original[0]}×{original[1]} px"
           f"{'，裁剪框 ' + args.box if args.box else ''}）。用 Read 查看。")
 
@@ -291,14 +309,9 @@ def _iter_rows(path: Path, sheet: str | None):
     """Yield (sheet_names, row_iter) with 1-based row numbers and raw values."""
     suffix = path.suffix.lower()
     if suffix in (".xlsx", ".xlsm"):
-        import openpyxl
-        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-        names = wb.sheetnames
-        if sheet is None:
-            return names, None
-        if sheet not in names:
-            sys.exit(f"无 sheet {sheet!r}；可用：{names}")
-        return names, (row for row in wb[sheet].iter_rows(values_only=True))
+        from review_v3.workbook_cache import read_sheet
+        cache_dir = _workdir() / "dossier" / "workbooks" if os.environ.get("PV3_WORKDIR") else None
+        return read_sheet(path, sheet, cache_dir)
     if suffix == ".xls":
         import pandas as pd
         book = pd.read_excel(path, sheet_name=None, header=None)
@@ -561,10 +574,41 @@ def cmd_ledger(args):
         sys.exit(2)
 
 
+def cmd_visual(args):
+    if args.action in {"pending", "show"}:
+        data = visual_progress.load(_workdir())
+        if not data:
+            sys.exit("本次复审尚未建立页面进度")
+        rows = visual_progress.pending(data) if args.action == "pending" else list(data["pages"].values())
+        print(f"页面总数 {len(data['pages'])}；未完成 {len(visual_progress.pending(data))}")
+        for page in rows[:args.limit]:
+            print(f"{page['doc']} p{page['page']} [{page['status']}] "
+                  f"{' / '.join(page.get('labels') or [])} {page.get('note', '')}")
+        if data.get("unavailable"):
+            print("无法读取文档：" + "、".join(data["unavailable"]))
+        if len(rows) > args.limit:
+            print(f"另有 {len(rows) - args.limit} 页；完成前面的页面后再运行 pv3 visual pending 接续。")
+        return
+    entries = json.loads(sys.stdin.read())
+    entries = entries if isinstance(entries, list) else [entries]
+    items = (ledger.load(os.environ["PV3_LEDGER"]).get("items") or {}) if os.environ.get("PV3_LEDGER") else {}
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("result") == "issue":
+            ids = entry.get("issue_ids")
+            if not isinstance(ids, list) or not ids or any(not isinstance(i, str) or items.get(i, {}).get("status") != "issue" for i in ids):
+                sys.exit("请先把确认问题写入当前问题台账，再以 issue_ids 关联。未完成的核对使用 needs_detail。")
+    count, errors = visual_progress.update(_workdir(), entries, os.environ.get("PV3_ACTOR", "agent"))
+    print(f"已保存 {count} 页浏览进度")
+    if errors:
+        print("\n".join(errors))
+        sys.exit(2)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="pv3", description="论文复核资料包工具")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("info").set_defaults(func=cmd_info)
+    p = sub.add_parser("visual"); p.add_argument("action", choices=["pending", "show", "update"]); p.add_argument("--limit", type=int, default=20); p.set_defaults(func=cmd_visual)
     p = sub.add_parser("page"); p.add_argument("doc"); p.add_argument("page", type=int); p.add_argument("to", type=int, nargs="?"); p.set_defaults(func=cmd_page)
     p = sub.add_parser("find"); p.add_argument("regex"); p.add_argument("--doc"); p.add_argument("--context", type=int, default=0); p.add_argument("--max", type=int, default=60); p.set_defaults(func=cmd_find)
     p = sub.add_parser("captions"); p.add_argument("--kind", choices=["figure", "table"]); p.set_defaults(func=cmd_captions)

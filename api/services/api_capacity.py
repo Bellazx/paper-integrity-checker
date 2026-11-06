@@ -14,9 +14,20 @@ class WorkLimiter:
         self._semaphore = asyncio.BoundedSemaphore(limit)
 
     async def run(self, operation, *args, **kwargs):
+        return await self._run(None, operation, *args, **kwargs)
+
+    async def run_until(self, queue_deadline, operation, *args, **kwargs):
+        """Queue time counts against the same deadline as the operation."""
+        return await self._run(queue_deadline, operation, *args, **kwargs)
+
+    async def _run(self, queue_deadline, operation, *args, **kwargs):
+        from api.services.review_runtime import time_left
         self.waiting += 1
         try:
-            await self._semaphore.acquire()
+            if queue_deadline is None:
+                await self._semaphore.acquire()
+            else:
+                await asyncio.wait_for(self._semaphore.acquire(), time_left(queue_deadline, None))
         finally:
             self.waiting -= 1
         self.active += 1

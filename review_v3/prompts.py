@@ -26,6 +26,7 @@ TOOL_HELP = """## 资料包工具 pv3（已预先抽取，优先使用，不要�
 - `pv3 sheet <文件> [sheet] [--rows 1:40] [--cols A:F] [--find 值]`：流式读表（带行号和列字母）
 - `pv3 colcmp <文件> <sheet> <列A> <列B> [--file-b F --sheet-b S] [--start 2]`：两列逐值相同比例、差值、比值、r、斜率
 - `pv3 render <doc> <页> [--clip x0,y0,x1,y1] [--dpi 150]`：渲染整页或裁剪区域为缩放后的 PNG（坐标单位 pt），再用 Read 查看
+- `pv3 visual pending`：查看未完成页面；`pv3 visual update`：从标准输入 JSON 保存逐页观察（仅渲染不算完成）
 - `pv3 locate <doc> <页> '<文字>'`：文字在页面上的坐标，便于裁剪
 - `pv3 view <图片路径> [--box x0,y0,x1,y1]`：缩放/裁剪已有图片（如初检标注图）后再 Read
 - `pv3 alerts image|ref`：图像告警、参考文献提示
@@ -111,7 +112,7 @@ EOF
 def investigator_continue(state: dict, open_ids: list[str]) -> str:
     shown = "、".join(open_ids[:40]) + ("…" if len(open_ids) > 40 else "")
     if state.get("no_progress") or (state.get("chunks", 0) >= 2 and state.get("metrics")
-                                    and not any(m.get("closed") for m in state["metrics"])):
+                                    and not any(m.get("closed") or m.get("visual_progress") for m in state["metrics"])):
         return (f"上一段没有写入任何结论，台账仍有 {len(open_ids)} 项未处理：{shown}。"
                 "现在先用 `pv3 ledger update` 写入你已经核查到的结论（可以先写部分条目，"
                 "或按类写整组结论；证据不足的写 unresolved 并说明缺什么），然后再继续核查剩余条目。"
@@ -133,6 +134,20 @@ def wrapup(open_ids: list[str]) -> str:
             "（unresolved 只需 id、status、note）。不要附 evidence。按下面的模板填写，删掉用不到的字段：\n"
             f"pv3 ledger update <<'EOF'\n[{template}]\nEOF\n"
             "若有记录被拒绝，按提示修正后再提交一次。写完即结束。")
+
+
+def visual_resume() -> str:
+    return ("\n\n## 逐页浏览接续\n先运行 `pv3 visual pending`，从尚未完成的页继续；不要从正文第一页重启。"
+            "每页先 pv3 render 再 Read 查看整页，只有实际看过并写入具体观察才算完成。"
+            "看完一页立即 `pv3 visual update`，不要等所有页面看完才保存。"
+            "发现可疑面板用 needs_detail 保存待办，完成放大核查后改为 reviewed。"
+            "已确认问题先作为 new: 条目写入问题台账，再在页面中关联 issue_ids。"
+            "后续质疑或仲裁仍须独立核查关键证据；无需重做与争议无关的已完成页面。\n"
+            "示例：pv3 visual update <<'EOF'\n"
+            '[{"doc":"main","page":3,"status":"reviewed","result":"clear",'
+            '"note":"Fig.2 a–d 已查看，未发现明显重复或拼接"}]\nEOF\n'
+            "result 可用 clear/no_figure/issue；issue 要附 issue_ids。渲染失败用 blocked 并说明原因。"
+            "剩余页清空后才能关闭 image::visual_pass；有剩余则写 unresolved，不能写已完成。\n")
 
 
 def completion_note() -> str:
@@ -311,11 +326,25 @@ EOF
 
 def calibrator_continue(open_ids: list[str], wrapup: bool = False) -> str:
     shown = "、".join(open_ids[:60])
-    template = ",\n ".join(f'{{"id": "{i}", "status": "issue", "category": "…", "why": "…"}}' for i in open_ids[:60])
+    template = ",\n ".join(f'{{"id": "{i}", "status": "issue", "category": "…", "why": "…"}}' for i in open_ids[:3])
     head = ("现在需要收尾，不要再打开原文或运行计算。" if wrapup else "继续。")
     return (f"{head}还有 {len(open_ids)} 条问题没有写入类别：{shown}。根据 `pv3 item <id>` 中已有的记录直接分类，"
-            f"一次写入：\npv3 ledger update <<'EOF'\n[{template}]\nEOF\n"
-            "category 填类别代码（S1–S6、M1–M10）；问题不成立的改为 status=cleared 并写 basis。")
+            f"每完成 1–3 条就立即写入，再继续剩余条目，不要等待整批完成。以下仅是第一小批示例：\n"
+            f"pv3 ledger update <<'EOF'\n[{template}]\nEOF\n"
+            "category 填类别代码（S1–S6、M1–M10）；问题不成立的改为 status=cleared 并写 basis。"
+            "保持 id 原样；已分类条目不重复处理，只有新证据需要修正或同一事实去重时才回看。")
+
+
+def calibrator_recovery(completed: list[dict], open_ids: list[str], reason: str) -> str:
+    """A bounded handoff for either resumed or replacement grading sessions."""
+    rows = [{"id": r["id"], "status": r.get("status"), "category": r.get("category"),
+             "location": str(r.get("location") or (r.get("first") or {}).get("location") or "")[:160],
+             "basis": str(r.get("why") or r.get("basis") or "")[:300]} for r in completed]
+    return (f"\n补评级接续：{reason}。以本次 pv3 指向的台账为准；只处理未分类条目，"
+            "不要沿用上一次手写的台账路径。已保存分类如下，仅供关联事实比较和去重，不必重新逐条读取：\n"
+            + json.dumps(rows, ensure_ascii=False)
+            + "\n未分类项可用 pv3 item 读取已有事实；不要重新展开整篇调查。\n"
+            + calibrator_continue(open_ids))
 
 
 def calibrator_added(items: list[dict], open_ids: list[str]) -> str:
@@ -349,7 +378,7 @@ def calibrator(dossier: dict, items: list[dict]) -> str:
 ## 待定级的问题（{len(items)} 项，已按当前定级排序）
 {chr(10).join(rows)}
 
-全部写入后运行 `pv3 ledger show --open` 确认，然后回复“完成”。
+每完成 1–3 条立即保存，再处理下一批；同一事实的相关条目一起比较。全部写入后运行 `pv3 ledger show --open` 确认，然后回复“完成”。
 """
 
 

@@ -31,6 +31,7 @@ from modules.splice_checker import check_splicing
 from modules.data_checker import DATA_FILE_EXTENSIONS, check_data_anomalies, is_metadata_data_file
 from modules.reference_checker import check_references
 from modules.chinese_report_generator import generate_chinese_pdf
+from modules.initial_report_bundle import generate_initial_pdfs
 from modules.initial_content_screen import screen_manuscript
 
 log = logging.getLogger(__name__)
@@ -745,7 +746,8 @@ def analyze_paper(paper_dir: str, output_dir: str, skip_refs: bool = False, chin
                 cn_dir = str(candidates[0])
         else:
             cn_dir = chinese_reports_dir
-        cn_path, full_meta = generate_chinese_pdf(findings, cn_dir, first_pages_text)
+        cn_path, full_meta = generate_initial_pdfs(findings, cn_dir, first_pages_text,
+                                                  chinese_renderer=generate_chinese_pdf)
         findings["paper"]["authors_full"] = full_meta.get("authors_full", [])
         findings["paper"]["affiliations"] = full_meta.get("affiliations", [])
         log.info("Found %d authors, %d affiliations",

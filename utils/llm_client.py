@@ -50,6 +50,10 @@ def chat(prompt: str, system: str | None = None, temperature: float | None = Non
     last_error = None
     while True:
         started = time.monotonic()
+        deadline = float(os.environ.get("PAPER_LLM_DEADLINE", "0")) or None
+        remaining = deadline - started if deadline is not None else LLM_TIMEOUT
+        if remaining <= 0:
+            raise TimeoutError("Report model-call budget exhausted") from last_error
         try:
             resp = get_client().chat.completions.create(
                 model=model,
@@ -57,6 +61,7 @@ def chat(prompt: str, system: str | None = None, temperature: float | None = Non
                 temperature=temperature or LLM_TEMPERATURE,
                 max_tokens=LLM_MAX_TOKENS,
                 reasoning_effort=os.getenv('LLM_REASONING_EFFORT', 'low'),
+                timeout=min(LLM_TIMEOUT, remaining),
             )
             content = resp.choices[0].message.content or ""
             content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
@@ -90,6 +95,9 @@ def chat(prompt: str, system: str | None = None, temperature: float | None = Non
                 if retry_failures >= LLM_RETRY_ATTEMPTS:
                     break
                 backoff = retry_failures - 1
-            time.sleep(2 ** min(backoff, 4))
+            delay = 2 ** min(backoff, 4)
+            if deadline is not None and time.monotonic() + delay >= deadline:
+                raise TimeoutError("Report model-call budget exhausted") from e
+            time.sleep(delay)
 
     raise RuntimeError(f"LLM call failed after all retries (model={model})") from last_error

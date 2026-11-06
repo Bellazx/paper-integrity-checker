@@ -69,6 +69,7 @@ def test_review_result_is_hidden_until_db_write_is_verified(monkeypatch, tmp_pat
     monkeypatch.setattr(worker, "upsert_chushen", lambda **kwargs: None)
     monkeypatch.setattr(worker, "verify_chushen_write", lambda **kwargs: (True, ""))
     monkeypatch.setattr(worker, "update_review", lambda **kwargs: False)
+    monkeypatch.setattr(worker, "update_review_result", lambda **kwargs: True)
     monkeypatch.setattr(worker, "REVIEW_DIR", tmp_path / "review")
     monkeypatch.setattr(worker, "TASKS_DIR", tmp_path / "tasks")
     monkeypatch.setattr(
@@ -153,6 +154,7 @@ def test_user_worker_resumes_detection_and_retries_only_render(monkeypatch, tmp_
     monkeypatch.setattr(worker, 'upsert_chushen', lambda **kw: None)
     monkeypatch.setattr(worker, 'verify_chushen_write', lambda **kw: (True, ''))
     monkeypatch.setattr(worker, 'update_review', lambda **kw: updates.append(kw) or True)
+    monkeypatch.setattr(worker, 'update_review_result', lambda **kw: True)
     monkeypatch.setattr(worker, 'verify_review_write', lambda **kw: (True, ''))
     monkeypatch.setattr(report, '_generate_reports_once', renderer)
     monkeypatch.setattr(report.asyncio, 'sleep', AsyncMock())

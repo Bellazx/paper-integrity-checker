@@ -51,6 +51,29 @@ def write_report(prompt):
                                             **fields, "reason": reason}, ensure_ascii=False)}))
 
 
+def review_pages():
+    workdir = Path(os.environ["PV3_WORKDIR"])
+    progress_path = workdir / "visual_progress.json"
+    if not progress_path.is_file():
+        return
+    progress = json.loads(progress_path.read_text())
+    for page in progress["pages"].values():
+        if page["status"] == "reviewed":
+            continue
+        rendered = pv3("render", page["doc"], str(page["page"]))
+        image = rendered.stdout.split("  (", 1)[0].strip()
+        if rendered.returncode or not Path(image).is_file():
+            continue
+        settings = json.loads(Path(arg("--settings")).read_text())
+        import shlex
+        command = settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+        subprocess.run(shlex.split(command), input=json.dumps({"hook_event_name": "PostToolUse",
+            "tool_name": "Read", "tool_input": {"file_path": image}, "tool_response": {"type": "image"}}),
+            text=True, capture_output=True, check=True)
+        pv3("visual", "update", stdin=json.dumps({"doc": page["doc"], "page": page["page"],
+            "status": "reviewed", "result": "clear", "note": "测试审阅器逐页查看，无可疑面板"}))
+
+
 def main():
     prompt = sys.stdin.read()  # sessions pass the prompt on stdin
     scenario = json.loads(Path(os.environ["FAKE_CLAUDE_SCENARIO"]).read_text())
@@ -109,6 +132,8 @@ def main():
         return
     if behaviour == "one_per_call":
         open_items = open_items[:1]
+    if any(i["id"] == "image::visual_pass" for i in open_items):
+        review_pages()
     entries = []
     issues = behaviour.get("issue", {}) if isinstance(behaviour, dict) else {}
     for item in open_items:

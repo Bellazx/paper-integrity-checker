@@ -6,6 +6,7 @@ import time
 
 
 paper_deadline = contextvars.ContextVar('review_paper_deadline', default=None)
+api_review_budget = contextvars.ContextVar('api_review_budget', default=False)
 _evidence_gate = None
 _evidence_loop = None
 
@@ -24,6 +25,23 @@ async def limited_evidence(operation, *args, **kwargs):
         except asyncio.CancelledError:
             await job
             raise
+
+
+def deadline_after(seconds):
+    """Monotonic deadline ``seconds`` from now; None when the limit is off."""
+    return time.monotonic() + seconds if seconds and seconds > 0 else None
+
+
+def time_left(deadline, cap, reserve=0.0, floor=0.0):
+    """Seconds a stage may run: its own cap, shortened to what is left before
+    ``deadline`` minus ``reserve``. A floor may not extend a hard deadline;
+    expired work must not be launched, including on a retry."""
+    if deadline is None:
+        return cap
+    left = deadline - reserve - time.monotonic()
+    if left <= 0:
+        raise TimeoutError('Whole-paper deadline exhausted')
+    return min(cap, left) if cap else left
 
 
 def subprocess_budget(configured):

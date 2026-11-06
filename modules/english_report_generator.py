@@ -546,6 +546,7 @@ INPUT:
         translated,
         tuple(source),
     )
+    translated = _preserve_decimal_values(source, translated)
     translated = {key: _review_public_english_text(translated[key]) for key in source}
     result = _review_public_english_text(_risk_label(review.get('result', '')))
     result_color = _risk_color(review.get('result', ''))
@@ -593,6 +594,37 @@ No risk identified applies only to the materials and checks covered here.</p>
     _render_english_pdf(_document(body), str(output_path))
     log.info("English review report generated: %s", output_path)
     return str(output_path)
+
+
+def _preserve_decimal_values(source: dict, translated: dict) -> dict:
+    """Do not silently publish a translation that dropped a quoted value.
+
+    One targeted repair is allowed within the renderer's shared time budget.
+    This checks decimal literals, not scientific validity or full fidelity.
+    """
+    def missing():
+        return {key: sorted(set(re.findall(r'(?<![\d.])\d+\.\d+(?!\d)', str(value)))
+                            - set(re.findall(r'(?<![\d.])\d+\.\d+(?!\d)', str(translated.get(key, '')))))
+                for key, value in source.items()}
+
+    gaps = {key: values for key, values in missing().items() if values}
+    if not gaps:
+        return translated
+    prompt = ('Repair these English translations. Preserve every quoted decimal literal exactly, '
+              'including trailing zeros and identifiers. Restore its original context; do not append '
+              'a disconnected list of numbers. Preserve all findings and qualifications. Return a flat JSON '
+              'object with exactly the supplied top-level keys. Every value must be the complete corrected '
+              'English string, never a nested object; do not echo the Chinese source or missing_values.\n'
+              + json.dumps({key: {
+                  'source': source[key], 'translation': translated[key], 'missing_values': values}
+                  for key, values in gaps.items()}, ensure_ascii=False))
+    repaired = _parse_json_response(chat(prompt, system=_SYSTEM_PROMPT, temperature=0.2),
+                                    tuple(gaps), strict_missing=True)
+    translated = {**translated, **_normalize_english_fields(repaired, tuple(gaps))}
+    remaining = {key: values for key, values in missing().items() if values}
+    if remaining:
+        raise ValueError(f'English translation omitted source values: {remaining}')
+    return translated
 
 
 def _review_public_english_text(text: str) -> str:
