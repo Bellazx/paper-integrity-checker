@@ -689,7 +689,9 @@ class Review:
         by_id = {item["id"]: (shard, item) for shard in self.shards for item in shard["items"]}
         for round_no in range(1, config.COMPLETE_ROUNDS + 1):
             pending = [r for r in finals.values()
-                       if r.get("status") in ("unresolved", "open") and _required_finding(r["id"]) and r["id"] in by_id]
+                       if r.get("status") in ("unresolved", "open") and _required_finding(r["id"]) and r["id"] in by_id
+                       and (round_no <= config.COMPLETE_VISUAL_ROUNDS
+                            or by_id[r["id"]][0]["kind"] not in config.FULL_BUDGET_SHARD_KINDS)]
             if not pending:
                 break
             limit = config.COMPLETE_BATCH * config.COMPLETE_MAX_BATCHES
@@ -724,6 +726,7 @@ class Review:
                                   f"investigator:{name}", "complete")
                 # Shards complete concurrently: each follow-up has its own time box.
                 spec.soft_deadline = soft
+                spec.chunk_seconds = config.COMPLETE_CHUNK_SECONDS
                 # Shards complete concurrently; one paper still runs at most
                 # COMPLETE_MAX_BATCHES follow-up sessions at a time.
                 if self._complete_gate is None:

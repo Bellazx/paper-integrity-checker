@@ -176,6 +176,12 @@ CALIBRATE_CHUNK_SECONDS = _int("REVIEW_V3_CALIBRATE_CHUNK_SECONDS", 240)
 # follow-up the pass restarts from page one and ran 6-9 chunks per round
 # (20 min per paper) while writing only in its wrap-up chunk.
 COMPLETE_CHUNKS_IMAGE_SCAN = _int("REVIEW_V3_COMPLETE_CHUNKS_IMAGE_SCAN", 3)
+# One follow-up chunk may run this long: a follow-up session sat 16 minutes
+# in two chunks without writing (2026-11-07, two-item consistency batch).
+COMPLETE_CHUNK_SECONDS = _int("REVIEW_V3_COMPLETE_CHUNK_SECONDS", 300)
+# The page-by-page visual pass gets one follow-up round only: a second
+# round restarts from page one and took 4-9 more chunks per paper.
+COMPLETE_VISUAL_ROUNDS = _int("REVIEW_V3_COMPLETE_VISUAL_ROUNDS", 1)
 
 # Memory retrieval.
 MEMORY_DIR = Path(os.environ.get(
