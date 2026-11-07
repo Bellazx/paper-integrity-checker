@@ -500,7 +500,11 @@ class Review:
                 items = announce[:]
                 announce.clear()
                 return prompts.calibrator_added(items, open_ids())
-            return prompts.calibrator_continue(open_ids())
+            # After its first chunk the calibrator has read the records: the
+            # later chunks only classify and write (2026-11-07: calibrators
+            # spent three 13-turn chunks re-verifying and wrote nothing until
+            # the wrap-up chunk told them to stop opening the paper).
+            return prompts.calibrator_continue(open_ids(), wrapup=True)
         spec.continue_prompt = next_message
         def restart_message(_state):
             records = list((ledger.load(path).get("items") or {}).values())
@@ -533,7 +537,8 @@ class Review:
             def open_ids():
                 return [item["id"] for item in ledger.open_items(ledger.load(sub))]
 
-            spec.continue_prompt = lambda state: prompts.calibrator_continue(open_ids())
+            # Second chunk on: classify from the records, no more verification.
+            spec.continue_prompt = lambda state: prompts.calibrator_continue(open_ids(), wrapup=True)
 
             def restart_message(_state):
                 records = list((ledger.load(sub).get("items") or {}).values())

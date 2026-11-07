@@ -119,3 +119,27 @@ def test_small_batches_still_use_one_calibrator(tmp_path, monkeypatch):
         assert calls == ["cal_all"] and all(out[i]["category"] == "M1" for i in ids)
         await review.close()
     asyncio.run(run())
+
+
+def test_calibrators_write_from_the_second_chunk_on(tmp_path, monkeypatch):
+    """After one chunk of reading, continuation prompts tell the calibrator
+    to classify from the records and write, not to reopen the paper."""
+    seen = {}
+
+    async def fake_run(spec):
+        seen[spec.name] = spec.continue_prompt({"chunks": 1})
+        grade_all(spec.ledger_path)
+        return session.SessionOutcome("done")
+    monkeypatch.setattr(session, "run", fake_run)
+
+    async def run():
+        review = engine.Review("x", "", str(tmp_path), tmp_path / "run", None)
+        await review.calibrate({f"d{i}": finding(f"d{i}") for i in range(3)})
+        await review.close()
+        review2 = engine.Review("y", "", str(tmp_path), tmp_path / "run2", None)
+        await review2.calibrate({f"d{i}": finding(f"d{i}") for i in range(20)})
+        await review2.close()
+    asyncio.run(run())
+    assert "cal_all" in seen and "cal_b1" in seen
+    for text in seen.values():
+        assert "不要再打开原文" in text
