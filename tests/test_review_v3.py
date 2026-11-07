@@ -911,9 +911,11 @@ def test_completion_follow_up_is_capped_per_paper(tmp_path, fake_cli, monkeypatc
         if call["actor"].startswith("investigator:fin"):
             rounds.setdefault(call["actor"].split(":")[1].split("_")[0], set()).add(call["actor"])
     # Each shard may follow up independently; the shared semaphore caps
-    # concurrent sessions. The newly required visual pass gets its own batch.
-    assert rounds and all(len(names) == 2 for names in rounds.values())
-    assert all(any('image_scan' in name for name in names) for names in rounds.values())
+    # concurrent sessions. The newly required visual pass gets its own batch
+    # in round 1 only (COMPLETE_VISUAL_ROUNDS); other shards keep round 2.
+    assert set(rounds) == {"fin1", "fin2"}
+    assert len(rounds["fin1"]) == 2 and any('image_scan' in name for name in rounds["fin1"])
+    assert rounds["fin2"] and not any('image_scan' in name for name in rounds["fin2"])
     assert result["trigger"] != "review_error"
 
 
