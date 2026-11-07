@@ -490,6 +490,7 @@ class Review:
         used = session.reopen("cal_all", self.run_dir) if added else 0
         spec = self._spec("cal_all", prompts.calibrator(self.dossier, batch), path,
                           used + config.MAX_CHUNKS_CALIBRATE, "calibrator", "calibrate")
+        spec.chunk_seconds = config.CALIBRATE_CHUNK_SECONDS
         announce = list(added) if used else []
 
         def open_ids():
@@ -533,6 +534,7 @@ class Review:
                             "first": _compact(r)} for r in items])
             spec = self._spec(name, prompts.calibrator(self.dossier, items), sub,
                               config.MAX_CHUNKS_CALIBRATE, "calibrator", "calibrate")
+            spec.chunk_seconds = config.CALIBRATE_CHUNK_SECONDS
 
             def open_ids():
                 return [item["id"] for item in ledger.open_items(ledger.load(sub))]
@@ -634,6 +636,7 @@ class Review:
 
             rest_spec = self._spec("cal_rest", recovery_prompt(fresh=True), rest_path,
                                   int(carry.get("continuation_base_chunks", 0)) + 2, "calibrator", "calibrate")
+            rest_spec.chunk_seconds = config.CALIBRATE_CHUNK_SECONDS
             rest_spec.continue_prompt = lambda state: recovery_prompt()
             rest_spec.restart_prompt = lambda state: recovery_prompt(fresh=True)
             rest_spec.wrapup_prompt = lambda state: prompts.calibrator_continue(
@@ -717,7 +720,7 @@ class Review:
                          "items": [by_id[r["id"]][1] for r in records]}
                 prompt = prompts.investigator(shard, self.dossier, self.hints.get(by_id[records[0]["id"]][0]["id"], ""))
                 prompt += prompts.completion_note()
-                spec = self._spec(name, prompt, path, config.chunk_budget(len(records), config.MAX_CHUNKS_COMPLETE, kind),
+                spec = self._spec(name, prompt, path, config.complete_chunks(len(records), kind),
                                   f"investigator:{name}", "complete")
                 # Shards complete concurrently: each follow-up has its own time box.
                 spec.soft_deadline = soft

@@ -186,6 +186,21 @@ class SessionSpec:
     soft_deadline: float | None = None
     wrapup_prompt: Callable[[dict], str] | None = None
     profile: str = "default"  # "judge": final review model
+    # Wall-time cap of one ordinary chunk (seconds); None = CHUNK_TIMEOUT_SECONDS.
+    chunk_seconds: float | None = None
+
+
+def chunk_wall_limit(spec: "SessionSpec", wrapping: bool, now: float) -> float:
+    """Seconds one CLI chunk may run: the phase box plus grace, the hard
+    deadline, and the spec's own per-chunk cap (calibrators)."""
+    timeout = config.WRAPUP_SECONDS if wrapping else config.CHUNK_TIMEOUT_SECONDS
+    if spec.chunk_seconds and not wrapping:
+        timeout = min(timeout, spec.chunk_seconds)
+    if spec.soft_deadline is not None and not wrapping:
+        timeout = min(timeout, max(60.0, spec.soft_deadline + config.SOFT_GRACE_SECONDS - now))
+    if spec.deadline is not None:
+        timeout = max(1.0, min(timeout, spec.deadline - now))
+    return timeout
 
 
 @dataclass
@@ -337,12 +352,7 @@ async def _invoke(spec: SessionSpec, message: str, session_id: str, resume: bool
             command += ["--add-dir", str(directory)]
     else:
         command += ["--tools", ""]
-    now = time.monotonic()
-    timeout = config.WRAPUP_SECONDS if wrapping else config.CHUNK_TIMEOUT_SECONDS
-    if spec.soft_deadline is not None and not wrapping:
-        timeout = min(timeout, max(60.0, spec.soft_deadline + config.SOFT_GRACE_SECONDS - now))
-    if spec.deadline is not None:
-        timeout = max(1.0, min(timeout, spec.deadline - now))
+    timeout = chunk_wall_limit(spec, wrapping, time.monotonic())
     started = time.monotonic()
     tail = _TranscriptTail(session_id)
     tail.start()

@@ -143,3 +143,37 @@ def test_calibrators_write_from_the_second_chunk_on(tmp_path, monkeypatch):
     assert "cal_all" in seen and "cal_b1" in seen
     for text in seen.values():
         assert "不要再打开原文" in text
+
+
+def test_calibrator_reading_chunk_is_capped_and_follow_up_visual_pass_is_short(tmp_path, monkeypatch):
+    seen = {}
+
+    async def fake_run(spec):
+        seen[spec.name] = (spec.chunk_seconds, spec.max_chunks)
+        grade_all(spec.ledger_path)
+        return session.SessionOutcome("done")
+    monkeypatch.setattr(session, "run", fake_run)
+
+    async def run():
+        review = engine.Review("x", "", str(tmp_path), tmp_path / "run", None)
+        await review.calibrate({f"d{i}": finding(f"d{i}") for i in range(3)})
+        await review.close()
+        review2 = engine.Review("y", "", str(tmp_path), tmp_path / "run2", None)
+        await review2.calibrate({f"d{i}": finding(f"d{i}") for i in range(20)})
+        await review2.close()
+    asyncio.run(run())
+    assert seen["cal_all"][0] == config.CALIBRATE_CHUNK_SECONDS == 240
+    assert seen["cal_b1"][0] == 240 and seen["cal_b2"][0] == 240
+    # the cap shortens an ordinary chunk but never the wrap-up chunk or a nearer deadline
+    spec = session.SessionSpec("cal_x", tmp_path, "", "calibrator", chunk_seconds=240)
+    assert session.chunk_wall_limit(spec, wrapping=False, now=1000.0) == 240
+    assert session.chunk_wall_limit(spec, wrapping=True, now=1000.0) == config.WRAPUP_SECONDS
+    spec.deadline = 1100.0
+    assert session.chunk_wall_limit(spec, wrapping=False, now=1000.0) == 100.0
+    plain = session.SessionSpec("inv_x", tmp_path, "", "investigator")
+    assert session.chunk_wall_limit(plain, wrapping=False, now=1000.0) == config.CHUNK_TIMEOUT_SECONDS
+    # follow-ups: the visual pass gets a short budget, other shards the size-based one
+    assert config.complete_chunks(1, "image_scan") == config.COMPLETE_CHUNKS_IMAGE_SCAN == 3
+    assert config.complete_chunks(1, "stats") == 2
+    assert config.complete_chunks(4, "methodology") == 3
+    assert config.complete_chunks(9, "data") == config.MAX_CHUNKS_COMPLETE

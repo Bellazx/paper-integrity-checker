@@ -69,6 +69,13 @@ def chunk_budget(items: int, cap: int, kind: str | None = None) -> int:
     return cap
 
 
+def complete_chunks(items: int, kind: str | None) -> int:
+    """Chunk budget for a follow-up session (see COMPLETE_CHUNKS_IMAGE_SCAN)."""
+    if kind in FULL_BUDGET_SHARD_KINDS:
+        return min(COMPLETE_CHUNKS_IMAGE_SCAN, MAX_CHUNKS_COMPLETE)
+    return chunk_budget(items, MAX_CHUNKS_COMPLETE, kind)
+
+
 def investigate_chunks(shard: dict) -> int:
     """Chunk budget for one investigation shard (see above)."""
     return chunk_budget(len(shard.get("items") or []), MAX_CHUNKS_INVESTIGATE, shard.get("kind"))
@@ -161,6 +168,14 @@ JUDGE_RESERVE_SECONDS = _int("REVIEW_V3_JUDGE_RESERVE_SECONDS", 5 * 60)
 # its first chunk (8 min) reading and wrote nothing; batches of this size
 # run in parallel, each grading its own issues (same dimension together).
 CALIBRATE_BATCH = _int("REVIEW_V3_CALIBRATE_BATCH", 12)
+# A calibrator's reading chunk ends after this long; the next chunk only
+# classifies and writes. 2026-11-07: one 12-issue batch sat 9 min in its first
+# chunk and was cut by the judge reserve with nothing written.
+CALIBRATE_CHUNK_SECONDS = _int("REVIEW_V3_CALIBRATE_CHUNK_SECONDS", 240)
+# Follow-up (completion) sessions for the page-by-page visual pass: in a
+# follow-up the pass restarts from page one and ran 6-9 chunks per round
+# (20 min per paper) while writing only in its wrap-up chunk.
+COMPLETE_CHUNKS_IMAGE_SCAN = _int("REVIEW_V3_COMPLETE_CHUNKS_IMAGE_SCAN", 3)
 
 # Memory retrieval.
 MEMORY_DIR = Path(os.environ.get(
