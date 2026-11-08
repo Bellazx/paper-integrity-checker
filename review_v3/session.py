@@ -188,6 +188,16 @@ class SessionSpec:
     profile: str = "default"  # "judge": final review model
     # Wall-time cap of one ordinary chunk (seconds); None = CHUNK_TIMEOUT_SECONDS.
     chunk_seconds: float | None = None
+    # After this many chunks the session may only write its ledger: the
+    # guard refuses every other command (PV3_WRITE_ONLY). Calibrators told
+    # "classify from the records, do not reopen the paper" kept verifying
+    # with openpyxl for four minutes and wrote nothing (2026-11-07).
+    write_only_after: int | None = None
+
+
+def write_only(spec: "SessionSpec", chunks_done: int) -> bool:
+    """True when the chunk about to start may only write the ledger."""
+    return spec.write_only_after is not None and chunks_done >= spec.write_only_after
 
 
 def chunk_wall_limit(spec: "SessionSpec", wrapping: bool, now: float) -> float:
@@ -474,6 +484,9 @@ async def run(spec: SessionSpec) -> SessionOutcome:
                 message = (spec.continue_prompt or (lambda s: "继续完成任务。"))(state)
                 resume = True
             before = _progress_key(spec)
+            if write_only(spec, state["chunks"]):
+                spec.extra_env["PV3_WRITE_ONLY"] = "1"
+                message += "\n\n本段只能写入台账：除 `pv3 ledger update` / `pv3 ledger show` / `pv3 item` 外的命令都会被拒绝。"
             # Persist the spend before launching; a crash must not refund it.
             state.update(started=True, chunks=state["chunks"] + 1, launched_at=time.time(), restart=False)
             _save_state(spec, state)

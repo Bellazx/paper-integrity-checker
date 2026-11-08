@@ -84,7 +84,16 @@ def _strip_allowed(text: str) -> str:
     return SKILL_TOOL.sub("<tool>", text)
 
 
+WRITE_ONLY_COMMAND = re.compile(r"^\s*(?:cd\s+\S+\s*(?:&&|;)\s*)?(?:timeout\s+\d+\s+)?pv3\s+(?:ledger\s+(?:update|show)|item)\b")
+
+
 def check(tool: str, payload: dict) -> str | None:
+    if os.environ.get("PV3_WRITE_ONLY") == "1":
+        # The session's remaining work is to record what it already knows.
+        command = str(payload.get("command") or "")
+        if tool != "Bash" or not WRITE_ONLY_COMMAND.match(command.split("<<", 1)[0]):
+            return ("本段只写入台账，不再核对：请用 `pv3 ledger update` 写入分类（`pv3 item <id>` 可查记录，"
+                    "`pv3 ledger show --open` 可看剩余条目）。")
     if tool == "Read":
         target = str(payload.get("file_path") or "")
         if SENSITIVE.search(target):

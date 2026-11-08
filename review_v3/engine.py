@@ -491,6 +491,7 @@ class Review:
         spec = self._spec("cal_all", prompts.calibrator(self.dossier, batch), path,
                           used + config.MAX_CHUNKS_CALIBRATE, "calibrator", "calibrate")
         spec.chunk_seconds = config.CALIBRATE_CHUNK_SECONDS
+        spec.write_only_after = 1
         announce = list(added) if used else []
 
         def open_ids():
@@ -535,6 +536,7 @@ class Review:
             spec = self._spec(name, prompts.calibrator(self.dossier, items), sub,
                               config.MAX_CHUNKS_CALIBRATE, "calibrator", "calibrate")
             spec.chunk_seconds = config.CALIBRATE_CHUNK_SECONDS
+            spec.write_only_after = 1
 
             def open_ids():
                 return [item["id"] for item in ledger.open_items(ledger.load(sub))]
@@ -637,6 +639,7 @@ class Review:
             rest_spec = self._spec("cal_rest", recovery_prompt(fresh=True), rest_path,
                                   int(carry.get("continuation_base_chunks", 0)) + 2, "calibrator", "calibrate")
             rest_spec.chunk_seconds = config.CALIBRATE_CHUNK_SECONDS
+            rest_spec.write_only_after = 1
             rest_spec.continue_prompt = lambda state: recovery_prompt()
             rest_spec.restart_prompt = lambda state: recovery_prompt(fresh=True)
             rest_spec.wrapup_prompt = lambda state: prompts.calibrator_continue(
@@ -778,6 +781,9 @@ class Review:
                           config.MAX_CHUNKS_JUDGE, "judge", "judge")
         spec.profile, spec.chunk_turns = "judge", config.JUDGE_CHUNK_TURNS
         spec.soft_deadline = time.monotonic() + config.JUDGE_SOFT_SECONDS
+        # Two verification chunks of at most JUDGE_CHUNK_SECONDS; then record.
+        spec.chunk_seconds = config.JUDGE_CHUNK_SECONDS
+        spec.write_only_after = 2
         spec.continue_prompt = lambda state: prompts.calibrator_continue(
             [item["id"] for item in ledger.open_items(ledger.load(path))])
         spec.wrapup_prompt = lambda state: prompts.calibrator_continue(

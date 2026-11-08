@@ -172,6 +172,9 @@ CALIBRATE_BATCH = _int("REVIEW_V3_CALIBRATE_BATCH", 12)
 # classifies and writes. 2026-11-07: one 12-issue batch sat 9 min in its first
 # chunk and was cut by the judge reserve with nothing written.
 CALIBRATE_CHUNK_SECONDS = _int("REVIEW_V3_CALIBRATE_CHUNK_SECONDS", 240)
+# A judge chunk may run this long before the next chunk only records
+# (81444ed4, 2026-11-07: 13 minutes and 30 tool calls for two issues, nothing written).
+JUDGE_CHUNK_SECONDS = _int("REVIEW_V3_JUDGE_CHUNK_SECONDS", 480)
 # Follow-up (completion) sessions for the page-by-page visual pass: in a
 # follow-up the pass restarts from page one and ran 6-9 chunks per round
 # (20 min per paper) while writing only in its wrap-up chunk.

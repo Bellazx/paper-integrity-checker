@@ -208,3 +208,40 @@ def test_follow_ups_have_a_chunk_cap_and_the_visual_pass_one_round(tmp_path, mon
     assert visual[0][1] == config.COMPLETE_CHUNKS_IMAGE_SCAN
     data = [n for n, _, _, items in seen if "trailing_digit::book.xlsx::S1" in items]
     assert [n[:4] for n in data] == ["fin1", "fin2"]                   # other shards still get round 2
+
+
+def test_write_only_mode_lets_only_ledger_commands_through(monkeypatch):
+    from review_v3.tools import guard
+    monkeypatch.setenv("PV3_WRITE_ONLY", "1")
+    monkeypatch.setenv("PV3_ACTOR", "calibrator")
+    ok = ["pv3 ledger update <<'EOF'\n[{\"id\": \"x\"}]\nEOF", "pv3 ledger show --open", "pv3 item 'fig::2'",
+          "cd /tmp && pv3 ledger update <<'EOF'\n[]\nEOF", "timeout 60 pv3 ledger show"]
+    for command in ok:
+        assert guard.check("Bash", {"command": command}) is None, command
+    blocked = ["python3 -I -c 'import openpyxl'", "pv3 render main 5 --clip 1,2,3,4", "pv3 page main 3",
+               "pv3 sheet book.xlsx S1", "ls", "cat /tmp/x.py; pv3 ledger show"]
+    for command in blocked:
+        assert "只写入台账" in (guard.check("Bash", {"command": command}) or ""), command
+    assert "只写入台账" in guard.check("Read", {"file_path": "/tmp/x.png"})
+    monkeypatch.delenv("PV3_WRITE_ONLY")
+    assert guard.check("Bash", {"command": "pv3 page main 3"}) is None
+
+
+def test_calibrators_and_judge_switch_to_write_only(tmp_path, monkeypatch):
+    seen = {}
+
+    async def fake_run(spec):
+        seen[spec.name] = (spec.write_only_after, spec.chunk_seconds)
+        grade_all(spec.ledger_path)
+        return session.SessionOutcome("done")
+    monkeypatch.setattr(session, "run", fake_run)
+
+    async def run():
+        review = engine.Review("x", "", str(tmp_path), tmp_path / "run", None)
+        await review.calibrate({f"d{i}": finding(f"d{i}") for i in range(20)})
+        await review.close()
+    asyncio.run(run())
+    assert seen["cal_b1"] == (1, config.CALIBRATE_CHUNK_SECONDS) and seen["cal_b2"][0] == 1
+    spec = session.SessionSpec("cal_x", tmp_path, "", "calibrator", write_only_after=1)
+    assert not session.write_only(spec, 0) and session.write_only(spec, 1) and session.write_only(spec, 3)
+    assert not session.write_only(session.SessionSpec("inv_x", tmp_path, "", "investigator"), 5)
