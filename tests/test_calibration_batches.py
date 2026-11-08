@@ -180,13 +180,16 @@ def test_calibrator_reading_chunk_is_capped_and_follow_up_visual_pass_is_short(t
 
 
 def test_follow_ups_have_a_chunk_cap_and_the_visual_pass_one_round(tmp_path, monkeypatch):
-    """Follow-up sessions get COMPLETE_CHUNK_SECONDS per chunk; the visual
-    pass is followed up in round 1 only, other shards may get round 2."""
+    """Follow-up sessions get COMPLETE_CHUNK_SECONDS per chunk and write only
+    in their last regular chunk (the visual pass excepted); the visual pass
+    is followed up in round 1 only, other shards may get round 2."""
     seen = []
+    write_only = {}
 
     async def fake_run(spec):
         items = list(ledger.load(spec.ledger_path)["items"])
         seen.append((spec.name, spec.chunk_seconds, spec.max_chunks, items))
+        write_only[spec.name] = (spec.max_chunks, spec.write_only_after)
         return session.SessionOutcome("exhausted")  # writes nothing: items stay open
     monkeypatch.setattr(session, "run", fake_run)
     monkeypatch.setattr(engine, "_sync_visual_progress", lambda run_dir, finals: finals)
@@ -202,12 +205,17 @@ def test_follow_ups_have_a_chunk_cap_and_the_visual_pass_one_round(tmp_path, mon
         await review.complete(finals)
         await review.close()
     asyncio.run(run())
-    assert all(c == config.COMPLETE_CHUNK_SECONDS == 300 for _, c, _, _ in seen)
+    assert all(c == config.COMPLETE_CHUNK_SECONDS == 240 for _, c, _, _ in seen)
     visual = [(n, m) for n, _, m, items in seen if "image::visual_pass" in items]
     assert len(visual) == 1 and visual[0][0].startswith("fin1_")      # one round only for the visual pass
     assert visual[0][1] == config.COMPLETE_CHUNKS_IMAGE_SCAN
+    assert write_only[visual[0][0]] == (config.COMPLETE_CHUNKS_IMAGE_SCAN, None)  # the visual pass keeps rendering
     data = [n for n, _, _, items in seen if "trailing_digit::book.xlsx::S1" in items]
     assert [n[:4] for n in data] == ["fin1", "fin2"]                   # other shards still get round 2
+    assert all(write_only[n] == (2, 1) for n in data)                   # one item: read one chunk, then write
+    assert config.complete_write_only_after(3, "data") == 2             # 3-6 items: write in chunk 3
+    assert config.complete_write_only_after(config.MAX_CHUNKS_COMPLETE, "data") == config.MAX_CHUNKS_COMPLETE - 1
+    assert config.complete_write_only_after(1, "data") is None
 
 
 def test_write_only_mode_lets_only_ledger_commands_through(monkeypatch):

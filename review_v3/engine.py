@@ -725,11 +725,13 @@ class Review:
                          "items": [by_id[r["id"]][1] for r in records]}
                 prompt = prompts.investigator(shard, self.dossier, self.hints.get(by_id[records[0]["id"]][0]["id"], ""))
                 prompt += prompts.completion_note()
-                spec = self._spec(name, prompt, path, config.complete_chunks(len(records), kind),
-                                  f"investigator:{name}", "complete")
+                chunks = config.complete_chunks(len(records), kind)
+                spec = self._spec(name, prompt, path, chunks, f"investigator:{name}", "complete")
                 # Shards complete concurrently: each follow-up has its own time box.
                 spec.soft_deadline = soft
                 spec.chunk_seconds = config.COMPLETE_CHUNK_SECONDS
+                # The last regular chunk only writes what the reading chunks found.
+                spec.write_only_after = config.complete_write_only_after(chunks, kind)
                 # Shards complete concurrently; one paper still runs at most
                 # COMPLETE_MAX_BATCHES follow-up sessions at a time.
                 if self._complete_gate is None:

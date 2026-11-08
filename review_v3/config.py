@@ -76,6 +76,18 @@ def complete_chunks(items: int, kind: str | None) -> int:
     return chunk_budget(items, MAX_CHUNKS_COMPLETE, kind)
 
 
+def complete_write_only_after(chunks: int, kind: str | None) -> int | None:
+    """Chunks a follow-up session may spend reading before its last regular
+    chunk is restricted to ledger writes. On 2026-11-08 every follow-up
+    session wrote nothing in its reading chunks (two hit the 5-minute cap)
+    and closed every item within three minutes once told to write; the
+    page-by-page visual pass is exempt because it writes through pv3 visual
+    update while rendering pages."""
+    if kind in FULL_BUDGET_SHARD_KINDS or chunks < 2:
+        return None
+    return chunks - 1
+
+
 def investigate_chunks(shard: dict) -> int:
     """Chunk budget for one investigation shard (see above)."""
     return chunk_budget(len(shard.get("items") or []), MAX_CHUNKS_INVESTIGATE, shard.get("kind"))
@@ -180,8 +192,10 @@ JUDGE_CHUNK_SECONDS = _int("REVIEW_V3_JUDGE_CHUNK_SECONDS", 480)
 # (20 min per paper) while writing only in its wrap-up chunk.
 COMPLETE_CHUNKS_IMAGE_SCAN = _int("REVIEW_V3_COMPLETE_CHUNKS_IMAGE_SCAN", 3)
 # One follow-up chunk may run this long: a follow-up session sat 16 minutes
-# in two chunks without writing (2026-11-07, two-item consistency batch).
-COMPLETE_CHUNK_SECONDS = _int("REVIEW_V3_COMPLETE_CHUNK_SECONDS", 300)
+# in two chunks without writing (2026-11-07, two-item consistency batch);
+# with the last regular chunk write-only, 4 minutes of reading per chunk
+# covered the 2026-11-08 follow-ups.
+COMPLETE_CHUNK_SECONDS = _int("REVIEW_V3_COMPLETE_CHUNK_SECONDS", 240)
 # The page-by-page visual pass gets one follow-up round only: a second
 # round restarts from page one and took 4-9 more chunks per paper.
 COMPLETE_VISUAL_ROUNDS = _int("REVIEW_V3_COMPLETE_VISUAL_ROUNDS", 1)
