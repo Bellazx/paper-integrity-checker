@@ -282,7 +282,13 @@ def test_same_doi_batch_folders_publish_independent_bilingual_reports(monkeypatc
     monkeypatch.setattr('modules.chinese_report_generator._compute_overall_risk', lambda _: {'level': '高风险'})
     monkeypatch.setattr(worker, 'verify_public_pdf', AsyncMock())
     monkeypatch.setattr(english, 'generate_english_initial_pdf', lambda *a, **kw: None)
-    monkeypatch.setattr(english, 'generate_english_review_pdf', lambda *a, **kw: None)
+
+    async def english_review(value, output_dir, task_dir, *, kind, slug='', deadline=None):
+        # The review renderer runs as a subprocess (api.services.report); stand in for it.
+        path = Path(output_dir) / english.review_report_filename(slug)
+        path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'%PDF-1.4')
+        return str(path)
+    monkeypatch.setattr(worker, 'generate_english_report', english_review)
     chinese, bilingual = {}, {}
     monkeypatch.setattr(worker, 'upsert_chushen', lambda **kw: chinese.setdefault(kw['fold_name'], kw))
     monkeypatch.setattr(worker, 'verify_chushen_write', lambda **kw: (True, ''))
