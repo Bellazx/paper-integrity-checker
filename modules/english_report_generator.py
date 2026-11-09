@@ -130,11 +130,7 @@ sample sizes, and statistics exactly. Do not summarize, omit, invent, or strengt
 
 INPUT:
 """ + json.dumps(repair_input, ensure_ascii=False, default=str)
-    repaired = _parse_json_response(
-        chat(prompt, system=_SYSTEM_PROMPT, temperature=0),
-        residual_fields,
-        strict_missing=True,
-    )
+    repaired = _chat_json(prompt, residual_fields, strict_missing=True, temperature=0)
     for field in residual_fields:
         normalized[field] = repaired[field]
     return _normalize_english_fields(normalized, fields)
@@ -315,6 +311,35 @@ def _initial_payload_json(payload: dict) -> str:
     return json.dumps(compact, ensure_ascii=False, default=str)
 
 
+def _chat_json(prompt: str, required: tuple[str, ...], *, strict_missing: bool,
+               temperature: float = 0.2, fallback: dict | None = None, attempts: int = 2) -> dict:
+    """Ask the report model for a JSON object and parse it, asking once more
+    when the reply is not valid JSON.
+
+    One malformed reply (an unescaped quote, a missing comma) used to fail the
+    whole API task: on 2026-11-09 a review task failed at this step although the
+    same input rendered fine when rerun. The retry quotes the parser error and
+    asks for one escaped JSON object; the reply snippet is logged either way so
+    the cause is visible in the task error.
+    """
+    error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        response = chat(prompt if attempt == 1 else (
+            prompt + "\n\nYour previous reply was not valid JSON (" + str(error) + "). Return exactly one "
+            "JSON object and nothing else; escape every double quote, backslash and line break inside "
+            "string values."), system=_SYSTEM_PROMPT, temperature=temperature)
+        try:
+            return _parse_json_response(response, required, strict_missing=strict_missing, fallback=fallback)
+        except (json.JSONDecodeError, ValueError) as exc:
+            if not isinstance(exc, json.JSONDecodeError) and "did not return JSON" not in str(exc):
+                raise  # missing fields etc. are not a formatting problem a retry would fix
+            error = exc
+            snippet = response.strip().replace("\n", " ")
+            log.warning("English report reply %d/%d was not valid JSON (%s); head=%r tail=%r",
+                        attempt, attempts, exc, snippet[:200], snippet[-200:])
+    raise ValueError(f"English report model returned invalid JSON {attempts} times: {error}")
+
+
 def _parse_json_response(
     response: str,
     required: tuple[str, ...],
@@ -444,11 +469,8 @@ conclusion must match risk.overall exactly and must not mention numerical risk s
 
 INPUT:
 """ + _initial_payload_json(payload)
-    translated = _parse_json_response(
-        chat(prompt, system=_SYSTEM_PROMPT, temperature=0.2),
-        ("overview", "image_review", "data_review", "reference_review", "conclusion"),
-        strict_missing=True,
-    )
+    translated = _chat_json(prompt, ("overview", "image_review", "data_review", "reference_review", "conclusion"),
+                            strict_missing=True)
     translated = _ensure_english_fields(
         translated,
         ("overview", "image_review", "data_review", "reference_review", "conclusion"),
@@ -537,11 +559,7 @@ Caption keys describe the corresponding source screenshot; translate without inv
 
 INPUT:
 """ + json.dumps(source, ensure_ascii=False, default=str)
-    translated = _parse_json_response(
-        chat(prompt, system=_SYSTEM_PROMPT, temperature=0.2),
-        tuple(source),
-        strict_missing=True,
-    )
+    translated = _chat_json(prompt, tuple(source), strict_missing=True)
     translated = _ensure_english_fields(
         translated,
         tuple(source),
@@ -618,8 +636,7 @@ def _preserve_decimal_values(source: dict, translated: dict) -> dict:
               + json.dumps({key: {
                   'source': source[key], 'translation': translated[key], 'missing_values': values}
                   for key, values in gaps.items()}, ensure_ascii=False))
-    repaired = _parse_json_response(chat(prompt, system=_SYSTEM_PROMPT, temperature=0.2),
-                                    tuple(gaps), strict_missing=True)
+    repaired = _chat_json(prompt, tuple(gaps), strict_missing=True)
     translated = {**translated, **_normalize_english_fields(repaired, tuple(gaps))}
     remaining = {key: values for key, values in missing().items() if values}
     if remaining:
