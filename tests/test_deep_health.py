@@ -52,7 +52,8 @@ def test_recent_task_failures_reads_failed_tasks_in_window(tmp_path):
 
 def _report(**overrides):
     checks = {"imports": {"ok": True}, "stale": [], "database": {"ok": True},
-              "disk": {"ok": True, "free_gb": 500.0, "critical": False}, "failures": []}
+              "disk": {"ok": True, "free_gb": 500.0, "critical": False}, "failures": [],
+              "watchdog": {"ok": True, "last_run": "2026-11-09T12:00:00", "age_minutes": 5}}
     checks.update(overrides)
     return dh.deep_status(Path("/nonexistent"), Path("/nonexistent"), started=time.time(), checks=checks)
 
