@@ -435,10 +435,15 @@ class Review:
                                  "allow_new": False},
                           [{"id": i["id"], "title": i.get("title"), "dimension": dimension, "members": i.get("members"),
                             "first": i.get("first"), "second": i.get("second")} for i in items])
-            outcome = await session.run(self._spec(f"arb{round_no}_{name}", prompts.arbiter(dimension, self.dossier, items),
-                                                   path, config.chunk_budget(len(items), config.MAX_CHUNKS_ARBITRATE),
-                                                   f"arbiter:{dimension}",
-                                                   "arbitrate"))
+            chunks = config.chunk_budget(len(items), config.MAX_CHUNKS_ARBITRATE)
+            spec = self._spec(f"arb{round_no}_{name}", prompts.arbiter(dimension, self.dossier, items),
+                              path, chunks, f"arbiter:{dimension}", "arbitrate")
+            # The last regular chunk only writes what the reading chunks found;
+            # the visual pass keeps rendering pages and writes as it goes.
+            kind = "image_scan" if any(i["id"] == "image::visual_pass" for i in items) else None
+            spec.chunk_seconds = config.ARBITRATE_CHUNK_SECONDS
+            spec.write_only_after = config.write_only_after(chunks, kind)
+            outcome = await session.run(spec)
             self._close_leftovers(path, outcome, "arbiter")
             return ledger.load(path).get("items") or {}
 

@@ -76,16 +76,22 @@ def complete_chunks(items: int, kind: str | None) -> int:
     return chunk_budget(items, MAX_CHUNKS_COMPLETE, kind)
 
 
-def complete_write_only_after(chunks: int, kind: str | None) -> int | None:
-    """Chunks a follow-up session may spend reading before its last regular
-    chunk is restricted to ledger writes. On 2026-11-08 every follow-up
-    session wrote nothing in its reading chunks (two hit the 5-minute cap)
-    and closed every item within three minutes once told to write; the
-    page-by-page visual pass is exempt because it writes through pv3 visual
-    update while rendering pages."""
+def write_only_after(chunks: int, kind: str | None) -> int | None:
+    """Chunks a session may spend reading before its last regular chunk is
+    restricted to ledger writes. On 2026-11-08 every follow-up session wrote
+    nothing in its reading chunks (two hit the 5-minute cap) and closed every
+    item within three minutes once told to write; the same day two data
+    arbitrations spent three chunks (14 min) writing nothing and handed the
+    same items to a follow-up. The page-by-page visual pass is exempt because
+    it writes through pv3 visual update while rendering pages."""
     if kind in FULL_BUDGET_SHARD_KINDS or chunks < 2:
         return None
     return chunks - 1
+
+
+def complete_write_only_after(chunks: int, kind: str | None) -> int | None:
+    """Write-only threshold for a follow-up session (see write_only_after)."""
+    return write_only_after(chunks, kind)
 
 
 def investigate_chunks(shard: dict) -> int:
@@ -191,6 +197,9 @@ JUDGE_CHUNK_SECONDS = _int("REVIEW_V3_JUDGE_CHUNK_SECONDS", 480)
 # follow-up the pass restarts from page one and ran 6-9 chunks per round
 # (20 min per paper) while writing only in its wrap-up chunk.
 COMPLETE_CHUNKS_IMAGE_SCAN = _int("REVIEW_V3_COMPLETE_CHUNKS_IMAGE_SCAN", 3)
+# One arbitration chunk may run this long: without a cap, arbitration chunks
+# ran to the phase box (5-9 min each, 2026-11-08) and wrote nothing.
+ARBITRATE_CHUNK_SECONDS = _int("REVIEW_V3_ARBITRATE_CHUNK_SECONDS", 240)
 # One follow-up chunk may run this long: a follow-up session sat 16 minutes
 # in two chunks without writing (2026-11-07, two-item consistency batch);
 # with the last regular chunk write-only, 4 minutes of reading per chunk

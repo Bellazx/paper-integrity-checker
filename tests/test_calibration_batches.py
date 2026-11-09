@@ -253,3 +253,30 @@ def test_calibrators_and_judge_switch_to_write_only(tmp_path, monkeypatch):
     spec = session.SessionSpec("cal_x", tmp_path, "", "calibrator", write_only_after=1)
     assert not session.write_only(spec, 0) and session.write_only(spec, 1) and session.write_only(spec, 3)
     assert not session.write_only(session.SessionSpec("inv_x", tmp_path, "", "investigator"), 5)
+
+
+def test_arbiters_write_in_their_last_regular_chunk(tmp_path, monkeypatch):
+    """Arbitration chunks are capped and the last regular chunk is write-only,
+    except for the visual pass, which writes page by page while rendering."""
+    seen = {}
+
+    async def fake_run(spec):
+        seen[spec.name] = (spec.max_chunks, spec.write_only_after, spec.chunk_seconds)
+        return session.SessionOutcome("done")
+    monkeypatch.setattr(session, "run", fake_run)
+
+    def dispute(item_id, dimension):
+        return {"id": item_id, "title": item_id, "dimension": dimension, "members": [item_id],
+                "first": {"status": "issue"}, "second": {"status": "cleared"}}
+
+    async def run():
+        review = engine.Review("x", "", str(tmp_path), tmp_path / "run", None)
+        await review.arbitrate([dispute(f"high::data::{i}", "data") for i in range(4)]
+                               + [dispute("image::visual_pass", "image")]
+                               + [dispute("stats::overall", "methodology")], 1)
+        await review.close()
+    asyncio.run(run())
+    assert seen["arb1_data"] == (3, 2, config.ARBITRATE_CHUNK_SECONDS)          # 4 items: read 2 chunks, write 1
+    assert seen["arb1_methodology"] == (2, 1, config.ARBITRATE_CHUNK_SECONDS)   # 1 item: read 1 chunk, write 1
+    assert seen["arb1_image"] == (2, None, config.ARBITRATE_CHUNK_SECONDS)      # the visual pass keeps rendering
+    assert config.ARBITRATE_CHUNK_SECONDS == 240
