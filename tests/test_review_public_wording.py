@@ -63,11 +63,12 @@ def test_legacy_heading_disclaimer_and_section_label_are_reader_facing():
             '<p>该风险结论不等同于已经证明存在学术不端。</p>')
     result = public_report_html(html)
     text = visible(result)
-    assert '论文复核报告' in text
+    assert 'Paper Pecker论文预警报告' in text
+    assert 'AI复核版' not in text
     assert '本节结论：有风险' in text
     assert '不涉及对作者主观意图的认定' in text
     assert '所有发现均基于算法分析' not in text
-    for term in ('预警报告', '学术不端', '本模块复核结论'):
+    for term in ('学术不端', '本模块复核结论'):
         assert term not in text
     assert result == public_report_html(result)
 

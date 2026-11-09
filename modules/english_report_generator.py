@@ -462,7 +462,7 @@ INPUT:
     overall_label = _risk_label(overall.get("level"))
     overall_color = _risk_color(overall_label)
     body = f"""
-<h1 style="text-align:center;">Paper Review Report</h1>
+<h1 style="text-align:center;">Paper Pecker Risk Alert Report</h1>
 <hr style="border:none; border-top:1px solid #ccc; margin:10pt 0;">
 <h2 style="font-size:13pt; color:#1a1a1a; margin-top:14pt; margin-bottom:6pt;">1. Paper Information</h2>
 <p class='meta'><b>Title:</b> {html.escape(str(paper.get('title') or 'Unknown'))}</p>
@@ -570,7 +570,7 @@ INPUT:
         return '\n'.join(blocks)
 
     body = f"""
-<h1 style="text-align:center;">Paper Review Report</h1>
+<h1 style="text-align:center;">Paper Pecker Risk Alert Report</h1>
 <hr style="border:none; border-top:1px solid #ccc; margin:10pt 0;">
 <h2>1. Paper Information</h2>
 <p class='meta'><b>Title:</b> {html.escape(str(paper.get('title') or 'Not available'))}</p>

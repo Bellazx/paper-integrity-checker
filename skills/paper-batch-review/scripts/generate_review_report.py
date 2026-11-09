@@ -538,8 +538,8 @@ def _header_html(paper: dict) -> str:
     stats_line = f'<p style="font-size:9.5pt; color:#333; margin-bottom:2pt;">{"　　".join(stats)}</p>' if stats else ""
 
     return f"""
-<h1 style="font-size:18pt; color:#1a1a1a; text-align:center; margin-bottom:4pt;">论文复核报告</h1>
-<p style="font-size:10.5pt; color:#555; text-align:center; margin-top:0; margin-bottom:16pt;">Paper Review Report</p>
+<h1 style="font-size:18pt; color:#1a1a1a; text-align:center; margin-bottom:4pt;">Paper Pecker论文预警报告</h1>
+<p style="font-size:10.5pt; color:#555; text-align:center; margin-top:0; margin-bottom:16pt;">Paper Pecker Risk Alert Report</p>
 <hr style="border:none; border-top:1px solid #ccc; margin:10pt 0;">
 <h2 style="font-size:13pt; color:#1a1a1a; margin-top:14pt; margin-bottom:6pt;">一、论文基本信息</h2>
 <p style="font-size:9.5pt; color:#333; margin-bottom:2pt;"><b>论文标题：</b>{title}</p>
@@ -768,7 +768,8 @@ def _format_external_reason_text(text: str) -> str:
 
     # Break before common evidence bullets when agents emitted a dense paragraph.
     text = re.sub(r"(?<!\n)(?=-\s*(?:图像|数据|方法学|参考文献|文献)问题[：:])", "\n", text)
-    text = re.sub(r"(?<!\n)(?=\d+[）)]\s*)", "\n", text)
+    # "（1）" / "(1)" labels stay whole: never break between the opening bracket and the number.
+    text = re.sub(r"(?<![\n（(])(?=\d+[）)]\s*)", "\n", text)
     text = re.sub(r"(?<!\n)(?=[①②③④⑤⑥⑦⑧⑨⑩])", "\n", text)
     text = re.sub(r"([：:])\s*-\s*", r"\1\n- ", text)
     text = re.sub(r"(。)(?=(?:该问题|上述异常|综合判断|最终判定|本次复核|核心问题|按|通过|只有))", r"\1\n", text)
@@ -3006,8 +3007,8 @@ def main():
         else:
             safe_doi = _html_escape(doi)
             header = f"""
-<h1 style="font-size:18pt; color:#1a1a1a; text-align:center; margin-bottom:4pt;">论文复核报告</h1>
-<p style="font-size:10.5pt; color:#555; text-align:center; margin-top:0; margin-bottom:16pt;">Paper Review Report</p>
+<h1 style="font-size:18pt; color:#1a1a1a; text-align:center; margin-bottom:4pt;">Paper Pecker论文预警报告</h1>
+<p style="font-size:10.5pt; color:#555; text-align:center; margin-top:0; margin-bottom:16pt;">Paper Pecker Risk Alert Report</p>
 <hr style="border:none; border-top:1px solid #ccc; margin:10pt 0;">
 <h2 style="font-size:13pt; color:#1a1a1a; margin-top:14pt; margin-bottom:6pt;">一、论文基本信息</h2>
 <p style="font-size:9.5pt; color:#333; margin-bottom:2pt;"><b>DOI：</b>{safe_doi}</p>

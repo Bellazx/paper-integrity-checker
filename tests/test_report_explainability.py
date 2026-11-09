@@ -20,10 +20,10 @@ class InitialReportExplainabilityTest(unittest.TestCase):
             "reference_issues": [],
         }
         html = report._build_full_html(findings, "")
-        self.assertIn("论文复核报告", html)
-        self.assertIn("Paper Review Report", html)
-        self.assertIn("Paper Pecker", html)  # product name stays in the footer
-        self.assertNotIn("预警报告", html)
+        self.assertIn("Paper Pecker论文预警报告", html)
+        self.assertIn("Paper Pecker Risk Alert Report", html)
+        self.assertNotIn("AI复核版", html)  # no stage suffix in either language
+        self.assertNotIn("AI Review", html)
 
     def test_high_risk_analysis_requires_structured_explanation(self):
         vague = "<p>公式计算结果与表格不一致。</p>"

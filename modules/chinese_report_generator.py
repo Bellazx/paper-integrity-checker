@@ -1305,8 +1305,8 @@ def _build_full_html(findings: dict, analysis_html: str) -> str:
         stats_line = f'<p style="font-size:9.5pt; color:#333; margin-bottom:2pt;">{"　　".join(stats_parts)}</p>'
 
     header_html = f"""
-<h1 style="font-size:18pt; color:#1a1a1a; text-align:center; margin-bottom:4pt;">论文复核报告</h1>
-<p style="font-size:10.5pt; color:#555; text-align:center; margin-top:0; margin-bottom:16pt;">Paper Review Report</p>
+<h1 style="font-size:18pt; color:#1a1a1a; text-align:center; margin-bottom:4pt;">Paper Pecker论文预警报告</h1>
+<p style="font-size:10.5pt; color:#555; text-align:center; margin-top:0; margin-bottom:16pt;">Paper Pecker Risk Alert Report</p>
 
 <hr style="border:none; border-top:1px solid #ccc; margin:10pt 0;">
 
