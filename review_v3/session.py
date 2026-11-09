@@ -195,9 +195,14 @@ class SessionSpec:
     write_only_after: int | None = None
 
 
-def write_only(spec: "SessionSpec", chunks_done: int) -> bool:
-    """True when the chunk about to start may only write the ledger."""
-    return spec.write_only_after is not None and chunks_done >= spec.write_only_after
+def write_only(spec: "SessionSpec", chunks_done: int, wrapping: bool = False) -> bool:
+    """True when the chunk about to start may only write the ledger. A
+    wrap-up chunk of such a session is always write-only: a stalled
+    11-item arbitration wrapped up before its write-only chunk and spent the
+    wrap-up reading sheets (2026-11-09)."""
+    if spec.write_only_after is None:
+        return False
+    return wrapping or chunks_done >= spec.write_only_after
 
 
 def chunk_wall_limit(spec: "SessionSpec", wrapping: bool, now: float) -> float:
@@ -484,7 +489,7 @@ async def run(spec: SessionSpec) -> SessionOutcome:
                 message = (spec.continue_prompt or (lambda s: "继续完成任务。"))(state)
                 resume = True
             before = _progress_key(spec)
-            if write_only(spec, state["chunks"]):
+            if write_only(spec, state["chunks"], wrapping):
                 spec.extra_env["PV3_WRITE_ONLY"] = "1"
                 message += "\n\n本段只能写入台账：除 `pv3 ledger update` / `pv3 ledger show` / `pv3 item` 外的命令都会被拒绝。"
             # Persist the spend before launching; a crash must not refund it.

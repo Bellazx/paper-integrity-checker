@@ -163,7 +163,10 @@ def _validate_entry(entry: dict, known: dict, allow_new: bool, require_category:
     if not item_id:
         return ["每条记录必须有 id"]
     if item_id not in known and not allow_new:
-        errors.append(f"{item_id}: 不在本台账中；新发现请用 id 'new:<简短英文标识>' 登记")
+        # Arbiter/calibrator/judge ledgers hold a fixed item set; on 2026-11-09
+        # arbiters retried a 'new:' registration three times after being told
+        # to register it as 'new:<id>'.
+        errors.append(f"{item_id}: 不在本台账中；本台账不接受新条目，相关观察请写进最接近的既有条目的 basis")
     status = entry.get("status")
     if status not in STATUSES or status == "open":
         errors.append(f"{item_id}: status 必须是 issue/cleared/not_applicable/unresolved 之一")
