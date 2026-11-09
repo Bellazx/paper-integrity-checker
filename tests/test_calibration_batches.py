@@ -253,6 +253,9 @@ def test_calibrators_and_judge_switch_to_write_only(tmp_path, monkeypatch):
     spec = session.SessionSpec("cal_x", tmp_path, "", "calibrator", write_only_after=1)
     assert not session.write_only(spec, 0) and session.write_only(spec, 1) and session.write_only(spec, 3)
     assert not session.write_only(session.SessionSpec("inv_x", tmp_path, "", "investigator"), 5)
+    # A wrap-up chunk is write-only before the threshold too (stalled sessions wrap up early).
+    assert session.write_only(session.SessionSpec("arb_x", tmp_path, "", "arbiter", write_only_after=5), 2, wrapping=True)
+    assert not session.write_only(session.SessionSpec("inv_x", tmp_path, "", "investigator"), 2, wrapping=True)
 
 
 def test_arbiters_write_in_their_last_regular_chunk(tmp_path, monkeypatch):
