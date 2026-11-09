@@ -83,3 +83,24 @@ def test_health_deep_route_returns_503_only_when_critical(monkeypatch):
     monkeypatch.setattr(dh, "deep_status", lambda: {"status": "critical", "problems": [], "checks": {}})
     response = client.get("/api/health/deep")
     assert response.status_code == 503 and response.json()["status"] == "critical"
+
+
+def test_watchdog_check_reports_a_silent_watchdog(tmp_path):
+    state = tmp_path / "watchdog_state.json"
+    assert dh.watchdog_check(state, now=1000.0)["ok"] is False          # never ran
+    state.write_text(json.dumps({"last_run": 1000.0 - 20 * 60}))
+    fresh = dh.watchdog_check(state, max_age=75 * 60, now=1000.0)
+    assert fresh["ok"] and fresh["age_minutes"] == 20
+    stale = dh.watchdog_check(state, max_age=75 * 60, now=1000.0 + 3 * 3600)
+    assert stale["ok"] is False and stale["age_minutes"] == 200
+
+
+def test_deep_status_flags_a_silent_watchdog_as_degraded():
+    checks = {"imports": {"ok": True}, "stale": [], "database": {"ok": True},
+              "disk": {"ok": True, "free_gb": 100.0, "critical": False}, "failures": [],
+              "watchdog": {"ok": False, "last_run": "2026-11-09T00:00:00", "age_minutes": 500}}
+    status = dh.deep_status(Path("/nonexistent"), Path("/nonexistent"), started=time.time(), checks=checks)
+    assert status["status"] == "degraded"
+    assert any(p["check"] == "watchdog" and "500 分钟" in p["message"] for p in status["problems"])
+    checks["watchdog"] = {"ok": True, "last_run": "2026-11-09T12:00:00", "age_minutes": 5}
+    assert dh.deep_status(Path("/nonexistent"), Path("/nonexistent"), started=time.time(), checks=checks)["status"] == "ok"

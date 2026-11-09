@@ -142,6 +142,29 @@ def disk_check(path: Path = BASE_DIR) -> dict:
             "critical": free_gb < DISK_CRITICAL_GB}
 
 
+# The health watchdog (systemd timer, every 30 min) is what turns these checks
+# into mail; when it silently stops (the unit failed overnight on 2026-11-09,
+# 00:25-08:38, after an install with EnvironmentFile= that PID 1 could not
+# read under SELinux) nobody is told. Its last completed run is therefore a
+# check of its own, visible on this endpoint and in the nightly digest.
+WATCHDOG_STATE = Path(os.environ.get("WATCHDOG_STATE", str(BASE_DIR / "data" / "ops" / "watchdog_state.json")))
+WATCHDOG_MAX_AGE_SECONDS = int(os.environ.get("WATCHDOG_MAX_AGE_SECONDS", str(75 * 60)))
+
+
+def watchdog_check(state_path: Path = WATCHDOG_STATE, max_age: int = WATCHDOG_MAX_AGE_SECONDS,
+                   now: float | None = None) -> dict:
+    """Age of the watchdog's last completed run, from its state file."""
+    now = now or time.time()
+    try:
+        last_run = float(json.loads(state_path.read_text(encoding="utf-8")).get("last_run") or 0)
+    except (OSError, ValueError, TypeError):
+        last_run = 0.0
+    if not last_run:
+        return {"ok": False, "last_run": None, "age_minutes": None, "error": "没有运行记录"}
+    age = now - last_run
+    return {"ok": age <= max_age, "last_run": _iso(last_run), "age_minutes": round(age / 60)}
+
+
 def deep_status(root: Path = BASE_DIR, tasks_dir: Path = TASKS_DIR, started: float | None = None,
                 checks: dict | None = None) -> dict:
     """Run every check and grade them: ``critical`` when requests cannot be
@@ -154,6 +177,7 @@ def deep_status(root: Path = BASE_DIR, tasks_dir: Path = TASKS_DIR, started: flo
     database = checks.get("database") or database_check()
     disk = checks.get("disk") or disk_check(root)
     failures = checks.get("failures") if "failures" in checks else recent_task_failures(tasks_dir)
+    watchdog = checks.get("watchdog") or watchdog_check()
 
     problems = []
     if not imports["ok"]:
@@ -169,6 +193,12 @@ def deep_status(root: Path = BASE_DIR, tasks_dir: Path = TASKS_DIR, started: flo
                          f"服务进程启动于 {_iso(started)}，之后有 {len(stale)} 个源文件被修改（运行中的是旧代码，需重启）"))
     if failures:
         problems.append(("degraded", "task_failures", f"最近 {FAILURE_WINDOW_SECONDS // 60} 分钟内 {len(failures)} 个任务失败"))
+    if not watchdog["ok"]:
+        if watchdog.get("last_run") is None:
+            detail = "从未运行"
+        else:
+            detail = f"已 {watchdog['age_minutes']} 分钟未运行（上次 {watchdog['last_run']}）"
+        problems.append(("degraded", "watchdog", f"健康看门狗{detail}；检查 paper-health-watchdog.timer"))
 
     level = "ok"
     if any(p[0] == "critical" for p in problems):
@@ -181,7 +211,7 @@ def deep_status(root: Path = BASE_DIR, tasks_dir: Path = TASKS_DIR, started: flo
         "process": {"pid": os.getpid(), "started": _iso(started), "python": sys.version.split()[0]},
         "problems": [{"severity": s, "check": c, "message": m} for s, c, m in problems],
         "checks": {"imports": imports, "stale_code": stale, "database": database, "disk": disk,
-                   "task_failures": failures},
+                   "task_failures": failures, "watchdog": watchdog},
     }
 
 

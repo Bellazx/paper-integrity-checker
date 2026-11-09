@@ -317,7 +317,9 @@ def run(dry_run: bool = False, now: float | None = None) -> int:
     save_state(state)
     status = report.get("status") if report else "unreachable"
     log(f"run: health={status} findings={len(findings)} new={len(new)} remind={len(remind)} cleared={len(cleared)}")
-    return 0 if status == "ok" and not findings else 1
+    # A run that found problems and mailed them did its job: exit 0, so that
+    # systemd shows the unit as failed only when the watchdog itself broke.
+    return 0
 
 
 def main() -> int:
